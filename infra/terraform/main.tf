@@ -16,6 +16,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
   # System node pool (regular VMs for critical workloads)
   default_node_pool {
     name                = "system"
+    temporary_name_for_rotation = "system-rotation-temp"
     vm_size             = var.vm_size
     type                = "VirtualMachineScaleSets"
     # auto_scaling_enabled = true
@@ -53,6 +54,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
 # Spot instance node pool for workloads
 resource "azurerm_kubernetes_cluster_node_pool" "spot" {
   name                  = "spot"
+  temporary_name_for_rotation = "spot-rotation-temp"
   kubernetes_cluster_id = azurerm_kubernetes_cluster.aks.id
   vm_size               = var.spot_vm_size
   
