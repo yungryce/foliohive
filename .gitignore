@@ -1,0 +1,16 @@
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+
+*_override.tf.json
+.terraformrc
+terraform.rc
+# Local .tfvars files
+*.tfvars.local
+# .tfvars files that are not under version control
+*.tfvars
