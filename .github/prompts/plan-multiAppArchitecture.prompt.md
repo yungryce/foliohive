@@ -14,8 +14,8 @@ Refactor the portfolio application from a single Azure Function App (with hardco
 
 | Aspect | Current State | Target State | Impact |
 |--------|---------------|--------------|--------|
-| **Architecture** | Monolithic Durable Functions | 4 independent container apps | Independent scaling, faster delivery |
-| **Latency** | 60-120s blocking orchestration | <5s API response + async workers | 96% latency reduction |
+| **Architecture** | Monolithic Durable Functions | 4 independent function apps/container apps | Independent scaling, faster delivery |
+| **Latency** | 60-1200s blocking orchestration | <5s API response + async workers | 96% latency reduction |
 | **Username** | Hardcoded 'yungryce' in 6 locations | Dynamic username from request | Multi-tenant ready |
 | **Deployment** | Single Function App | API Gateway + 3 workers + shared package | Fault isolation |
 | **Infrastructure** | Azure-locked (Durable Functions) | Cloud-agnostic (containers + queues) | Portable to AWS/GCP |
@@ -65,26 +65,25 @@ api/starter.sh                               | MEDIUM    | Line 3 (script defaul
 portfolio/
 ├── apps/                                    # NEW: Microservices root
 │   ├── shared/                              # Common code package
+│   │   ├── __init__.py
 │   │   ├── setup.py                         # Installable Python package
-│   │   ├── portfolio_shared/
-│   │   │   ├── __init__.py
-│   │   │   ├── cache/
-│   │   │   │   ├── cache_manager.py         # From api/config/
-│   │   │   │   └── fingerprint_manager.py   # From api/config/
-│   │   │   ├── github/
-│   │   │   │   ├── github_api.py            # From api/config/
-│   │   │   │   └── github_repo_manager.py   # From api/config/
-│   │   │   ├── ai/
-│   │   │   │   ├── fine_tuning.py           # From api/config/
-│   │   │   │   ├── repo_scoring_service.py  # From api/ai/
-│   │   │   │   └── type_analyzer.py         # From api/ai/
-│   │   │   ├── models/
-│   │   │   │   └── schemas.py               # Pydantic models for queues
-│   │   │   └── config/
-│   │   │       └── settings.py              # Environment variable management
+│   │   ├── cache/
+│   │   │   ├── cache_manager.py         # From api/config/
+│   │   │   └── fingerprint_manager.py   # From api/config/
+│   │   ├── github/
+│   │   │   ├── github_api.py            # From api/config/
+│   │   │   └── github_repo_manager.py   # From api/config/
+│   │   ├── ai/
+│   │   │   ├── fine_tuning.py           # From api/config/
+│   │   │   ├── repo_scoring_service.py  # From api/ai/
+│   │   │   └── type_analyzer.py         # From api/ai/
+│   │   ├── models/
+│   │   │   └── schemas.py               # Pydantic models for queues
+│   │   └── config/
+│   │       └── settings.py              # Environment variable management
 │   │   └── tests/
 │   │
-│   ├── api-gateway/                         # FastAPI (replaces Function App HTTP)
+│   ├── api-gateway/                         # FastAPI (or Function App HTTP)
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   ├── main.py                          # FastAPI app initialization
@@ -169,7 +168,7 @@ portfolio/
 │  │                                          │    │
 │  │ 1. get_stale_repos_activity (5s)        │    │
 │  │    ↓                                     │    │
-│  │ 2. fetch_repo × N in parallel (60s)     │    │
+│  │ 2. fetch_repo × N in parallel (60s)     │◄── BLOCKS HERE
 │  │    ↓                                     │    │
 │  │ 3. merge_repo_results_activity (2s)     │    │
 │  │    ↓                                     │    │
@@ -320,21 +319,21 @@ Files to update:
 
 **2.1 Create Shared Package Structure**
 ```bash
-mkdir -p apps/shared/portfolio_shared/{cache,github,ai,models,config}
+mkdir -p apps/shared/{cache,github,ai,models,config}
 touch apps/shared/setup.py
-touch apps/shared/portfolio_shared/__init__.py
+touch apps/shared/__init__.py
 ```
 
 **2.2 Move Core Modules**
 ```
-api/config/cache_manager.py          → apps/shared/portfolio_shared/cache/cache_manager.py
-api/config/fingerprint_manager.py    → apps/shared/portfolio_shared/cache/fingerprint_manager.py
-api/config/github_api.py              → apps/shared/portfolio_shared/github/github_api.py
-api/config/github_repo_manager.py     → apps/shared/portfolio_shared/github/github_repo_manager.py
-api/config/fine_tuning.py             → apps/shared/portfolio_shared/ai/fine_tuning.py
-api/ai/repo_scoring_service.py        → apps/shared/portfolio_shared/ai/repo_scoring_service.py
-api/ai/type_analyzer.py               → apps/shared/portfolio_shared/ai/type_analyzer.py
-api/ai/ai_assistant.py                → apps/shared/portfolio_shared/ai/ai_assistant.py
+api/config/cache_manager.py          → apps/shared/cache/cache_manager.py
+api/config/fingerprint_manager.py    → apps/shared/cache/fingerprint_manager.py
+api/config/github_api.py              → apps/shared/github/github_api.py
+api/config/github_repo_manager.py     → apps/shared/github/github_repo_manager.py
+api/config/fine_tuning.py             → apps/shared/ai/fine_tuning.py
+api/ai/repo_scoring_service.py        → apps/shared/ai/repo_scoring_service.py
+api/ai/type_analyzer.py               → apps/shared/ai/type_analyzer.py
+api/ai/ai_assistant.py                → apps/shared/ai/ai_assistant.py
 ```
 
 **2.3 Create setup.py**
@@ -365,13 +364,13 @@ from config.cache_manager import cache_manager
 from config.github_api import GitHubAPI
 
 # AFTER:
-from portfolio_shared.cache import cache_manager
-from portfolio_shared.github import GitHubAPI
+from cache import cache_manager
+from github import GitHubAPI
 ```
 
 **2.5 Create Queue Message Schemas**
 ```python
-# apps/shared/portfolio_shared/models/schemas.py
+# apps/shared/models/schemas.py
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 
@@ -551,8 +550,8 @@ az deployment group create \
 # apps/api-gateway/main.py
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from portfolio_shared.cache import cache_manager
-from portfolio_shared.models.schemas import SyncJobMessage
+from cache import cache_manager
+from models.schemas import SyncJobMessage
 from azure.storage.queue.aio import QueueClient
 from azure.identity.aio import DefaultAzureCredential
 import uuid
@@ -665,8 +664,8 @@ async def get_job_status(job_id: str):
 ```python
 # apps/api-gateway/routes/bundles.py
 from fastapi import APIRouter, HTTPException, Query
-from portfolio_shared.cache import cache_manager
-from portfolio_shared.models.schemas import SyncJobMessage
+from cache import cache_manager
+from models.schemas import SyncJobMessage
 from azure.storage.queue.aio import QueueClient
 from azure.identity.aio import DefaultAzureCredential
 import uuid
@@ -786,9 +785,9 @@ from azure.storage.queue import QueueClient
 from azure.identity import DefaultAzureCredential
 import json
 import logging
-from portfolio_shared.cache import cache_manager
-from portfolio_shared.github import GitHubRepoManager, GitHubAPI
-from portfolio_shared.models.schemas import SyncJobMessage, MergeJobMessage
+from cache import cache_manager
+from github import GitHubRepoManager, GitHubAPI
+from models.schemas import SyncJobMessage, MergeJobMessage
 from github_sync import process_sync_job
 import os
 
@@ -854,8 +853,8 @@ if __name__ == '__main__':
 
 ```python
 # apps/sync-worker/github_sync.py
-from portfolio_shared.github import GitHubRepoManager, GitHubAPI
-from portfolio_shared.cache import cache_manager, FingerprintManager
+from github import GitHubRepoManager, GitHubAPI
+from cache import cache_manager, FingerprintManager
 import os
 
 def process_sync_job(username: str):
@@ -888,8 +887,8 @@ def process_sync_job(username: str):
 # apps/merge-worker/worker.py
 import redis
 import logging
-from portfolio_shared.cache import cache_manager, FingerprintManager
-from portfolio_shared.models.schemas import MergeJobMessage, TrainingJobMessage
+from cache import cache_manager, FingerprintManager
+from models.schemas import MergeJobMessage, TrainingJobMessage
 from merge_logic import merge_repos
 
 logging.basicConfig(level=logging.INFO)
