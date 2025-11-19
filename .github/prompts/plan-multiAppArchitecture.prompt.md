@@ -19,7 +19,7 @@ Refactor the portfolio application from a single Azure Function App (with hardco
 | **Username** | Hardcoded 'yungryce' in 6 locations | Dynamic username from request | Multi-tenant ready |
 | **Deployment** | Single Function App | API Gateway + 3 workers + shared package | Fault isolation |
 | **Infrastructure** | Azure-locked (Durable Functions) | Cloud-agnostic (containers + queues) | Portable to AWS/GCP |
-| **Cost** | $85/month (always-on) | $65/month + per-job compute | 23% base reduction |
+| **Cost** | $85/month (always-on) | $65.50/month + per-job compute | 23% base reduction |
 
 ---
 
@@ -137,9 +137,10 @@ portfolio/
 │       └── environment.development.ts
 │
 ├── infra/                                   # Infrastructure as Code
-│   ├── main.bicep                           # UPDATED: Deploy Container Apps
+│   ├── main.bicep                           # UPDATED: Deploy Container Apps + Storage Queues
 │   ├── container-apps.bicep                 # NEW: Container Apps Environment
 │   ├── acr.bicep                            # NEW: Container Registry
+│   ├── storage-queues.bicep                 # NEW: Azure Storage Queues configuration
 │   └── monitoring.bicep                     # NEW: Application Insights for multi-app
 │
 └── api/                                     # DEPRECATED (migrated to apps/)
@@ -410,18 +411,19 @@ class TrainingJobMessage(BaseModel):
 
 ### Phase 3: Configure Queue Infrastructure (Week 3) ☁️ INFRASTRUCTURE
 
-**Objective**: Configure Azure Storage Queues using existing storage account
+**Objective**: Configure Azure Storage Queues using existing storage account (zero new infrastructure cost)
 
 #### Tasks
 
 **3.1 Configure Azure Storage Queues**
 ```bicep
-// infra/main.bicep (UPDATE existing storage account)
+// infra/storage-queues.bicep
+// See plan-azureStorageQueuesArchitecture.prompt.md for detailed implementation
+
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
   name: 'stportfolio${uniqueString(resourceGroup().id)}'
 }
 
-// Ensure queues are created
 resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-01-01' = {
   parent: storageAccount
   name: 'default'
@@ -446,7 +448,7 @@ output storageAccountName string = storageAccount.name
 output queueEndpoint string = storageAccount.properties.primaryEndpoints.queue
 ```
 
-**Note**: Uses existing Azure Storage account (zero additional cost). See `plan-azureStorageQueuesArchitecture.prompt.md` for detailed implementation.
+**Note**: Uses existing Azure Storage account (zero additional cost). Detailed implementation in `plan-azureStorageQueuesArchitecture.prompt.md`.
 
 **3.2 Deploy Azure Container Registry**
 ```bicep
@@ -811,41 +813,51 @@ def main():
         messages = queue_client.receive_messages(messages_per_page=1, visibility_timeout=300)
         
         for msg in messages:
-        if not result:
-            continue
-        
-        queue_name, message_json = result
-        message = SyncJobMessage.model_validate_json(message_json)
-        
-        try:
-            logger.info(f"Processing sync job {message.job_id} for {message.username}")
-            
-            # Update status: processing
-            redis_client.hset(f'job:{message.job_id}', 'status', 'processing')
-            redis_client.hset(f'job:{message.job_id}', 'message', 'Fetching GitHub repositories')
-            
-            # Process job (fetch stale repos)
-            fresh_repos, cached_bundle = process_sync_job(message.username)
-            
-            # Enqueue merge job
-            merge_message = MergeJobMessage(
-                job_id=message.job_id,
-                username=message.username,
-                fresh_repos=fresh_repos,
-                cached_bundle=cached_bundle
-            )
-            redis_client.rpush('merge-results', merge_message.model_dump_json())
-            
-            redis_client.hset(f'job:{message.job_id}', 'status', 'syncing')
-            redis_client.hset(f'job:{message.job_id}', 'message', 'Merging results')
-            
-            logger.info(f"Sync job {message.job_id} completed, enqueued to merge")
-            
-        except Exception as e:
-            logger.error(f"Sync job {message.job_id} failed: {e}", exc_info=True)
-            redis_client.hset(f'job:{message.job_id}', 'status', 'failed')
-            redis_client.hset(f'job:{message.job_id}', 'error', str(e))
-            # Re-queue with retry count (optional)
+            try:
+                message_data = json.loads(msg.content)
+                message = SyncJobMessage.model_validate(message_data)
+                
+                logger.info(f"Processing sync job {message.job_id} for {message.username}")
+                
+                # Update status in cache (Blob Storage)
+                job_status_key = f'job:{message.job_id}'
+                cache_manager.save(job_status_key, {
+                    'status': 'processing',
+                    'message': 'Fetching GitHub repositories'
+                }, ttl=3600)
+                
+                # Process job (fetch stale repos)
+                fresh_repos, cached_bundle = process_sync_job(message.username)
+                
+                # Enqueue merge job to Azure Storage Queue
+                merge_queue_client = QueueClient(
+                    account_url=queue_service_url,
+                    queue_name='merge-results',
+                    credential=credential
+                )
+                merge_message = MergeJobMessage(
+                    job_id=message.job_id,
+                    username=message.username,
+                    fresh_repos=fresh_repos,
+                    cached_bundle=cached_bundle
+                )
+                merge_queue_client.send_message(merge_message.model_dump_json())
+                
+                # Update status in cache
+                cache_manager.save(job_status_key, {
+                    'status': 'syncing',
+                    'message': 'Merging results'
+                }, ttl=3600)
+                
+                # Delete message from queue after successful processing
+                queue_client.delete_message(msg)
+                
+                logger.info(f"Sync job {message.job_id} completed, enqueued to merge")
+                
+            except Exception as e:
+                logger.error(f"Sync job failed: {e}", exc_info=True)
+                # Message will be retried automatically (visibility timeout expires)
+                # After max retries, moves to dead-letter queue
 
 if __name__ == '__main__':
     main()
@@ -885,8 +897,11 @@ def process_sync_job(username: str):
 **5.2 Merge Worker (Data Consolidation)**
 ```python
 # apps/merge-worker/worker.py
-import redis
+from azure.storage.queue import QueueClient
+from azure.identity import DefaultAzureCredential
+import json
 import logging
+import os
 from cache import cache_manager, FingerprintManager
 from models.schemas import MergeJobMessage, TrainingJobMessage
 from merge_logic import merge_repos
@@ -895,53 +910,70 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def main():
-    redis_client = redis.from_url(os.getenv('REDIS_URL'), decode_responses=True)
+    # Azure Storage Queue connection
+    queue_service_url = os.getenv('AZURE_STORAGE_QUEUE_URL')
+    credential = DefaultAzureCredential()
+    queue_client = QueueClient(
+        account_url=queue_service_url,
+        queue_name='merge-results',
+        credential=credential
+    )
     
     logger.info("Merge worker started, polling 'merge-results' queue...")
     
     while True:
-        result = redis_client.blpop('merge-results', timeout=30)
+        # Poll queue for messages
+        messages = queue_client.receive_messages(messages_per_page=1, visibility_timeout=600)
         
-        if not result:
-            continue
-        
-        _, message_json = result
-        message = MergeJobMessage.model_validate_json(message_json)
-        
-        try:
-            logger.info(f"Processing merge job {message.job_id} for {message.username}")
-            
-            # Merge fresh and cached repos
-            merged_results = merge_repos(
-                username=message.username,
-                fresh_repos=message.fresh_repos,
-                cached_bundle=message.cached_bundle
-            )
-            
-            # Cache merged bundle
-            bundle_cache_key = cache_manager.generate_cache_key(kind='bundle', username=message.username)
-            repo_fingerprints = [r.get('fingerprint', '') for r in merged_results]
-            bundle_fingerprint = FingerprintManager.generate_bundle_fingerprint(repo_fingerprints)
-            cache_manager.save(bundle_cache_key, merged_results, ttl=None, fingerprint=bundle_fingerprint)
-            
-            # Enqueue training job (low priority)
-            training_message = TrainingJobMessage(
-                job_id=message.job_id,
-                username=message.username,
-                repos_bundle=merged_results,
-                training_params={'batch_size': 8, 'epochs': 2}
-            )
-            redis_client.rpush('model-training', training_message.model_dump_json())
-            
-            # Update job status: completed
-            redis_client.hset(f'job:{message.job_id}', 'status', 'completed')
-            redis_client.hset(f'job:{message.job_id}', 'message', 'Bundle ready')
-            
-            logger.info(f"Merge job {message.job_id} completed")
-            
-        except Exception as e:
-            logger.error(f"Merge job {message.job_id} failed: {e}", exc_info=True)
-            redis_client.hset(f'job:{message.job_id}', 'status', 'failed')
+        for msg in messages:
+            try:
+                message_data = json.loads(msg.content)
+                message = MergeJobMessage.model_validate(message_data)
+                
+                logger.info(f"Processing merge job {message.job_id} for {message.username}")
+                
+                # Merge fresh and cached repos
+                merged_results = merge_repos(
+                    username=message.username,
+                    fresh_repos=message.fresh_repos,
+                    cached_bundle=message.cached_bundle
+                )
+                
+                # Cache merged bundle
+                bundle_cache_key = cache_manager.generate_cache_key(kind='bundle', username=message.username)
+                repo_fingerprints = [r.get('fingerprint', '') for r in merged_results]
+                bundle_fingerprint = FingerprintManager.generate_bundle_fingerprint(repo_fingerprints)
+                cache_manager.save(bundle_cache_key, merged_results, ttl=None, fingerprint=bundle_fingerprint)
+                
+                # Enqueue training job to Azure Storage Queue (low priority)
+                training_queue_client = QueueClient(
+                    account_url=queue_service_url,
+                    queue_name='model-training',
+                    credential=credential
+                )
+                training_message = TrainingJobMessage(
+                    job_id=message.job_id,
+                    username=message.username,
+                    repos_bundle=merged_results,
+                    training_params={'batch_size': 8, 'epochs': 2}
+                )
+                training_queue_client.send_message(training_message.model_dump_json())
+                
+                # Update job status in cache: completed
+                job_status_key = f'job:{message.job_id}'
+                cache_manager.save(job_status_key, {
+                    'status': 'completed',
+                    'message': 'Bundle ready'
+                }, ttl=3600)
+                
+                # Delete message from queue after successful processing
+                queue_client.delete_message(msg)
+                
+                logger.info(f"Merge job {message.job_id} completed")
+                
+            except Exception as e:
+                logger.error(f"Merge job failed: {e}", exc_info=True)
+                # Message will be retried automatically
 
 if __name__ == '__main__':
     main()
@@ -949,8 +981,9 @@ if __name__ == '__main__':
 
 **5.3 Training Worker (from existing plan)**
 - Use code from `plan-semanticModelTrainingRefactor.prompt.md`
-- Integrate with Redis queue instead of Azure Storage Queue
+- Already uses Azure Storage Queue (model-training queue)
 - Same containerized approach (CPU + GPU variants)
+- Polls Azure Storage Queue, not Redis
 
 **5.4 Deploy Workers to Container Apps**
 ```bicep
@@ -1262,35 +1295,41 @@ User Bundle:  repos_bundle_context_{username}
 Repo Bundle:  repo_level_bundle_{username}_{repo}
 Model:        fine_tuned_model_metadata
               model_{fingerprint}
-Job Status:   job:{job_id} (Redis hash, 1 hour TTL)
+Job Status:   job:{job_id} (Blob Storage, 1 hour TTL)
 ```
+
+**Note**: Job status stored in Blob Storage via cache_manager, not Redis.
 
 ### Environment Variables (Per App)
 
 **API Gateway:**
 ```
-REDIS_URL=redis://cache-portfolio.redis.cache.windows.net:6380?ssl=true
+AZURE_STORAGE_QUEUE_URL=https://stgportfolio.queue.core.windows.net
 AZURE_STORAGE_BLOB_URL=https://stgportfolio.blob.core.windows.net
 GROQ_API_KEY=<from-keyvault>
+AZURE_CLIENT_ID=<managed-identity>
 ```
 
 **Sync Worker:**
 ```
-REDIS_URL=redis://cache-portfolio.redis.cache.windows.net:6380?ssl=true
+AZURE_STORAGE_QUEUE_URL=https://stgportfolio.queue.core.windows.net
 AZURE_STORAGE_BLOB_URL=https://stgportfolio.blob.core.windows.net
 GITHUB_TOKEN=<from-keyvault>
+AZURE_CLIENT_ID=<managed-identity>
 ```
 
 **Merge Worker:**
 ```
-REDIS_URL=redis://cache-portfolio.redis.cache.windows.net:6380?ssl=true
+AZURE_STORAGE_QUEUE_URL=https://stgportfolio.queue.core.windows.net
 AZURE_STORAGE_BLOB_URL=https://stgportfolio.blob.core.windows.net
+AZURE_CLIENT_ID=<managed-identity>
 ```
 
 **Training Worker:**
 ```
-REDIS_URL=redis://cache-portfolio.redis.cache.windows.net:6380?ssl=true
+AZURE_STORAGE_QUEUE_URL=https://stgportfolio.queue.core.windows.net
 AZURE_STORAGE_BLOB_URL=https://stgportfolio.blob.core.windows.net
+AZURE_CLIENT_ID=<managed-identity>
 ```
 
 ---
@@ -1315,18 +1354,19 @@ AZURE_STORAGE_BLOB_URL=https://stgportfolio.blob.core.windows.net
 | Sync Worker | 1 vCPU, 2GB, 0-10 replicas | $20 (avg 3 during bursts) |
 | Merge Worker | 0.5 vCPU, 1GB, 0-5 replicas | $8 (avg 1 during bursts) |
 | Training Worker | 4 vCPU, 16GB, 0-2 replicas | $0.40/run × 10 runs = $4 |
-| Azure Cache for Redis (Basic) | 250MB, C0 | $16 |
+| Azure Storage (Queues) | 1M queue operations | $0.50 |
 | Azure Container Registry (Basic) | 10GB storage | $5 |
 | Azure Storage (Blob) | 10GB data, 1M operations | $25 |
 | Application Insights | 5GB ingestion | $15 |
-| **Total** | | **$108/month** |
+| **Total** | | **$92.50/month** |
 
-**Cost Increase**: +$23/month (+27%)  
+**Cost Increase**: +$7.50/month (+9%)  
 **Justification**:
 - 96% latency reduction (120s → 5s)
 - Independent scaling (workers scale to 0 when idle)
 - Fault isolation (training failures don't impact API)
 - Cloud portability (can migrate to AWS/GCP with minimal changes)
+- Using Azure Storage Queues instead of Redis reduces cost by $15.50/month vs original Redis plan
 
 **Note**: Training worker on-demand compute (Container Instances) would reduce cost to **$65/month** (23% savings)
 
@@ -1339,7 +1379,7 @@ AZURE_STORAGE_BLOB_URL=https://stgportfolio.blob.core.windows.net
 | **Queue depth overflow** | Medium | High | Implement queue depth alerts (>100 messages), auto-scale workers to max replicas |
 | **Cache key inconsistency** | Low | Critical | Use shared package for cache logic, comprehensive tests for key generation |
 | **Worker crash loops** | Medium | Medium | Implement exponential backoff retry, dead letter queue for poison messages |
-| **Redis downtime** | Low | High | Enable Redis persistence (AOF), deploy to Premium tier for SLA 99.9% |
+| **Azure Storage throttling** | Low | Medium | Implement exponential backoff, monitor 503 responses |
 | **Container image bloat** | High | Low | Use multi-stage Docker builds, separate CPU/GPU training images |
 | **Username injection attacks** | Medium | High | Validate username regex `^[a-zA-Z0-9-]+$`, parameterized queries, escape special chars |
 | **CORS misconfiguration** | Low | Medium | Test cross-origin requests during deployment, monitor CORS errors |
