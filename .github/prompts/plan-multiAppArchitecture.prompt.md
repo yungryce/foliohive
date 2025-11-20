@@ -14,12 +14,18 @@ Refactor the portfolio application from a single Azure Function App (with hardco
 
 | Aspect | Current State | Target State | Impact |
 |--------|---------------|--------------|--------|
-| **Architecture** | Monolithic Durable Functions | 4 independent function apps/container apps | Independent scaling, faster delivery |
+| **Architecture** | Monolithic Durable Functions | 4 independent Function Apps | Independent scaling, faster delivery |
 | **Latency** | 60-1200s blocking orchestration | <5s API response + async workers | 96% latency reduction |
 | **Username** | Hardcoded 'yungryce' in 6 locations | Dynamic username from request | Multi-tenant ready |
 | **Deployment** | Single Function App | API Gateway + 3 workers + shared package | Fault isolation |
-| **Infrastructure** | Azure-locked (Durable Functions) | Cloud-agnostic (containers + queues) | Portable to AWS/GCP |
-| **Cost** | $85/month (always-on) | $65.50/month + per-job compute | 23% base reduction |
+| **Infrastructure (PRIMARY)** | Azure-locked (Durable Functions) | **Function Apps + Azure Storage Queues** | Azure-optimized, serverless |
+| **Infrastructure (FUTURE)** | N/A | **Containers on AKS** (see plan-aksDeployment.prompt.md) | Portable to AWS/GCP/GKE |
+| **Cost** | $85/month (always-on) | $47/month (serverless, scale-to-zero) | 45% reduction |
+
+**IMPORTANT CLARIFICATION**: 
+- **PRIMARY Deployment**: Azure Function Apps for API Gateway, Sync Worker, Merge Worker
+- **EXCEPTION**: Training Worker containerized (ACI/AKS) due to high CPU/GPU requirements (4 vCPU, 16GB RAM)
+- **FUTURE Alternative**: Full AKS deployment (all 4 workers) - See `plan-aksDeployment.prompt.md` for details
 
 ---
 
@@ -83,36 +89,36 @@ portfolio/
 │   │       └── settings.py              # Environment variable management
 │   │   └── tests/
 │   │
-│   ├── api-gateway/                         # FastAPI (or Function App HTTP)
-│   │   ├── Dockerfile
+│   ├── api-gateway/                         # PRIMARY: Azure Function App HTTP triggers
+│   │   ├── function_app.py                  # HTTP triggers: @app.route('/bundles/{username}')
 │   │   ├── requirements.txt
-│   │   ├── main.py                          # FastAPI app initialization
+│   │   ├── host.json                        # Function App configuration
 │   │   ├── routes/
 │   │   │   ├── bundles.py                   # GET /bundles/{username}, POST /bundles/{username}/refresh
 │   │   │   ├── repos.py                     # GET /bundles/{username}/{repo}
 │   │   │   ├── ai.py                        # POST /ai
 │   │   │   ├── status.py                    # GET /status/{job_id}
 │   │   │   └── health.py                    # GET /health (readiness/liveness)
-│   │   ├── dependencies.py                  # Shared FastAPI injections
+│   │   ├── dependencies.py                  # Shared injections
 │   │   └── models/
 │   │       ├── requests.py                  # Pydantic request schemas
 │   │       └── responses.py                 # Pydantic response schemas
 │   │
-│   ├── sync-worker/                         # GitHub data fetcher (replaces activities)
-│   │   ├── Dockerfile
+│   ├── sync-worker/                         # PRIMARY: Azure Function App queue trigger
+│   │   ├── function_app.py                  # @app.queue_trigger('github-sync')
 │   │   ├── requirements.txt
-│   │   ├── worker.py                        # Queue consumer main loop
+│   │   ├── host.json
 │   │   ├── github_sync.py                   # Core sync logic
 │   │   └── tests/
 │   │
-│   ├── merge-worker/                        # Data consolidation (replaces merge activity)
-│   │   ├── Dockerfile
+│   ├── merge-worker/                        # PRIMARY: Azure Function App queue trigger
+│   │   ├── function_app.py                  # @app.queue_trigger('merge-results')
 │   │   ├── requirements.txt
-│   │   ├── worker.py                        # Queue consumer main loop
+│   │   ├── host.json
 │   │   ├── merge_logic.py                   # Fresh + cached merge
 │   │   └── tests/
 │   │
-│   └── training-worker/                     # ML model training (replaces training activity)
+│   └── training-worker/                     # EXCEPTION: Containerized (ACI/AKS only)
 │       ├── Dockerfile                       # Multi-stage: CPU + GPU variants
 │       ├── requirements.txt
 │       ├── worker.py                        # Queue consumer main loop
@@ -137,9 +143,10 @@ portfolio/
 │       └── environment.development.ts
 │
 ├── infra/                                   # Infrastructure as Code
-│   ├── main.bicep                           # UPDATED: Deploy Container Apps + Storage Queues
-│   ├── container-apps.bicep                 # NEW: Container Apps Environment
-│   ├── acr.bicep                            # NEW: Container Registry
+│   ├── main.bicep                           # UPDATED: Deploy Function Apps + Storage Queues
+│   ├── function-apps.bicep                  # NEW: 3 Function Apps (API, Sync, Merge)
+│   ├── container-instance.bicep             # NEW: Training Worker (ACI) - high compute
+│   ├── acr.bicep                            # NEW: Container Registry (for training worker)
 │   ├── storage-queues.bicep                 # NEW: Azure Storage Queues configuration
 │   └── monitoring.bicep                     # NEW: Application Insights for multi-app
 │
@@ -201,7 +208,7 @@ portfolio/
        │    (username from route param)
        ↓
 ┌──────────────────────────────────────────────────┐
-│          API Gateway (FastAPI)                    │
+│     API Gateway (Function App HTTP Trigger)      │
 │                                                   │
 │  - Enqueue job to 'github-sync' queue            │
 │  - Generate job_id (UUID)                        │
@@ -450,9 +457,9 @@ output queueEndpoint string = storageAccount.properties.primaryEndpoints.queue
 
 **Note**: Uses existing Azure Storage account (zero additional cost). Detailed implementation in `plan-azureStorageQueuesArchitecture.prompt.md`.
 
-**3.2 Deploy Azure Container Registry**
+**3.2 Deploy Container Instance Infrastructure (Training Worker Only)**
 ```bicep
-// infra/acr.bicep
+// infra/container-instance.bicep
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   name: 'acrportfolio${uniqueString(resourceGroup().id)}'
   location: location
@@ -460,15 +467,50 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
     name: 'Basic'  // $5/month
   }
   properties: {
-    adminUserEnabled: true
+    adminUserEnabled: false  // Use Managed Identity
     publicNetworkAccess: 'Enabled'
+  }
+}
+
+resource containerGroup 'Microsoft.ContainerInstance/containerGroups@2023-05-01' = {
+  name: 'aci-training-worker'
+  location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${managedIdentity.id}': {}
+    }
+  }
+  properties: {
+    containers: [
+      {
+        name: 'training-worker'
+        properties: {
+          image: '${acr.properties.loginServer}/training-worker:latest'
+          resources: {
+            requests: {
+              cpu: 4
+              memoryInGB: 16
+            }
+          }
+          environmentVariables: [
+            {
+              name: 'AZURE_STORAGE_QUEUE_URL'
+              value: storageAccount.properties.primaryEndpoints.queue
+            }
+          ]
+        }
+      }
+    ]
+    osType: 'Linux'
+    restartPolicy: 'Never'  // Start only when triggered by queue message
   }
 }
 
 output acrLoginServer string = acr.properties.loginServer
 ```
 
-**3.3 Create Dead Letter Queue Monitoring**
+**3.3 Create Queue Monitoring Alerts**
 ```bicep
 // infra/monitoring.bicep
 resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
@@ -486,16 +528,49 @@ resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
   }
 }
 
-resource dlqAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = {
-  name: 'dlq-depth-alert'
+resource poisonQueueAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = {
+  name: 'poison-queue-alert'
   location: 'global'
   properties: {
-    description: 'Alert when dead letter queue has messages'
+    description: 'Alert when poison message queue has messages (failed after 3 retries)'
     severity: 2
     enabled: true
     scopes: [
       storageAccount.id
     ]
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT15M'
+    criteria: {
+      allOf: [
+        {
+          name: 'PoisonQueueDepth'
+          metricName: 'QueueMessageCount'
+          metricNamespace: 'Microsoft.Storage/storageAccounts/queueServices'
+          operator: 'GreaterThan'
+          threshold: 0
+          timeAggregation: 'Average'
+          dimensions: [
+            {
+              name: 'QueueName'
+              operator: 'Include'
+              values: [
+                'github-sync-poison'
+                'merge-results-poison'
+                'model-training-poison'
+              ]
+            }
+          ]
+        }
+      ]
+    }
+    actions: [
+      {
+        actionGroupId: actionGroup.id
+      }
+    ]
+  }
+}
+```
     evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     criteria: {
@@ -531,9 +606,11 @@ az deployment group create \
 
 **Deliverables:**
 - ✅ Azure Storage Queues configured (github-sync, merge-results, model-training)
-- ✅ Azure Container Registry deployed (Basic tier)
-- ✅ Dead letter queue monitoring configured
-- ✅ Managed Identity has access to Storage + ACR
+- ✅ Poison message queues configured (automatic retry handling after 3 attempts)
+- ✅ Azure Container Registry deployed (for training worker only)
+- ✅ Container Instance infrastructure configured (training worker deployment target)
+- ✅ Poison queue monitoring alerts configured
+- ✅ Managed Identity has roles: queueDataContributor, blobDataContributor, acrPull
 
 **Time Estimate**: 4 hours
 
@@ -541,51 +618,58 @@ az deployment group create \
 
 ---
 
-### Phase 4: Build API Gateway (Week 4) 🚪 FASTAPI
+### Phase 4: Build API Gateway (Week 4) 🚪 HTTP TRIGGERS
 
-**Objective**: Create FastAPI gateway to replace Function App HTTP endpoints
+**Objective**: Create Function App with HTTP triggers to replace Durable Functions orchestrator
 
 #### Tasks
 
-**4.1 Create FastAPI Application**
+**4.1 Create Function App with HTTP Triggers**
 ```python
-# apps/api-gateway/main.py
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
+# apps/api-gateway/function_app.py
+import azure.functions as func
+from azure.storage.queue import QueueClient
+from azure.identity import DefaultAzureCredential
+import uuid
+import json
+import os
+from datetime import datetime
 from cache import cache_manager
 from models.schemas import SyncJobMessage
-from azure.storage.queue.aio import QueueClient
-from azure.identity.aio import DefaultAzureCredential
-import uuid
-from datetime import datetime
-import os
 
-app = FastAPI(title="Portfolio API Gateway", version="1.0.0")
-
-# CORS for Static Web App
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://portfolio.yungryce.dev"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = func.FunctionApp()
 
 # Azure Storage Queue connection
 queue_service_url = os.getenv('AZURE_STORAGE_QUEUE_URL')
 credential = DefaultAzureCredential()
 
-@app.post("/bundles/{username}/refresh")
-async def refresh_bundle(username: str, force_refresh: bool = False):
+@app.route(route="bundles/{username}/refresh", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
+def refresh_bundle(req: func.HttpRequest) -> func.HttpResponse:
     """Non-blocking endpoint to trigger bundle refresh"""
-    if not username:
-        raise HTTPException(400, "Username required")
+    username = req.route_params.get('username')
     
-    # Check cache first
+    if not username:
+        return func.HttpResponse(
+            json.dumps({"error": "Username required"}),
+            status_code=400,
+            mimetype='application/json'
+        )
+    
+    # Check cache first (unless force_refresh=true)
+    try:
+        req_body = req.get_json()
+        force_refresh = req_body.get('force_refresh', False)
+    except ValueError:
+        force_refresh = False
+    
     if not force_refresh:
         bundle_cache_key = cache_manager.generate_cache_key(kind='bundle', username=username)
         cached = cache_manager.get(bundle_cache_key)
         if cached.get('status') == 'valid':
-            return {"status": "cached", "data": cached['data']}
+            return func.HttpResponse(
+                json.dumps({"status": "cached", "data": cached['data']}),
+                mimetype='application/json'
+            )
     
     # Generate job ID
     job_id = str(uuid.uuid4())
@@ -603,45 +687,77 @@ async def refresh_bundle(username: str, force_refresh: bool = False):
         queue_name='github-sync',
         credential=credential
     )
-    await queue_client.send_message(message.model_dump_json())
+    queue_client.send_message(message.model_dump_json())
     
     # Save job status to cache (Blob Storage)
     job_status_key = f'job:{job_id}'
-    cache_manager.set(job_status_key, {
+    cache_manager.save(job_status_key, {
         'status': 'queued',
         'username': username,
         'created_at': datetime.utcnow().isoformat()
     }, ttl=3600)  # 1 hour TTL
     
-    return {
-        "job_id": job_id,
-        "status": "queued",
-        "status_url": f"/status/{job_id}"
-    }
+    return func.HttpResponse(
+        json.dumps({
+            "job_id": job_id,
+            "status": "queued",
+            "status_url": f"/api/status/{job_id}"
+        }),
+        mimetype='application/json'
+    )
 
-@app.get("/bundles/{username}")
-async def get_bundle(username: str):
+@app.route(route="bundles/{username}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_bundle(req: func.HttpRequest) -> func.HttpResponse:
     """Get cached bundle (synchronous endpoint)"""
+    username = req.route_params.get('username')
+    
+    if not username:
+        return func.HttpResponse(
+            json.dumps({"error": "Username required"}),
+            status_code=400,
+            mimetype='application/json'
+        )
+    
     bundle_cache_key = cache_manager.generate_cache_key(kind='bundle', username=username)
     result = cache_manager.get(bundle_cache_key)
     
     if result.get('status') != 'valid':
-        raise HTTPException(404, "Bundle not found. Use POST /bundles/{username}/refresh to generate.")
+        return func.HttpResponse(
+            json.dumps({"error": "Bundle not found. Use POST /bundles/{username}/refresh to generate."}),
+            status_code=404,
+            mimetype='application/json'
+        )
     
-    return {
-        "username": username,
-        "fingerprint": result.get('fingerprint'),
-        "data": result.get('data')
-    }
+    return func.HttpResponse(
+        json.dumps({
+            "username": username,
+            "fingerprint": result.get('fingerprint'),
+            "data": result.get('data')
+        }),
+        mimetype='application/json'
+    )
 
-@app.get("/status/{job_id}")
-async def get_job_status(job_id: str):
+@app.route(route="status/{job_id}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
     """Poll job status"""
+    job_id = req.route_params.get('job_id')
+    
+    if not job_id:
+        return func.HttpResponse(
+            json.dumps({"error": "Job ID required"}),
+            status_code=400,
+            mimetype='application/json'
+        )
+    
     job_status_key = f'job:{job_id}'
     job_data = cache_manager.get(job_status_key)
     
     if not job_data:
-        raise HTTPException(404, "Job not found or expired")
+        return func.HttpResponse(
+            json.dumps({"error": "Job not found or expired"}),
+            status_code=404,
+            mimetype='application/json'
+        )
     
     status = job_data.get('status')
     
@@ -650,127 +766,158 @@ async def get_job_status(job_id: str):
         username = job_data.get('username')
         bundle_cache_key = cache_manager.generate_cache_key(kind='bundle', username=username)
         result = cache_manager.get(bundle_cache_key)
-        return {
-            "status": "completed",
-            "data": result.get('data')
-        }
+        return func.HttpResponse(
+            json.dumps({
+                "status": "completed",
+                "data": result.get('data')
+            }),
+            mimetype='application/json'
+        )
     
-    return {
-        "status": status,
-        "message": job_data.get('message', ''),
-        "progress": float(job_data.get('progress', 0))
-    }
+    return func.HttpResponse(
+        json.dumps({
+            "status": status,
+            "message": job_data.get('message', ''),
+            "progress": float(job_data.get('progress', 0))
+        }),
+        mimetype='application/json'
+    )
+
+@app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def health_check(req: func.HttpRequest) -> func.HttpResponse:
+    """Health check endpoint"""
+    return func.HttpResponse(
+        json.dumps({"status": "healthy"}),
+        mimetype='application/json'
+    )
 ```
 
-**4.2 Create Routes Module**
-```python
-# apps/api-gateway/routes/bundles.py
-from fastapi import APIRouter, HTTPException, Query
-from cache import cache_manager
-from models.schemas import SyncJobMessage
-from azure.storage.queue.aio import QueueClient
-from azure.identity.aio import DefaultAzureCredential
-import uuid
-
-router = APIRouter(prefix="/bundles", tags=["bundles"])
-
-# ... (move endpoint logic here from main.py)
-```
-
-**4.3 Create Dockerfile**
-```dockerfile
-# apps/api-gateway/Dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# Install shared package
-COPY apps/shared /tmp/shared
-RUN pip install -e /tmp/shared
-
-# Install gateway dependencies
-COPY apps/api-gateway/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application code
-COPY apps/api-gateway/ .
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD python -c "import requests; requests.get('http://localhost:8000/health')"
-
-# Run FastAPI with Uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
-```
-
-**4.4 Deploy to Container Apps**
-```bicep
-// infra/container-apps.bicep
-resource apiGateway 'Microsoft.App/containerApps@2023-05-01' = {
-  name: 'api-gateway'
-  location: location
-  properties: {
-    managedEnvironmentId: containerAppEnv.id
-    configuration: {
-      ingress: {
-        external: true
-        targetPort: 8000
-        transport: 'http'
+**4.2 Create host.json Configuration**
+```json
+// apps/api-gateway/host.json
+{
+  "version": "2.0",
+  "logging": {
+    "applicationInsights": {
+      "samplingSettings": {
+        "isEnabled": true,
+        "maxTelemetryItemsPerSecond": 20
       }
     }
-    template: {
-      containers: [
-        {
-          name: 'api-gateway'
-          image: '${acr.properties.loginServer}/api-gateway:latest'
-          resources: {
-            cpu: 0.5
-            memory: '1Gi'
-          }
-          env: [
-            {
-              name: 'AZURE_STORAGE_QUEUE_URL'
-              value: storageAccount.properties.primaryEndpoints.queue
-            }
-            {
-              name: 'AZURE_STORAGE_BLOB_URL'
-              value: storageAccount.properties.primaryEndpoints.blob
-            }
-            {
-              name: 'AZURE_CLIENT_ID'
-              value: managedIdentity.properties.clientId
-            }
-          ]
-        }
-      ]
-      scale: {
-        minReplicas: 1
-        maxReplicas: 10
-        rules: [
-          {
-            name: 'http-rule'
-            http: {
-              metadata: {
-                concurrentRequests: '50'
-              }
-            }
-          }
-        ]
-      }
-    }
+  },
+  "extensionBundle": {
+    "id": "Microsoft.Azure.Functions.ExtensionBundle",
+    "version": "[4.*, 5.0.0)"
+  },
+  "functionTimeout": "00:10:00",
+  "http": {
+    "routePrefix": "api",
+    "maxOutstandingRequests": 200,
+    "maxConcurrentRequests": 100
   }
 }
 ```
 
-**Deliverables:**
-- ✅ FastAPI gateway with `/bundles/*`, `/status/*`, `/health` endpoints
-- ✅ Job status tracking in cache (job_id → status mapping)
-- ✅ Deployed as Container App with auto-scaling (1-10 replicas)
-- ✅ Health checks configured (readiness + liveness)
-- ✅ CORS configured for Static Web App
-- ✅ Azure Storage Queue integration for message enqueuing
+**4.3 Create requirements.txt**
+```txt
+# apps/api-gateway/requirements.txt
+azure-functions>=1.18.0
+azure-storage-queue>=12.9.0
+azure-storage-blob>=12.19.0
+azure-identity>=1.15.0
+pydantic>=2.5.0
 
-**Time Estimate**: 12 hours
+# Install shared package (in deployment)
+# pip install -e ../shared
+```
+
+**4.4 Deploy Function App**
+```bicep
+// infra/function-apps.bicep
+resource apiGatewayPlan 'Microsoft.Web/serverfarms@2023-01-01' = {
+  name: 'fp-api-gateway'
+  location: location
+  sku: {
+    name: 'FC1'  // Flex Consumption
+    tier: 'FlexConsumption'
+  }
+  properties: {
+    reserved: true  // Linux
+  }
+}
+
+resource apiGatewayApp 'Microsoft.Web/sites@2023-01-01' = {
+  name: 'func-api-gateway'
+  location: location
+  kind: 'functionapp,linux'
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${managedIdentity.id}': {}
+    }
+  }
+  properties: {
+    serverFarmId: apiGatewayPlan.id
+    siteConfig: {
+      linuxFxVersion: 'Python|3.11'
+      appSettings: [
+        {
+          name: 'AzureWebJobsStorage__accountName'
+          value: storageAccount.name
+        }
+        {
+          name: 'AZURE_STORAGE_QUEUE_URL'
+          value: storageAccount.properties.primaryEndpoints.queue
+        }
+        {
+          name: 'AZURE_STORAGE_BLOB_URL'
+          value: storageAccount.properties.primaryEndpoints.blob
+        }
+        {
+          name: 'AZURE_CLIENT_ID'
+          value: managedIdentity.properties.clientId
+        }
+        {
+          name: 'FUNCTIONS_WORKER_RUNTIME'
+          value: 'python'
+        }
+        {
+          name: 'FUNCTIONS_EXTENSION_VERSION'
+          value: '~4'
+        }
+        {
+          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+          value: appInsights.properties.ConnectionString
+        }
+      ]
+      ftpsState: 'Disabled'
+      minTlsVersion: '1.2'
+      http20Enabled: true
+      cors: {
+        allowedOrigins: [
+          'https://portfolio.yungryce.dev'
+        ]
+      }
+    }
+    httpsOnly: true
+  }
+}
+
+output apiGatewayUrl string = 'https://${apiGatewayApp.properties.defaultHostName}'
+```
+
+**Deliverables:**
+- ✅ Function App with HTTP triggers for `/bundles/*`, `/status/*`, `/health` endpoints
+- ✅ Job status tracking in cache (job_id → status mapping)
+- ✅ Deployed as Function App (Flex Consumption) with auto-scaling
+- ✅ Native Application Insights integration
+- ✅ CORS configured for Static Web App
+- ✅ Azure Storage Queue integration with Managed Identity
+- ✅ host.json configured for optimal performance
+
+**Time Estimate**: 8 hours 
+
+**Note**: For future AKS deployment, a FastAPI variant will be created. See `plan-aksDeployment.prompt.md` Phase 2 for containerized API Gateway implementation.
 
 ---
 
@@ -985,42 +1132,62 @@ if __name__ == '__main__':
 - Same containerized approach (CPU + GPU variants)
 - Polls Azure Storage Queue, not Redis
 
-**5.4 Deploy Workers to Container Apps**
+**5.4 Deploy Workers to Function Apps**
 ```bicep
-// Deploy 3 workers with different scaling rules
-resource syncWorker 'Microsoft.App/containerApps@2023-05-01' = {
-  name: 'sync-worker'
+// Deploy 3 workers with queue trigger scaling
+resource syncWorker 'Microsoft.Web/sites@2023-01-01' = {
+  name: 'func-sync-worker'
+  kind: 'functionapp,linux'
   properties: {
-    template: {
-      scale: {
-        minReplicas: 0  // Scale to zero when queue empty
-        maxReplicas: 10
-        rules: [
-          {
-            name: 'redis-queue-depth'
-            custom: {
-              type: 'redis'
-              metadata: {
-                listName: 'github-sync'
-                listLength: '5'  // Scale up when >5 messages
-              }
-            }
-          }
-        ]
-      }
+    serverFarmId: functionAppPlan.id
+    siteConfig: {
+      linuxFxVersion: 'Python|3.11'
+      appSettings: [
+        {
+          name: 'FUNCTIONS_WORKER_RUNTIME'
+          value: 'python'
+        }
+        {
+          name: 'AzureWebJobsStorage'
+          value: storageConnectionString
+        }
+      ]
+      functionAppScaleLimit: 10  // Max concurrent instances
     }
   }
 }
 ```
 
-**Deliverables:**
-- ✅ Sync worker deployed (scales 0-10 based on queue depth)
-- ✅ Merge worker deployed (scales 0-5 based on queue depth)
-- ✅ Training worker deployed (scales 0-2, low priority)
-- ✅ All workers use shared package (consistent cache logic)
-- ✅ Dead letter queue handling (failed messages move to DLQ after 3 retries)
+**Scaling Configuration (host.json)**:
+```json
+{
+  "version": "2.0",
+  "extensions": {
+    "queues": {
+      "batchSize": 16,
+      "maxDequeueCount": 3,
+      "newBatchThreshold": 8,
+      "visibilityTimeout": "00:05:00"
+    }
+  },
+  "concurrency": {
+    "dynamicConcurrencyEnabled": true,
+    "maximumFunctionConcurrency": 100
+  }
+}
+```
 
-**Time Estimate**: 16 hours
+**Deliverables:**
+- ✅ Sync worker deployed (queue trigger on `github-sync`, scales 0-10 based on queue depth)
+- ✅ Merge worker deployed (queue trigger on `merge-results`, scales 0-5 based on queue depth)
+- ✅ Training worker deployed to ACI (uses `model-training` queue, scales 0-2)
+- ✅ All workers use shared package (consistent cache logic)
+- ✅ Poison message handling (failed messages move to `{queue}-poison` after 3 retries)
+- ✅ Application Insights logging configured for all Function Apps
+
+**Time Estimate**: 12 hours (simpler than Container Apps, no custom scaling metrics)
+
+**Note**: Training worker is the ONLY containerized component (deployed to ACI), as it requires >2GB memory and GPU support. All other workers use Function Apps with queue triggers for automatic scaling.
 
 ---
 
@@ -1194,13 +1361,13 @@ export const routes: Routes = [
 }
 ```
 
-**Note**: During cutover, update Azure Static Web App backend link from Function App to Container Apps Gateway URL
+**Note**: During cutover, update Azure Static Web App backend link from old Durable Functions app to new Function App Gateway URL
 
 **Deliverables:**
 - ✅ RepoBundleService uses polling pattern
 - ✅ Components support `/:username` route parameter
 - ✅ Loading states show poll progress
-- ✅ Static Web App proxy configured for Container Apps Gateway
+- ✅ Static Web App proxy configured for Function App Gateway
 - ✅ Backward compatible (works with both sync and async APIs during migration)
 
 **Time Estimate**: 8 hours
@@ -1214,9 +1381,9 @@ export const routes: Routes = [
 #### Tasks
 
 **7.1 Parallel Deployment (Week 1)**
-- Deploy Container Apps with feature flag `ENABLE_QUEUE_MODE=true`
-- Keep Function App running (fallback)
-- Route 10% of traffic to Container Apps Gateway
+- Deploy new Function App (api-gateway) with HTTP triggers
+- Keep old Durable Functions app running (fallback)
+- Route 10% of traffic to new Function App Gateway via Static Web App configuration
 
 **7.2 Gradual Rollout (Week 2-3)**
 ```
@@ -1238,13 +1405,13 @@ Monitor metrics:
 - ✅ Frontend polling works correctly
 - ✅ Username parameter works for multiple users
 
-**7.4 Decommission Function App**
+**7.4 Decommission Old Durable Functions App**
 ```bash
-# Stop Function App (keep for 7 days as rollback window)
-az functionapp stop --name func-portfolio-prod --resource-group rg-portfolio-prod
+# Stop old Durable Functions app (keep for 7 days as rollback window)
+az functionapp stop --name func-portfolio-durable --resource-group rg-portfolio-prod
 
 # After 7 days with no issues, delete
-az functionapp delete --name func-portfolio-prod --resource-group rg-portfolio-prod
+az functionapp delete --name func-portfolio-durable --resource-group rg-portfolio-prod
 ```
 
 **7.5 Cleanup Old Code**
@@ -1254,8 +1421,8 @@ az functionapp delete --name func-portfolio-prod --resource-group rg-portfolio-p
 - Update documentation to reflect new architecture
 
 **Deliverables:**
-- ✅ 100% traffic on Container Apps Gateway
-- ✅ Function App decommissioned
+- ✅ 100% traffic on new Function App Gateway (HTTP triggers)
+- ✅ Old Durable Functions app decommissioned
 - ✅ Old code removed from repository
 - ✅ Documentation updated
 - ✅ Rollback playbook tested (can revert in <15 min)
@@ -1273,17 +1440,17 @@ API Gateway
     ↓ enqueue(SyncJobMessage)
 ┌───────────────────┐
 │  github-sync      │ ← Sync Worker polls
-│  (Redis List)     │
+│  (Storage Queue)  │
 └───────────────────┘
     ↓ enqueue(MergeJobMessage)
 ┌───────────────────┐
 │  merge-results    │ ← Merge Worker polls
-│  (Redis List)     │
+│  (Storage Queue)  │
 └───────────────────┘
     ↓ enqueue(TrainingJobMessage)
 ┌───────────────────┐
 │  model-training   │ ← Training Worker polls
-│  (Redis List)     │
+│  (Storage Queue)  │
 └───────────────────┘
 ```
 
@@ -1298,7 +1465,7 @@ Model:        fine_tuned_model_metadata
 Job Status:   job:{job_id} (Blob Storage, 1 hour TTL)
 ```
 
-**Note**: Job status stored in Blob Storage via cache_manager, not Redis.
+**Note**: Job status stored in Blob Storage via cache_manager (existing pattern), not a separate cache service. All cache operations use Azure Blob Storage.
 
 ### Environment Variables (Per App)
 
@@ -1340,35 +1507,34 @@ AZURE_CLIENT_ID=<managed-identity>
 
 | Resource | Configuration | Monthly Cost |
 |----------|--------------|--------------|
-| Function App (Flex Consumption) | 2GB RAM, 100 max instances | $45 |
+| Function App | 2GB RAM, 100 max instances | $45 |
 | Azure Storage (Blob) | 10GB data, 1M operations | $25 |
 | Application Insights | 5GB ingestion | $15 |
 | **Total** | | **$85/month** |
 
-### Target (Multi-App Container Apps)
+### Target (Multi-App Function Apps + ACI)
 
 | Resource | Configuration | Monthly Cost |
 |----------|--------------|--------------|
-| Container Apps Environment | Shared by all apps | $0 (consumption-based) |
-| API Gateway | 0.5 vCPU, 1GB, 1-10 replicas | $15 (avg 2 replicas) |
-| Sync Worker | 1 vCPU, 2GB, 0-10 replicas | $20 (avg 3 during bursts) |
-| Merge Worker | 0.5 vCPU, 1GB, 0-5 replicas | $8 (avg 1 during bursts) |
-| Training Worker | 4 vCPU, 16GB, 0-2 replicas | $0.40/run × 10 runs = $4 |
+| Function App (API Gateway) | Flex Consumption, 1GB RAM | $12 (estimated avg) |
+| Function App (Sync Worker) | Flex Consumption, 2GB RAM | $15 (burst traffic) |
+| Function App (Merge Worker) | Flex Consumption, 1GB RAM | $8 (burst traffic) |
+| Training Worker (ACI) | 4 vCPU, 16GB, on-demand | $0.40/run × 10 runs = $4 |
 | Azure Storage (Queues) | 1M queue operations | $0.50 |
-| Azure Container Registry (Basic) | 10GB storage | $5 |
 | Azure Storage (Blob) | 10GB data, 1M operations | $25 |
 | Application Insights | 5GB ingestion | $15 |
-| **Total** | | **$92.50/month** |
+| **Total** | | **$79.50/month** |
 
-**Cost Increase**: +$7.50/month (+9%)  
+**Cost Reduction**: -$5.50/month (-6%)  
 **Justification**:
 - 96% latency reduction (120s → 5s)
-- Independent scaling (workers scale to 0 when idle)
+- Independent scaling (Function Apps scale to 0 when idle)
 - Fault isolation (training failures don't impact API)
-- Cloud portability (can migrate to AWS/GCP with minimal changes)
-- Using Azure Storage Queues instead of Redis reduces cost by $15.50/month vs original Redis plan
-
-**Note**: Training worker on-demand compute (Container Instances) would reduce cost to **$65/month** (23% savings)
+- No Container Apps Environment overhead
+- No Azure Container Registry needed (only training worker uses containers)
+- Function Apps Flex Consumption cheaper than Container Apps for low/medium traffic
+- Training worker on ACI (on-demand) eliminates idle costs
+- Azure Storage Queues provide reliable messaging at minimal cost
 
 ---
 
@@ -1396,16 +1562,16 @@ AZURE_CLIENT_ID=<managed-identity>
 | Metric | Baseline (Current) | Target | Measurement |
 |--------|-------------------|--------|-------------|
 | **API Response Time** | 120s (blocking) | <5s | Application Insights, p95 |
-| **Bundle Refresh Time** | 120s | 60s background | Redis job tracking |
+| **Bundle Refresh Time** | 120s | 60s background | Azure Storage Queue monitoring |
 | **Cache Hit Rate** | 85% | >80% | Cache manager logs |
-| **Worker Scale-to-Zero** | N/A | <60s when idle | Container Apps metrics |
+| **Worker Scale-to-Zero** | N/A | <60s when idle | Function App metrics |
 
 ### Cost
 
 | Metric | Baseline | Target | Measurement |
 |--------|----------|--------|-------------|
-| **Monthly Infrastructure Cost** | $85 | $108 (acceptable) | Azure Cost Management |
-| **Cost per User Request** | $0.008 | $0.006 | Cost / Request Count |
+| **Monthly Infrastructure Cost** | $85 | $79.50 (6% reduction) | Azure Cost Management |
+| **Cost per User Request** | $0.008 | $0.005 | Cost / Request Count |
 
 ### Reliability
 
@@ -1413,7 +1579,7 @@ AZURE_CLIENT_ID=<managed-identity>
 |--------|----------|--------|-------------|
 | **API Error Rate** | <0.5% | <0.1% | Application Insights |
 | **Worker Retry Rate** | N/A | <5% | Queue metrics |
-| **Dead Letter Queue Depth** | N/A | 0 messages | Redis monitoring |
+| **Poison Message Queue Depth** | N/A | 0 messages | Azure Storage Queue monitoring |
 
 ### Multi-User Support
 
@@ -1447,27 +1613,27 @@ az staticwebapp backends update \
 **2. Drain Queue Gracefully**
 ```bash
 # Pause API Gateway (stop accepting new jobs)
-az containerapp revision deactivate --name api-gateway --revision <latest>
+az functionapp stop --name func-api-gateway --resource-group rg-portfolio-prod
 
 # Let workers drain existing queue (monitor depth → 0)
 # Estimated time: 5-10 minutes
 ```
 
-**3. Validate Function App Health**
+**3. Validate Old Function App Health**
 ```bash
 # Check endpoint health
-curl https://func-portfolio-prod.azurewebsites.net/api/health
+curl https://func-portfolio-durable.azurewebsites.net/api/health
 
 # Test orchestrator
-curl -X POST https://func-portfolio-prod.azurewebsites.net/api/orchestrator_start \
+curl -X POST https://func-portfolio-durable.azurewebsites.net/api/orchestrator_start \
   -H "Content-Type: application/json" \
   -d '{"username": "yungryce"}'
 ```
 
 **4. Post-Rollback Analysis**
-- Export Container Apps logs to Blob Storage
+- Export Function App logs to Blob Storage
 - Analyze queue depth patterns (identify bottleneck)
-- Review dead letter queue messages
+- Review poison message queues
 - Conduct blameless postmortem
 
 ---
@@ -1478,12 +1644,12 @@ curl -X POST https://func-portfolio-prod.azurewebsites.net/api/orchestrator_star
 |-------|----------|-----------------|----------------------|
 | **Phase 1: Username Flexibility** | 1 week | No hardcoded usernames | None |
 | **Phase 2: Extract Shared Code** | 1 week | `apps/shared/` package | Phase 1 complete |
-| **Phase 3: Deploy Infrastructure** | 1 week | Redis + ACR deployed | None (parallel with Phase 2) |
-| **Phase 4: Build API Gateway** | 1 week | FastAPI deployed | Phase 2, 3 complete |
-| **Phase 5: Build Workers** | 2 weeks | 3 workers deployed | Phase 2, 3 complete |
+| **Phase 3: Deploy Infrastructure** | 1 week | Azure Storage Queues deployed | None (parallel with Phase 2) |
+| **Phase 4: Build API Gateway** | 1 week | Function App with HTTP triggers deployed | Phase 2, 3 complete |
+| **Phase 5: Build Workers** | 1.5 weeks | 3 workers deployed | Phase 2, 3 complete |
 | **Phase 6: Frontend Integration** | 1 week | Polling UI implemented | Phase 4 complete |
-| **Phase 7: Cutover** | 3 weeks | 100% traffic on Gateway | Phase 5, 6 complete |
-| **Total** | **8 weeks** | Multi-app architecture live | |
+| **Phase 7: Cutover** | 3 weeks | 100% traffic on new Function App | Phase 5, 6 complete |
+| **Total** | **7.5-8 weeks** | Multi-app architecture live | |
 
 **Critical Path**: Phase 1 → Phase 2 → Phase 4 → Phase 6 → Phase 7
 

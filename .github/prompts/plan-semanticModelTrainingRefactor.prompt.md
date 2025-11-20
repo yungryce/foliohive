@@ -8,14 +8,23 @@
 
 ## Executive Summary
 
-Refactor semantic model training from synchronous Function App activity to independent containerized worker that can run on-demand with high compute resources (CPU/GPU). The worker will be deployable to both Azure Container Instances (for Function App environments) and AKS (for production), using the same Docker image.
+Refactor semantic model training from synchronous Function App activity to independent containerized worker that can run on-demand with high compute resources (CPU/GPU). 
+
+**IMPORTANT**: This is the **ONLY component** in the PRIMARY deployment that requires containerization due to high compute requirements (4 vCPU, 16GB RAM, optional GPU). All other workers (API Gateway, Sync Worker, Merge Worker) use Azure Function Apps.
+
+The training worker will be deployable to both Azure Container Instances (for Function App environments) and AKS (for production), using the same Docker image.
 
 ### Key Benefits
 - **Cost Reduction**: Zero idle cost (serverless containers vs always-on Function App)
-- **Compute Flexibility**: Request GPU instances only when needed for experiments
+- **Compute Flexibility**: Request GPU instances only when needed for experiments (exceeds Function App 2GB limit)
 - **Decoupling**: Training failures don't impact API availability
 - **Experiment-Friendly**: Easy to swap base models and hyperparameters
 - **Cloud-Agnostic**: Same container runs on Azure Container Instances or AKS
+
+### Deployment Context
+- **PRIMARY Deployment**: Azure Container Instances (ACI) for on-demand serverless execution
+- **Alternative**: AKS for spot instance cost savings (see `plan-aksDeployment.prompt.md`)
+- **Other Workers**: API Gateway, Sync Worker, Merge Worker remain as Function Apps (not containerized)
 
 ---
 

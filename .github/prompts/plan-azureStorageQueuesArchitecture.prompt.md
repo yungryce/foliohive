@@ -15,7 +15,9 @@ Migration from Durable Functions to Azure Storage Queues-based microservices arc
 - **Infrastructure Changes**: Zero (reuses existing storage account)
 - **Code Changes**: ~150 lines (native Azure Functions queue triggers)
 - **Expected Latency Reduction**: 120s → 5s (96% improvement)
+- **Primary Deployment**: Azure Function Apps with Queue Triggers (@app.queue_trigger)
 - **Training Worker**: Containerized (see `plan-semanticModelTrainingRefactor.prompt.md`)
+- **AKS Compatibility**: Same Azure Storage Queues work for future AKS migration (see `plan-aksDeployment.prompt.md`)
 
 ---
 
@@ -88,6 +90,7 @@ Azure Storage Queues selected for the following reasons:
   │ Sync      │  │ Merge    │      │ (queue: model-training)
   │ Worker    │  │ Worker   │      │
   │ (5-10×)   │  │ (2×)     │      │
+  │ PRIMARY:  │  │ PRIMARY: │      │
   │ Function  │  │ Function │      │
   │ App Queue │  │ App Queue│      │
   │ Trigger   │  │ Trigger  │      │
@@ -98,6 +101,14 @@ Azure Storage Queues selected for the following reasons:
           ┌───────────▼───────────┐ │
           │  Azure Blob Storage   │ │
           │  (Cache - Unchanged)  │ │
+          └───────────────────────┘ │
+                                    │
+                       ┌────────────▼───────────┐
+                       │ Training Worker        │
+                       │ EXCEPTION: Containerized│
+                       │ (ACI/AKS due to high   │
+                       │  compute: 4 vCPU, 16GB)│
+                       └────────────────────────┘
           └───────────────────────┘ │
                                     │
                     ┌───────────────▼────────────────┐
