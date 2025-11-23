@@ -36,7 +36,7 @@ Separate the current monolithic Angular application into two distinct Static Web
 
 **1. Mixed Concerns**
 - Portfolio components (`home.component`, `projects.component`, `project.component`) serve developer showcase
-- No recruiter-facing UI exists (API endpoints built but no frontend)
+- Assistant component (`assistant.component`) provides a recruiter-facing chat UI but currently uses a hardcoded default username ('yungryce') and should be parameterized to accept arbitrary usernames for recruiter workflows.
 - Same Angular app tries to serve two different personas (developer vs recruiter)
 
 **2. Hardcoded Username Limitation**
@@ -49,8 +49,8 @@ username = 'yungryce';  // CRITICAL: Same issue
 ```
 
 **3. No Recruiter Workflow**
-- No UI to input arbitrary GitHub usernames
-- No chat interface to query candidate skills (AI assistant exists but unused)
+- No UI to input arbitrary GitHub usernames; the repository includes an `assistant.component` chat UI, but it currently uses a hardcoded default ('yungryce') rather than accepting arbitrary usernames for recruiter use.
+- Chat interface exists in the repo (`assistant.component`) but needs adaptation for multi-user workflows and integration with session management.
 - No session management (can't track which candidates recruiter reviewed)
 - No multi-candidate comparison features
 
@@ -1410,6 +1410,228 @@ jobs:
 
 ---
 
+## Phase 6: Portfolio API Integration (Week 6) 🔗
+
+**Objective**: Update Angular Portfolio app to use queue-based API with polling
+
+**Scope**: This phase covers the Portfolio SWA (portfolio.yungryce.dev) only. The Cloudfolio UI app has its own integration work covered in Phases 2-5.
+
+### Context
+
+This phase aligns with `.github/prompts/plan-multiAppArchitecture.prompt.md` Phase 6, which migrates the backend from Durable Functions to a queue-based architecture with Function Apps. The Portfolio SWA needs to:
+1. Adopt the new polling pattern (POST to start job, GET to poll status)
+2. Handle async bundle builds with loading states
+3. Maintain backward compatibility during migration
+
+### Tasks
+
+**6.1 Update RepoBundleService**
+```typescript
+// portfolio/src/app/services/repo-bundle.service.ts
+import { Injectable, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable, throwError, of, timer } from 'rxjs';
+import { switchMap, map, catchError, filter, take, retry, tap } from 'rxjs/operators';
+import { ConfigService } from './config.service';
+
+interface JobStatus {
+  status: 'queued' | 'processing' | 'syncing' | 'completed' | 'failed';
+  message?: string;
+  progress?: number;
+  data?: any;
+}
+
+@Injectable({ providedIn: 'root' })
+export class RepoBundleService {
+  private http = inject(HttpClient);
+  private config = inject(ConfigService);
+  
+  private apiUrl = this.config.apiUrl;
+
+  /**
+   * Get user bundle (tries cache first, triggers refresh if needed)
+   */
+  getUserBundle(username: string, forceRefresh = false): Observable<any> {
+    if (!forceRefresh) {
+      // Try cache first
+      return this.http.get(`${this.apiUrl}/bundles/${username}`).pipe(
+        catchError(err => {
+          if (err.status === 404) {
+            // Cache miss, trigger refresh
+            return this.startRefreshAndPoll(username);
+          }
+          return throwError(() => err);
+        })
+      );
+    }
+    
+    return this.startRefreshAndPoll(username);
+  }
+
+  /**
+   * Start refresh job and poll until complete
+   */
+  private startRefreshAndPoll(username: string): Observable<any> {
+    return this.http.post<{ job_id: string }>(`${this.apiUrl}/bundles/${username}/refresh`, {}).pipe(
+      switchMap(({ job_id }) => this.pollJobStatus(job_id)),
+      map(status => status.data)
+    );
+  }
+
+  /**
+   * Poll job status until completed or failed
+   */
+  private pollJobStatus(jobId: string): Observable<JobStatus> {
+    return timer(0, 2000).pipe(  // Poll every 2 seconds
+      switchMap(() => this.http.get<JobStatus>(`${this.apiUrl}/status/${jobId}`)),
+      filter(status => status.status === 'completed' || status.status === 'failed'),
+      take(1),  // Stop after first completed/failed
+      retry({ count: 3, delay: 1000 })  // Retry on network errors
+    );
+  }
+
+  /**
+   * Get single repository bundle
+   */
+  getUserSingleRepoBundle(username: string, repo: string): Observable<any> {
+    return this.http.get(`${this.apiUrl}/bundles/${username}/${repo}`);
+  }
+}
+```
+
+**6.2 Update Components with Loading States**
+```typescript
+// portfolio/src/app/projects/projects.component.ts
+import { Component, OnInit, inject } from '@angular/core';
+import { RepoBundleService } from '../services/repo-bundle.service';
+import { tap, catchError } from 'rxjs/operators';
+import { of } from 'rxjs';
+
+@Component({
+  selector: 'app-projects',
+  templateUrl: './projects.component.html'
+})
+export class ProjectsComponent implements OnInit {
+  private repoService = inject(RepoBundleService);
+  
+  username = 'yungryce';  // Hardcoded for Portfolio SWA
+  loading = false;
+  loadingMessage = '';
+  repoBundle$ = of(null);
+
+  ngOnInit() {
+    this.loading = true;
+    this.loadingMessage = 'Loading repositories...';
+    
+    this.repoBundle$ = this.repoService.getUserBundle(this.username).pipe(
+      tap(() => {
+        this.loading = false;
+        this.loadingMessage = '';
+      }),
+      catchError(err => {
+        this.loading = false;
+        this.loadingMessage = 'Failed to load repositories';
+        console.error('Error loading bundle:', err);
+        return of(null);
+      })
+    );
+  }
+}
+```
+
+**6.3 Update Static Web App Proxy (Cutover)**
+```json
+// portfolio/staticwebapp.config.json
+{
+  "routes": [
+    {
+      "route": "/api/*",
+      "rewrite": "/api/*",
+      "allowedRoles": ["anonymous"]
+    }
+  ],
+  "navigationFallback": {
+    "rewrite": "/index.html"
+  },
+  "mimeTypes": {
+    ".json": "application/json"
+  },
+  "globalHeaders": {
+    "Cache-Control": "no-cache, no-store, must-revalidate"
+  },
+  "responseOverrides": {
+    "404": {
+      "rewrite": "/index.html"
+    }
+  }
+}
+```
+
+**Note**: During cutover, update Azure Static Web App backend link from old Durable Functions app to new Function App Gateway URL
+
+**Deliverables:**
+- ✅ RepoBundleService uses polling pattern
+- ✅ Components show loading states during async operations
+- ✅ Loading states show poll progress
+- ✅ Static Web App proxy configured for Function App Gateway
+- ✅ Backward compatible (works with both sync and async APIs during migration)
+- ✅ Username remains hardcoded to 'yungryce' (Portfolio-specific)
+
+**Time Estimate**: 8 hours
+
+---
+
+## Phase 7: Optional OAuth Enhancement (Deferred) 🔐
+
+**Objective**: Add optional Google OAuth for premium features (deferred to v2)
+
+### Features Unlocked by OAuth
+
+| Feature | Anonymous User | Authenticated User |
+|---------|----------------|-------------------|
+| Search candidates | ✅ | ✅ |
+| Chat with AI | ✅ | ✅ |
+| Recent searches | ✅ (localStorage only) | ✅ (cross-device sync) |
+| Favorite candidates | ✅ (localStorage only) | ✅ (cross-device sync) |
+| Chat history | ❌ (session only) | ✅ (7-day retention) |
+| Export reports | ❌ | ✅ (PDF download) |
+| Email notifications | ❌ | ✅ (profile updates) |
+| Usage limits | 10 searches/day (IP-based) | 100 searches/day |
+
+### Implementation (Deferred)
+
+```json
+// cloudfolio-ui/staticwebapp.config.json (when adding auth)
+{
+  "auth": {
+    "identityProviders": {
+      "google": {
+        "registration": {
+          "clientIdSettingName": "GOOGLE_CLIENT_ID",
+          "clientSecretSettingName": "GOOGLE_CLIENT_SECRET"
+        }
+      }
+    }
+  },
+  "routes": [
+    {
+      "route": "/api/export/*",
+      "allowedRoles": ["authenticated"]
+    },
+    {
+      "route": "/api/history/*",
+      "allowedRoles": ["authenticated"]
+    }
+  ]
+}
+```
+
+**Cost**: $0 (SWA built-in auth, no Azure AD B2C needed)
+
+**Time Estimate**: 12 hours (when needed)
+
+---
+
 ## Timeline Summary
 
 | Phase | Duration | Key Deliverable | Blocking Dependencies |
@@ -1419,10 +1641,13 @@ jobs:
 | **Phase 3: Chat Interface** | 1 week | AI chat with polling | Phase 2 complete |
 | **Phase 4: Analytics** | 1 week | Session tracking | Phase 2 complete |
 | **Phase 5: Deployment** | 1 week | Both SWAs live | Phase 1, 3, 4 complete |
-| **Phase 6: OAuth (Optional)** | Deferred | Premium features | User demand validated |
-| **Total** | **5 weeks** | Portfolio + Cloudfolio live | |
+| **Phase 6: Portfolio API Integration** | 1 week | Polling pattern adopted | Backend migration (multi-app plan Phase 4-5) |
+| **Phase 7: OAuth (Optional)** | Deferred | Premium features | User demand validated |
+| **Total** | **6 weeks** | Portfolio + Cloudfolio live | |
 
-**Critical Path**: Phase 1 → Phase 3 → Phase 5
+**Critical Path**: Phase 1 → Phase 3 → Phase 5 → Phase 6
+
+**Note**: Phase 6 depends on backend migration completion from `.github/prompts/plan-multiAppArchitecture.prompt.md`
 
 ---
 

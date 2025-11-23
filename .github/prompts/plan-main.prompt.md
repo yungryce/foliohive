@@ -1,3 +1,8 @@
+Guidelines
+- Always strive to reduce complexity 
+- Do not introduce technical debt unless absolutely necessary. Always strive to remove technical debt and not introduce new ones
+- When my query has a question mark, answer the question first 
+
 Project
 
 App user: Recruiter
@@ -65,7 +70,3 @@ A: No need for agents. Rule-based keyword extraction (languages.yml) achieves 90
 
 A: No. Real-time query processing (hybrid search) is better suited than batch ETL. Users expect <1s responses, not pre-computed results. 
 
-Guidelines
-- Always strive to reduce complexity 
-- Do not introduce technical debt unless absolutely necessary. Always strive to remove technical debt and not introduce new ones
-- When my query has a question mark, answer the question first 

@@ -14,7 +14,7 @@ Refactor the portfolio application from a single Azure Function App (with hardco
 
 | Aspect | Current State | Target State | Impact |
 |--------|---------------|--------------|--------|
-| **Architecture** | Monolithic Durable Functions | 4 independent Function Apps | Independent scaling, faster delivery |
+| **Architecture** | Monolithic Durable Functions | 4 independent Function Apps in App service plan | Independent scaling, faster delivery |
 | **Latency** | 60-1200s blocking orchestration | <5s API response + async workers | 96% latency reduction |
 | **Username** | Hardcoded 'yungryce' in 6 locations | Dynamic username from request | Multi-tenant ready |
 | **Deployment** | Single Function App | API Gateway + 3 workers + shared package | Fault isolation |
@@ -128,12 +128,13 @@ portfolio/
 │       │   └── model_registry.py            # Experiment configurations
 │       └── tests/
 │
-├── src/                                     # Angular Frontend (location unchanged)
+├── src/                                     # Angular Frontend (Portfolio SWA only)
 │   ├── app/
 │   │   ├── services/
 │   │   │   ├── config.service.ts            # UPDATED: Remove hardcoded username
 │   │   │   ├── repo-bundle.service.ts       # UPDATED: Add polling methods
-│   │   │   └── assistant.service.ts         # UPDATED: Dynamic username
+│   │   │   └── assistant.service.ts         # REMOVED: Moved to cloudfolio-ui/
+│   │   ├── assistant/                       # REMOVED: See plan-frontendSplit.prompt.md Phase 1
 │   │   └── projects/
 │   │       ├── projects.component.ts        # UPDATED: Get username from route
 │   │       └── project/
@@ -142,6 +143,15 @@ portfolio/
 │       ├── environment.ts                   # UPDATED: apiUrl points to Gateway
 │       └── environment.development.ts
 │
+│   # NOTE: Frontend split and detailed UI migration steps are covered in
+│   # `.github/prompts/plan-frontendSplit.prompt.md`. That plan:
+│   # - Documents removal of `assistant.component` from Portfolio (Phase 1)
+│   # - Creates new Cloudfolio UI app with multi-username search (Phase 2-3)
+│   # - Parameterizes hardcoded username 'yungryce' across both apps
+│   # - Defines routing: Portfolio SWA (portfolio.yungryce.dev) for developer
+│   #   showcase only; Cloudfolio UI (cloudfolio.app) for recruiter tool.
+│   # Update work here should remain consistent with Frontend Split plan.
+
 ├── infra/                                   # Infrastructure as Code
 │   ├── main.bicep                           # UPDATED: Deploy Function Apps + Storage Queues
 │   ├── function-apps.bicep                  # NEW: 3 Function Apps (API, Sync, Merge)
@@ -301,8 +311,8 @@ ngOnInit() {
 Files to update:
 - `src/app/projects/projects.component.ts:37` - Add route parameter
 - `src/app/projects/project/project.component.ts:37` - Add route parameter
-- `src/app/assistant/assistant.component.ts:21` - Add route parameter
-- `src/app/app.routes.ts` - Add `/:username` path segment to projects/assistant routes
+- `src/app/assistant/assistant.component.ts:21` - Add route parameter (NOTE: this component will be removed from Portfolio and moved to Cloudfolio UI per `.github/prompts/plan-frontendSplit.prompt.md` Phase 1; parameterization here is temporary during migration)
+- `src/app/app.routes.ts` - Add `/:username` path segment to projects/assistant routes (assistant route will be removed per frontend split plan Phase 1)
 
 **1.3 Testing**
 - Create test data for username 'testuser' (separate cache namespace)
@@ -570,30 +580,7 @@ resource poisonQueueAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = {
     ]
   }
 }
-```
-    evaluationFrequency: 'PT5M'
-    windowSize: 'PT5M'
-    criteria: {
-      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
-      allOf: [
-        {
-          name: 'DLQ Depth'
-          metricName: 'QueueMessageCount'
-          metricNamespace: 'Microsoft.Storage/storageAccounts/queueServices'
-          operator: 'GreaterThan'
-          threshold: 0
-          timeAggregation: 'Average'
-        }
-      ]
-    }
-    actions: [
-      {
-        actionGroupId: actionGroup.id
-      }
-    ]
-  }
-}
-```
+
 
 **3.4 Deploy Resources**
 ```bash
@@ -1193,184 +1180,23 @@ resource syncWorker 'Microsoft.Web/sites@2023-01-01' = {
 
 ### Phase 6: Frontend Integration (Week 7) 🖥️ ANGULAR
 
-**Objective**: Update Angular app to use queue-based API with polling
+**Objective**: Update Angular apps to use queue-based API with polling
 
-#### Tasks
+**IMPORTANT**: Frontend integration work has been moved to the appropriate plan:
+- **Portfolio SWA (portfolio.yungryce.dev)**: See `.github/prompts/plan-frontendSplit.prompt.md` Phase 6 for polling pattern implementation, loading states, and Static Web App proxy configuration
+- **Cloudfolio UI (cloudfolio.app)**: See `.github/prompts/plan-frontendSplit.prompt.md` Phases 2-5 for multi-username search, chat interface, session tracking, and deployment
 
-**6.1 Update RepoBundleService**
-```typescript
-// src/app/services/repo-bundle.service.ts
-import { Injectable, inject } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
-import { Observable, throwError, of, timer } from 'rxjs';
-import { switchMap, map, catchError, filter, take, retry, tap } from 'rxjs/operators';
-import { ConfigService } from './config.service';
+The frontend split plan provides comprehensive details for:
+- Updating `RepoBundleService` to use polling pattern (Phase 6)
+- Implementing loading states during async operations (Phase 6)
+- Configuring Static Web App proxy for Function App Gateway (Phase 6)
+- Building Cloudfolio UI components (Phases 2-3)
+- Session tracking and analytics (Phase 4)
+- Deployment of both SWAs (Phase 5)
 
-interface JobStatus {
-  status: 'queued' | 'processing' | 'syncing' | 'completed' | 'failed';
-  message?: string;
-  progress?: number;
-  data?: any;
-}
+**Dependencies**: This phase requires completion of backend migration (Phases 4-5: API Gateway and Worker Services deployed)
 
-@Injectable({ providedIn: 'root' })
-export class RepoBundleService {
-  private http = inject(HttpClient);
-  private config = inject(ConfigService);
-  
-  private apiUrl = this.config.apiUrl;
-
-  /**
-   * Get user bundle (tries cache first, triggers refresh if needed)
-   */
-  getUserBundle(username: string, forceRefresh = false): Observable<any> {
-    if (!forceRefresh) {
-      // Try cache first
-      return this.http.get(`${this.apiUrl}/bundles/${username}`).pipe(
-        catchError(err => {
-          if (err.status === 404) {
-            // Cache miss, trigger refresh
-            return this.startRefreshAndPoll(username);
-          }
-          return throwError(() => err);
-        })
-      );
-    }
-    
-    return this.startRefreshAndPoll(username);
-  }
-
-  /**
-   * Start refresh job and poll until complete
-   */
-  private startRefreshAndPoll(username: string): Observable<any> {
-    return this.http.post<{ job_id: string }>(`${this.apiUrl}/bundles/${username}/refresh`, {}).pipe(
-      switchMap(({ job_id }) => this.pollJobStatus(job_id)),
-      map(status => status.data)
-    );
-  }
-
-  /**
-   * Poll job status until completed or failed
-   */
-  private pollJobStatus(jobId: string): Observable<JobStatus> {
-    return timer(0, 2000).pipe(  // Poll every 2 seconds
-      switchMap(() => this.http.get<JobStatus>(`${this.apiUrl}/status/${jobId}`)),
-      filter(status => status.status === 'completed' || status.status === 'failed'),
-      take(1),  // Stop after first completed/failed
-      retry({ count: 3, delay: 1000 })  // Retry on network errors
-    );
-  }
-
-  /**
-   * Get single repository bundle
-   */
-  getUserSingleRepoBundle(username: string, repo: string): Observable<any> {
-    return this.http.get(`${this.apiUrl}/bundles/${username}/${repo}`);
-  }
-}
-```
-
-**6.2 Update Components with Route Parameters**
-```typescript
-// src/app/projects/projects.component.ts
-import { Component, OnInit, inject } from '@angular/core';
-import { ActivatedRoute } from '@angular/router';
-import { RepoBundleService } from '../services/repo-bundle.service';
-import { tap, catchError } from 'rxjs/operators';
-import { of } from 'rxjs';
-
-@Component({
-  selector: 'app-projects',
-  templateUrl: './projects.component.html'
-})
-export class ProjectsComponent implements OnInit {
-  private route = inject(ActivatedRoute);
-  private repoService = inject(RepoBundleService);
-  
-  username = 'yungryce';  // Default fallback
-  loading = false;
-  loadingMessage = '';
-  repoBundle$ = of(null);
-
-  ngOnInit() {
-    // Get username from route parameter (Phase 1)
-    this.username = this.route.snapshot.paramMap.get('username') || 'yungryce';
-    
-    this.loading = true;
-    this.loadingMessage = 'Loading repositories...';
-    
-    this.repoBundle$ = this.repoService.getUserBundle(this.username).pipe(
-      tap(() => {
-        this.loading = false;
-        this.loadingMessage = '';
-      }),
-      catchError(err => {
-        this.loading = false;
-        this.loadingMessage = 'Failed to load repositories';
-        console.error('Error loading bundle:', err);
-        return of(null);
-      })
-    );
-  }
-}
-```
-
-**6.3 Update Routes**
-```typescript
-// src/app/app.routes.ts
-export const routes: Routes = [
-  { path: '', component: HomeComponent },
-  
-  // Add username parameter (optional with default)
-  { path: 'projects', component: ProjectsComponent },  // Uses default 'yungryce'
-  { path: 'projects/:username', component: ProjectsComponent },
-  
-  { path: 'projects/:username/:repo', component: ProjectComponent },
-  
-  { path: 'assistant', component: AssistantComponent },
-  { path: 'assistant/:username', component: AssistantComponent },
-];
-```
-
-**6.4 Update Static Web App Proxy (Cutover)**
-```json
-// staticwebapp.config.json
-{
-  "routes": [
-    {
-      "route": "/api/*",
-      "rewrite": "/api/*",
-      "allowedRoles": ["anonymous"]
-    }
-  ],
-  "navigationFallback": {
-    "rewrite": "/index.html"
-  },
-  "mimeTypes": {
-    ".json": "application/json"
-  },
-  "globalHeaders": {
-    "Cache-Control": "no-cache, no-store, must-revalidate"
-  },
-  "responseOverrides": {
-    "404": {
-      "rewrite": "/index.html"
-    }
-  }
-}
-```
-
-**Note**: During cutover, update Azure Static Web App backend link from old Durable Functions app to new Function App Gateway URL
-
-**Deliverables:**
-- ✅ RepoBundleService uses polling pattern
-- ✅ Components support `/:username` route parameter
-- ✅ Loading states show poll progress
-- ✅ Static Web App proxy configured for Function App Gateway
-- ✅ Backward compatible (works with both sync and async APIs during migration)
-
-**Time Estimate**: 8 hours
+**Time Estimate**: See frontend split plan for detailed breakdown
 
 ---
 

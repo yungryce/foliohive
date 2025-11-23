@@ -773,122 +773,19 @@ async def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
 
 ## Frontend Integration (Parallel Work)
 
-### Update `repo-bundle.service.ts`
+- **Portfolio SWA (portfolio.yungryce.dev)**: See `.github/prompts/plan-frontendSplit.prompt.md` Phase 6 for comprehensive polling pattern implementation, including:
+  - Updated `RepoBundleService` with job polling logic
+  - Component updates with loading states and progress indicators
+  - Static Web App proxy configuration for queue-based API
 
-```typescript
-// src/app/services/repo-bundle.service.ts
+- **Cloudfolio UI (cloudfolio.app)**: See `.github/prompts/plan-frontendSplit.prompt.md` Phases 2-5 for multi-username search, chat interface, session tracking, and deployment.
 
-export interface RefreshResponse {
-  status: 'cached' | 'processing';
-  job_id?: string;
-  status_url?: string;
-  repos_queued?: number;
-  repos_count?: number;
-}
+The frontend split plan provides complete implementation details for adopting the queue-based API pattern with polling, progress tracking, and backward compatibility during migration.
 
-export interface JobStatus {
-  job_id: string;
-  username: string;
-  status: 'queued' | 'processing' | 'completed' | 'failed';
-  progress: {
-    total: number;
-    completed: number;
-    percentage: number;
-  };
-}
-
-refreshUserBundle(username: string): Observable<RefreshResponse> {
-  return this.http.post<RefreshResponse>(
-    `${this.apiUrl}/bundles/${username}/refresh`,
-    {}
-  );
-}
-
-pollJobStatus(username: string, jobId: string): Observable<JobStatus> {
-  return this.http.get<JobStatus>(
-    `${this.apiUrl}/bundles/${username}/status?job_id=${jobId}`
-  ).pipe(
-    // Poll every 2 seconds until completed
-    expand(status => {
-      if (status.status === 'completed') {
-        return EMPTY;
-      }
-      return timer(2000).pipe(
-        switchMap(() => this.http.get<JobStatus>(
-          `${this.apiUrl}/bundles/${username}/status?job_id=${jobId}`
-        ))
-      );
-    })
-  );
-}
-```
-
-### Update `projects.component.ts`
-
-```typescript
-// src/app/projects/projects.component.ts
-
-loadProjects(): void {
-  this.loading = true;
-  this.loadingMessage = 'Checking for updates...';
-  
-  // Try to get cached bundle first
-  this.repoBundleService.getUserBundle(this.username).subscribe({
-    next: (response) => {
-      if (response.data && response.data.length > 0) {
-        this.projects = response.data.map(toCardVM);
-        this.loading = false;
-      } else {
-        // No cache, trigger refresh
-        this.triggerRefresh();
-      }
-    },
-    error: (error) => {
-      if (error.status === 404) {
-        // No cache found, trigger refresh
-        this.triggerRefresh();
-      } else {
-        this.handleError(error);
-      }
-    }
-  });
-}
-
-triggerRefresh(): void {
-  this.loadingMessage = 'Syncing repositories...';
-  
-  this.repoBundleService.refreshUserBundle(this.username).subscribe({
-    next: (response) => {
-      if (response.status === 'cached') {
-        // Already cached, reload immediately
-        this.loadProjects();
-      } else if (response.status === 'processing' && response.job_id) {
-        // Poll for completion
-        this.pollRefreshStatus(response.job_id);
-      }
-    },
-    error: (error) => this.handleError(error)
-  });
-}
-
-pollRefreshStatus(jobId: string): void {
-  this.repoBundleService.pollJobStatus(this.username, jobId).subscribe({
-    next: (status) => {
-      // Update progress message
-      const pct = status.progress.percentage;
-      const completed = status.progress.completed;
-      const total = status.progress.total;
-      this.loadingMessage = `Syncing repositories... ${completed} of ${total} (${pct}%)`;
-      
-      if (status.status === 'completed') {
-        // Refresh complete, reload projects
-        this.loadProjects();
-      }
-    },
-    error: (error) => this.handleError(error)
-  });
-}
-```
+**Key Integration Points**:
+- POST `/api/bundles/{username}/refresh` → Returns `job_id`
+- GET `/api/bundles/{username}/status?job_id={id}` → Poll every 2 seconds
+- GET `/api/bundles/{username}` → Fetch cached bundle after completion
 
 ---
 
