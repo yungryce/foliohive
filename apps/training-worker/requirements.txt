@@ -1,0 +1,14 @@
+# Core ML libraries
+torch==2.2.2
+sentence-transformers==2.6.1
+transformers==4.38.0
+scikit-learn==1.4.0
+numpy==1.26.4
+
+# Azure SDKs
+azure-storage-queue==12.9.0
+azure-storage-blob==12.19.0
+azure-identity==1.15.0
+
+# Utilities
+tqdm==4.66.1

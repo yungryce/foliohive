@@ -1,16 +1,14 @@
 import logging
-import json
 import os
-import requests
-import time
-from typing import Dict, Any, List, Optional
-from .github_api import GitHubAPI
-from .fingerprint_manager import FingerprintManager
-from .cache_manager import cache_manager
-from fa_helpers import trim_processed_repo
+from typing import Any, Dict, List, Optional, Set
+
+from apps.shared.cache.cache_manager import cache_manager
+from apps.shared.github.github_api import GitHubAPI
 
 
 logger = logging.getLogger('portfolio.api')
+
+USERNAME_REQUIRED_ERROR = "Username is required"
 
 class GitHubRepoManager:
     def __init__(self, api: GitHubAPI, username: Optional[str] = None):
@@ -60,7 +58,7 @@ class GitHubRepoManager:
         """
         username = username or self.username
         if not username:
-            raise ValueError("Username is required")
+            raise ValueError(USERNAME_REQUIRED_ERROR)
         endpoint = f"users/{username}/repos"
         
         repos = self.api.make_request('GET', endpoint, params={'per_page': per_page})
@@ -86,7 +84,7 @@ class GitHubRepoManager:
             File content as a string, or None if not found.
         """
         if not username:
-            raise ValueError("Username is required")
+            raise ValueError(USERNAME_REQUIRED_ERROR)
         endpoint = f"repos/{username}/{repo}/contents/{path}"
         file_data = self.api.make_request('GET', endpoint)
         if isinstance(file_data, dict) and file_data.get('type') == 'file':
@@ -100,40 +98,27 @@ class GitHubRepoManager:
         """
         username = username or self.username
         if not username:
-            raise ValueError("Username is required")
+            raise ValueError(USERNAME_REQUIRED_ERROR)
 
-        def _fetch_tree(path: str = "") -> List[str]:
-            files: List[str] = []
-            try:
-                path_segment = path if path else ""
-                endpoint = f"repos/{username}/{repo_name}/contents/{path_segment}"
-                contents = self.api.make_request('GET', endpoint)
+        files: List[str] = []
+        paths_to_visit: List[str] = [""]
+        visited_dirs: Set[str] = set()
 
-                # If directory: contents is a list of items
-                if isinstance(contents, list):
-                    for item in contents:
-                        if not isinstance(item, dict):
-                            continue
-                        item_type = item.get('type')
-                        item_path = item.get('path')
-                        if item_type == 'file' and item_path:
-                            files.append(item_path)
-                        elif item_type == 'dir' and item_path and recursive:
-                            files.extend(_fetch_tree(item_path))
-                # If single file: contents is an object
-                elif isinstance(contents, dict) and contents.get('type') == 'file':
-                    file_path = contents.get('path')
-                    if file_path:
-                        files.append(file_path)
-            except Exception as e:
-                logger.warning(f"Error fetching tree for {repo_name} at '{path}': {str(e)}")
-            return files
+        while paths_to_visit:
+            current_path = paths_to_visit.pop()
+            contents = self._fetch_repo_contents(username, repo_name, current_path)
+            self._handle_contents(contents, files, recursive, paths_to_visit, visited_dirs)
 
-        return _fetch_tree("")
+        return files
 
     def get_all_file_types(self, repo_name: str, username: str = None) -> Dict[str, int]:
         """
         Recursively retrieve all file types/extensions in a repository.
+
+        This helper is primarily intended for analysis and scoring (for
+        example, feeding into FileTypeAnalyzer). Core data-retrieval flows
+        should prefer standard GitHub metadata (README, topics, languages)
+        rather than walking the full repository tree.
         """
         username = username or self.username
         file_types = {}
@@ -143,3 +128,58 @@ class GitHubRepoManager:
             if ext:
                 file_types[ext] = file_types.get(ext, 0) + 1
         return file_types
+
+    def _fetch_repo_contents(self, username: str, repo_name: str, path: str):
+        base_endpoint = f"repos/{username}/{repo_name}/contents"
+        endpoint = f"{base_endpoint}/{path}" if path else base_endpoint
+        try:
+            return self.api.make_request('GET', endpoint)
+        except Exception as error:
+            logger.warning("Error fetching tree for %s at '%s': %s", repo_name, path, error)
+            return None
+
+    def _handle_contents(
+        self,
+        contents: Any,
+        files: List[str],
+        recursive: bool,
+        paths_to_visit: List[str],
+        visited_dirs: Set[str],
+    ) -> None:
+        if contents is None:
+            return
+        if isinstance(contents, dict):
+            self._record_file(contents, files)
+            return
+        if not isinstance(contents, list):
+            return
+        for item in contents:
+            self._process_content_item(item, files, recursive, paths_to_visit, visited_dirs)
+
+    @staticmethod
+    def _record_file(item: Dict[str, Any], files: List[str]) -> None:
+        if item.get('type') == 'file':
+            file_path = item.get('path')
+            if file_path:
+                files.append(file_path)
+
+    def _process_content_item(
+        self,
+        item: Any,
+        files: List[str],
+        recursive: bool,
+        paths_to_visit: List[str],
+        visited_dirs: Set[str],
+    ) -> None:
+        if not isinstance(item, dict):
+            return
+        item_type = item.get('type')
+        if item_type == 'file':
+            self._record_file(item, files)
+            return
+        if not recursive or item_type != 'dir':
+            return
+        item_path = item.get('path')
+        if item_path and item_path not in visited_dirs:
+            paths_to_visit.append(item_path)
+            visited_dirs.add(item_path)

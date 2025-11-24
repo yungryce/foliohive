@@ -1,8 +1,9 @@
-import os
+import inspect
 import json
 import hashlib
 import logging
 import functools
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, Callable
 from azure.identity import DefaultAzureCredential
@@ -46,15 +47,20 @@ class CacheManager:
         self.default_ttl = default_ttl
         self.use_cache = use_cache
         self._initialized = False
+        self._init_failed = False
         self.blob_service_client = None
         # self._init_cache()
         
     def _ensure_initialized(self):
         """Ensure cache is initialized on first use."""
-        if self._initialized:
+        if self._initialized or self._init_failed:
             return
         self._init_cache()
-        self._initialized = True
+        # If blob_service_client is still None after init, mark as failed to avoid re-trying
+        if not self.blob_service_client:
+            self._init_failed = True
+        else:
+            self._initialized = True
         
     @staticmethod
     def generate_cache_key(*args, **kwargs):
@@ -71,6 +77,11 @@ class CacheManager:
             repo: Repository name (for repo bundles)
             fingerprint: Content fingerprint (for model bundles)
             
+        Note:
+            If no username is provided, this defaults to "yungryce" which
+            matches the primary portfolio account. Callers that operate in a
+            multi-tenant context should always pass an explicit username.
+            
         Returns:
             A cache key string appropriate for the bundle type
         """
@@ -86,57 +97,100 @@ class CacheManager:
             return f"model_{fingerprint}" if fingerprint else "fine_tuned_model_metadata"
         # default: user bundle
         return f"repos_bundle_context_{username}"
+
+    @staticmethod
+    def _bind_cache_arguments(signature: inspect.Signature, args: tuple, kwargs: dict, func_name: str) -> Optional[dict]:
+        """Bind positional/keyword args to argument names for cache key generation."""
+        try:
+            bound_args = signature.bind_partial(*args, **kwargs)
+        except TypeError:
+            logger.warning("Failed to bind cache arguments for %s", func_name)
+            return None
+
+        bound_arguments = dict(bound_args.arguments)
+        bound_arguments.pop('self', None)
+        bound_arguments.pop('cls', None)
+        return bound_arguments
+
+    @staticmethod
+    def _build_cache_key_resolver(cache_key_func: Callable) -> Callable[[dict], Optional[str]]:
+        """Create a helper callable that knows how to invoke cache_key_func safely."""
+        cache_sig = inspect.signature(cache_key_func)
+        accepts_kwargs = any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in cache_sig.parameters.values()
+        )
+        allowed_params = set(cache_sig.parameters.keys()) if not accepts_kwargs else None
+
+        def resolver(bound_arguments: dict) -> Optional[str]:
+            cache_kwargs = (
+                bound_arguments
+                if accepts_kwargs
+                else {k: v for k, v in bound_arguments.items() if k in allowed_params}
+            )
+            try:
+                return cache_key_func(**cache_kwargs)
+            except Exception as exc:
+                logger.warning("Cache key generation failed: %s", exc)
+                return None
+
+        return resolver
     
     def _init_cache(self) -> None:
-        """
-        Initialize Azure Blob Storage connection and create container if needed.
+        """Initialise the blob client, preferring Managed Identity when available."""
+        if not self.use_cache:
+            return
 
-        Prefers Managed Identity via service URI; falls back to connection string for local Durable Functions.
-        """
         blob_service_uri = (
-            os.getenv('BLOB_SERVICE_URI')  # preferred explicit URI
-            or os.getenv('AzureWebJobsStorage__blobServiceUri')  # host identity-based config
+            os.getenv('BLOB_SERVICE_URI')
+            or os.getenv('AzureWebJobsStorage__blobServiceUri')
         )
-        connection_string = os.getenv('AzureWebJobsStorage')  # local dev / fallback
+        connection_string = os.getenv('AzureWebJobsStorage')
 
-        # Try Managed Identity first (requires blob_service_uri)
-        if self.use_cache and blob_service_uri:
-            try:
-                # Exclude interactive for serverless; works with system/user-assigned MI or Env creds
-                credential = DefaultAzureCredential()
-                self.blob_service_client = BlobServiceClient(account_url=blob_service_uri, credential=credential)
-                logger.info("Initialized Azure Blob client using Managed Identity.")
-            except ClientAuthenticationError as auth_err:
-                logger.warning(f"Managed Identity auth failed, will try connection string fallback: {auth_err}")
-                self.blob_service_client = None
-            except HttpResponseError as http_err:
-                logger.warning(f"Managed Identity HTTP error, will try connection string fallback: {http_err}")
-                self.blob_service_client = None
-            except Exception as e:
-                logger.warning(f"Managed Identity initialization failed, will try connection string fallback: {e}")
-                self.blob_service_client = None
+        if blob_service_uri:
+            self.blob_service_client = self._create_managed_identity_client(blob_service_uri)
 
-        # Fallback to connection string (needed for local Durable Functions)
-        if (self.blob_service_client is None) and self.use_cache and connection_string:
-            try:
-                self.blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-                logger.info("Initialized Azure Blob client using connection string (fallback).")
-            except Exception as e:
-                logger.error(f"Connection string authentication failed: {e}")
-                self.blob_service_client = None
+        if self.blob_service_client is None and connection_string:
+            self.blob_service_client = self._create_connection_string_client(connection_string)
 
-        # Neither MI nor connection string available
         if self.blob_service_client is None:
             logger.warning("Azure Blob client not initialized (no valid credentials/URI). Caching disabled.")
             return
 
-        # Create container if client is available
+        self._ensure_container_exists()
+
+    @staticmethod
+    def _create_managed_identity_client(blob_service_uri: str) -> Optional[BlobServiceClient]:
+        try:
+            credential = DefaultAzureCredential()
+            client = BlobServiceClient(account_url=blob_service_uri, credential=credential)
+            logger.info("Initialized Azure Blob client using Managed Identity.")
+            return client
+        except (ClientAuthenticationError, HttpResponseError) as error:
+            logger.warning("Managed Identity authentication failed, falling back to connection string: %s", error)
+        except Exception as error:  # pragma: no cover - safety net
+            logger.warning("Managed Identity initialisation error: %s", error)
+        return None
+
+    @staticmethod
+    def _create_connection_string_client(connection_string: str) -> Optional[BlobServiceClient]:
+        try:
+            client = BlobServiceClient.from_connection_string(connection_string)
+            logger.info("Initialized Azure Blob client using connection string (fallback).")
+            return client
+        except Exception as error:  # pragma: no cover - safety net
+            logger.error("Connection string authentication failed: %s", error)
+        return None
+
+    def _ensure_container_exists(self) -> None:
+        if not self.blob_service_client:
+            return
         try:
             self.blob_service_client.create_container(self.container_name)
-            logger.info(f"Created cache container: {self.container_name}")
-        except Exception as e:
-            if "ContainerAlreadyExists" not in str(e):
-                logger.warning(f"Container creation issue: {e}")
+            logger.info("Created cache container: %s", self.container_name)
+        except Exception as error:
+            if "ContainerAlreadyExists" not in str(error):
+                logger.warning("Container creation issue: %s", error)
 
     def get(self, cache_key: str) -> Dict[str, Any]:
         """
@@ -305,24 +359,33 @@ class CacheManager:
         ```
         """
         def decorator(func):
+            signature = inspect.signature(func)
+            resolve_cache_key = self._build_cache_key_resolver(cache_key_func)
+
             @functools.wraps(func)
             def wrapper(*args, **kwargs):
+                if not self.use_cache:
+                    return func(*args, **kwargs)
 
-                # Generate cache key using only kwargs
-                cache_key = cache_key_func(**kwargs)
-                
-                # Check cache
+                bound_arguments = self._bind_cache_arguments(signature, args, kwargs, func.__name__)
+                if bound_arguments is None:
+                    return func(*args, **kwargs)
+
+                cache_key = resolve_cache_key(bound_arguments)
+                if not cache_key:
+                    return func(*args, **kwargs)
+
                 cache_result = self.get(cache_key)
-                if cache_result['status'] == 'valid':
-                    return cache_result['data']
-                
-                # Cache miss or expired, call the function
+                if cache_result.get('status') == 'valid':
+                    return cache_result.get('data')
+
                 result = func(*args, **kwargs)
-                
-                # Save result to cache
-                self.save(cache_key, result, ttl=ttl)
+
+                if cache_result.get('status') != 'disabled':
+                    self.save(cache_key, result, ttl=ttl)
 
                 return result
+
             return wrapper
         return decorator
 
@@ -419,46 +482,58 @@ class CacheManager:
         expired = 0
         deleted = 0
         errors = 0
-        
+
         for blob in blob_batch:
             try:
-                blob_client = self.blob_service_client.get_blob_client(
-                    container=self.container_name,
-                    blob=blob.name
-                )
-                
-                properties = blob_client.get_blob_properties()
-                metadata = properties.metadata or {}
-                
-                # Skip non-expiring cache entries
-                if metadata.get('no_expiry') == 'True':
-                    continue
-                
-                # Check if expired
-                if 'expires_at' in metadata:
-                    try:
-                        expires_at = datetime.fromisoformat(metadata['expires_at'])
-                    except Exception:
-                        expires_at = datetime.min.replace(tzinfo=timezone.utc)
-                    if expires_at <= current_time:
-                        expired += 1
-                        if not dry_run:
-                            blob_client.delete_blob()
-                            deleted += 1
-                else:
-                    # No expiration metadata: fallback on age > 30 days
-                    last_modified = properties.last_modified
-                    age_seconds = (current_time - last_modified).total_seconds()
-                    if age_seconds > 30 * 24 * 60 * 60:
-                        expired += 1
-                        if not dry_run:
-                            blob_client.delete_blob()
-                            deleted += 1
-            except Exception as e:
-                logger.warning(f"Error processing blob {blob.name} during cleanup: {str(e)}")
+                blob_expired, blob_deleted = self._evaluate_blob(blob, current_time, dry_run)
+                expired += blob_expired
+                deleted += blob_deleted
+            except Exception as error:
+                logger.warning("Error processing blob %s during cleanup: %s", blob.name, error)
                 errors += 1
-        
+
         return {'expired': expired, 'deleted': deleted, 'errors': errors}
+
+    def _evaluate_blob(self, blob, current_time, dry_run):
+        blob_client = self.blob_service_client.get_blob_client(
+            container=self.container_name,
+            blob=blob.name
+        )
+
+        properties = blob_client.get_blob_properties()
+        metadata = properties.metadata or {}
+
+        if metadata.get('no_expiry') == 'True':
+            return 0, 0
+
+        if 'expires_at' in metadata:
+            expires_at = self._parse_expiry(metadata['expires_at'])
+            if expires_at <= current_time:
+                if dry_run:
+                    return 1, 0
+                blob_client.delete_blob()
+                return 1, 1
+            return 0, 0
+
+        last_modified = properties.last_modified
+        age_seconds = (current_time - last_modified).total_seconds()
+        if age_seconds > 30 * 24 * 60 * 60:
+            if dry_run:
+                return 1, 0
+            blob_client.delete_blob()
+            return 1, 1
+
+        return 0, 0
+
+    @staticmethod
+    def _parse_expiry(expires_at: str) -> datetime:
+        try:
+            parsed = datetime.fromisoformat(expires_at)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except Exception:
+            return datetime.min.replace(tzinfo=timezone.utc)
 
     def get_cache_statistics(self) -> Dict[str, Any]:
         """
