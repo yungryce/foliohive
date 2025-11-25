@@ -42,14 +42,6 @@ class TestGitHubAPIInitialization:
         assert api.token is None
         assert api.headers == {}
         
-    def test_init_custom_username_fallback(self, monkeypatch):
-        """Test that username falls back to 'yungryce' when not provided."""
-        monkeypatch.delenv('GITHUB_TOKEN', raising=False)
-        
-        api = GitHubAPI()
-        
-        assert api.username == 'yungryce'
-
 
 class TestGitHubAPIMakeRequest:
     """Test GitHubAPI make_request method."""

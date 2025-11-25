@@ -344,16 +344,10 @@ class TestCacheManagerCacheKeyGeneration:
         key = CacheManager.generate_cache_key(kind='model')
         assert key == 'fine_tuned_model_metadata'
         
-    def test_generate_cache_key_default_username(self):
-        """Test that default username is used when not provided."""
-        key = CacheManager.generate_cache_key(kind='bundle')
-        assert 'yungryce' in key
-        
     def test_generate_cache_key_sanitizes_repo_name(self):
         """Test that repo names with special characters are sanitized."""
         key = CacheManager.generate_cache_key(kind='repo', username='testuser', repo='my/repo name')
         assert key == 'repo_level_bundle_testuser_my_repo_name'
-
 
 @pytest.mark.parametrize("kind,username,repo,expected_prefix", [
     ('bundle', 'user1', None, 'repos_bundle_context_'),

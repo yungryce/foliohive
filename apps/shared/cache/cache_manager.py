@@ -77,16 +77,11 @@ class CacheManager:
             repo: Repository name (for repo bundles)
             fingerprint: Content fingerprint (for model bundles)
             
-        Note:
-            If no username is provided, this defaults to "yungryce" which
-            matches the primary portfolio account. Callers that operate in a
-            multi-tenant context should always pass an explicit username.
-            
         Returns:
             A cache key string appropriate for the bundle type
         """
         kind = kwargs.get('kind') or kwargs.get('scope') or 'bundle'
-        username = kwargs.get('username') or 'yungryce'
+        username = kwargs.get('username')
         repo = kwargs.get('repo')
         fingerprint = kwargs.get('fingerprint')
 

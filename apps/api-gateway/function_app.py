@@ -383,7 +383,7 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
         logger.error("AI query failed: %s", exc, exc_info=True)
         return _create_error_response("Failed to process query", 500)
 
-
+# Old portfolio functions below this line will be deprecated in future releases.
 @app.route(route="surveys", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def list_survey_images(req: func.HttpRequest) -> func.HttpResponse:
     theme = (req.params.get('theme') or '').strip().lower()

@@ -18,7 +18,7 @@ class GitHubAPI:
                  base_url: str = DEFAULT_BASE_URL) -> None:
         """Initialise the client with optional token and username."""
         self.token = token or os.getenv('GITHUB_TOKEN')
-        self.username = username or 'yungryce'
+        self.username = username
         self.base_url = base_url.rstrip('/')
         self.headers = {'Authorization': f'token {self.token}'} if self.token else {}
 
