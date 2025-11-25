@@ -1,27 +1,44 @@
-from typing import Dict, Any, Union, List
-import yaml
-import re
+from typing import Dict, Any, Union, List, Optional
 import logging
+from importlib import resources
 
-logger = logging.getLogger('portfolio.api')
+import yaml
+
+logger = logging.getLogger(__name__)
 
 class FileTypeAnalyzer:
     """
     Analyzes and categorizes file types in a repository using linguist/languages.yml.
     """
-    def __init__(self, linguist_data_path: str = "linguist/languages.yml"):
-        with open(linguist_data_path, 'r') as f:
-            self.languages_data = yaml.safe_load(f)
+    def __init__(self, linguist_data_path: Optional[str] = None) -> None:
+        """Load linguist metadata once and cache extension lookups."""
+        self.languages_data = self._load_linguist_data(linguist_data_path)
+        self.extension_type_map = self._build_extension_type_map(self.languages_data)
+
+    @staticmethod
+    def _load_linguist_data(linguist_data_path: Optional[str]) -> Dict[str, Any]:
+        if linguist_data_path:
+            with open(linguist_data_path, 'r', encoding='utf-8') as handle:
+                return yaml.safe_load(handle)
+        with resources.open_text('apps.shared.linguist', 'languages.yml', encoding='utf-8') as handle:
+            return yaml.safe_load(handle)
+
+    @staticmethod
+    def _build_extension_type_map(languages_data: Dict[str, Any]) -> Dict[str, str]:
+        mapping: Dict[str, str] = {}
+        for lang_data in languages_data.values():
+            lang_type = lang_data.get('type', 'nil')
+            for ext in lang_data.get('extensions', []) or []:
+                normalized = ext.lower()
+                mapping[normalized] = lang_type
+                if normalized.startswith('.'):
+                    mapping[normalized.lstrip('.')] = lang_type
+        return mapping
 
     def categorize_file_type(self, extension: str) -> str:
-        # Use regex to ensure exact match for extension (with or without leading dot)
-        ext_pattern = re.compile(rf"^\.?{re.escape(extension.lstrip('.'))}$", re.IGNORECASE)
-        for lang_name, lang_data in self.languages_data.items():
-            if 'extensions' in lang_data:
-                for ext in lang_data['extensions']:
-                    if ext_pattern.match(ext):
-                        return lang_data.get('type', 'nil')
-        return 'nil'
+        normalized = extension.lower().lstrip('.')
+        dot_prefixed = f'.{normalized}'
+        return self.extension_type_map.get(dot_prefixed) or self.extension_type_map.get(normalized, 'nil')
 
     def analyze_repository_files(self, file_extensions: Dict[str, int]) -> Dict[str, int]:
         # Categorize extensions by type, using optimized extension matching

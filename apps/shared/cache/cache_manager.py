@@ -10,11 +10,11 @@ from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient, ContentSettings, generate_blob_sas, BlobSasPermissions
 from azure.core.exceptions import HttpResponseError, ClientAuthenticationError
 
-logger = logging.getLogger('portfolio.api')
+logger = logging.getLogger(__name__)
 
 class CacheManager:
     """
-    Centralized caching system for the Portfolio API.
+    Centralized caching system for GitHub-related data.
     
     This class provides a unified approach to managing caching across different levels:
     1. Low-Level Request Caching: Caches responses from external APIs (e.g., GitHub API)
@@ -84,6 +84,9 @@ class CacheManager:
         username = kwargs.get('username')
         repo = kwargs.get('repo')
         fingerprint = kwargs.get('fingerprint')
+
+        if kind != 'model' and not username:
+            raise ValueError("Username is required to generate cache key")
 
         if kind == 'repo' and repo:
             safe_repo = str(repo).replace('/', '_').replace(' ', '_')

@@ -344,6 +344,16 @@ class TestCacheManagerCacheKeyGeneration:
         key = CacheManager.generate_cache_key(kind='model')
         assert key == 'fine_tuned_model_metadata'
         
+    def test_generate_cache_key_bundle_requires_username(self):
+        """Ensure bundle keys raise when username is missing."""
+        with pytest.raises(ValueError):
+            CacheManager.generate_cache_key(kind='bundle')
+
+    def test_generate_cache_key_repo_requires_username(self):
+        """Ensure repo keys raise when username is missing."""
+        with pytest.raises(ValueError):
+            CacheManager.generate_cache_key(kind='repo', repo='sample')
+
     def test_generate_cache_key_sanitizes_repo_name(self):
         """Test that repo names with special characters are sanitized."""
         key = CacheManager.generate_cache_key(kind='repo', username='testuser', repo='my/repo name')

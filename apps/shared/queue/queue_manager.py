@@ -7,7 +7,7 @@ from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
 from azure.identity import DefaultAzureCredential
 from azure.storage.queue import QueueClient, QueueServiceClient
 
-logger = logging.getLogger('portfolio.api')
+logger = logging.getLogger(__name__)
 
 SYNC_QUEUE = "github-sync"
 MERGE_QUEUE = "merge-results"

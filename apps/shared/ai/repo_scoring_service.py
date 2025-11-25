@@ -1,12 +1,15 @@
-import logging
 import datetime
-from typing import Dict, List, Any
-from ai.type_analyzer import FileTypeAnalyzer
-from config.fine_tuning import SemanticModel
-import numpy as np
-from data_filter import extract_language_terms, technical_terms_structured
+import logging
+import re
+from typing import Dict, List, Any, Set
 
-logger = logging.getLogger('portfolio.api')
+import numpy as np
+
+from .data_filter import extract_language_terms, technical_terms_structured
+from .fine_tuning import SemanticModel
+from .type_analyzer import FileTypeAnalyzer
+
+logger = logging.getLogger(__name__)
 
 class RepoScoringService:
     """
@@ -19,6 +22,7 @@ class RepoScoringService:
         self.username = username
         self.file_type_analyzer = FileTypeAnalyzer()
         self.semantic_model = SemanticModel()
+        self.technical_terms = technical_terms_structured
         
     def score_repositories(self, query: str, repo_bundles: List[Dict]) -> List[Dict]:
         """
@@ -103,10 +107,16 @@ class RepoScoringService:
         context_score = float(self.score_context_similarity(query, repo_bundle))
         language_score = float(self.score_language_matches(query, repo_languages))
         type_score = float(self.file_type_analyzer.calculate_type_score(categorized))
+        skill_score = float(self.score_skill_signals(query, repo_bundle))
         
         # Aggregate total score
-        if language_score > 0:
-            total_score = float((context_score * 0.6) + (language_score * 0.25) + (type_score * 0.15))
+        if language_score > 0 or skill_score > 0:
+            total_score = float(
+                (context_score * 0.45)
+                + (language_score * 0.20)
+                + (type_score * 0.15)
+                + (skill_score * 0.20)
+            )
         else:
             total_score = float((context_score * 0.85) + (type_score * 0.15))
 
@@ -115,6 +125,7 @@ class RepoScoringService:
             "context_score": context_score,
             "language_score": language_score,
             "type_score": type_score,
+            "skill_score": skill_score,
             "total_relevance_score": total_score,
             "scoring_timestamp": datetime.datetime.now().isoformat()
         }
@@ -170,6 +181,58 @@ class RepoScoringService:
         logger.info(f"Language size score for query '{query}': {match_size}/{total_size} = {match_size / total_size if total_size > 0 else 0.0}")
         score = match_size / total_size
         return min(score, 1.0)
+
+    def score_skill_signals(self, query: str, repo_bundle: Dict[str, Any]) -> float:
+        """Score how well the repository demonstrates advanced skills from the query."""
+        skill_tokens = self._extract_skill_tokens(query)
+        if not skill_tokens:
+            return 0.0
+
+        manifest = repo_bundle.get("repoContext", {}).get("skill_manifest", {}) or {}
+        manifest_values: List[str] = []
+        for value in manifest.values():
+            if isinstance(value, list):
+                manifest_values.extend(str(item) for item in value)
+            elif isinstance(value, str):
+                manifest_values.append(value)
+
+        repo_corpus = " ".join(
+            filter(
+                None,
+                [
+                    repo_bundle.get("readme"),
+                    repo_bundle.get("skills_index"),
+                    repo_bundle.get("architecture"),
+                    " ".join(manifest_values),
+                ],
+            )
+        ).lower()
+
+        if not repo_corpus:
+            return 0.0
+
+        matches = sum(1 for token in skill_tokens if token in repo_corpus)
+        complexity_matches = sum(
+            1 for indicator in self.technical_terms.get("complexity_indicators", []) if indicator in repo_corpus
+        )
+
+        base_score = matches / len(skill_tokens)
+        complexity_bonus = min(complexity_matches / 10, 0.3)
+        return min(base_score + complexity_bonus, 1.0)
+
+    def _extract_skill_tokens(self, query: str) -> List[str]:
+        query_lower = query.lower()
+        tokens: Set[str] = set()
+
+        for term in self.technical_terms.get("advanced_skills", []):
+            if re.search(rf"\b{re.escape(term)}\b", query_lower):
+                tokens.add(term)
+
+        for term in self.technical_terms.get("domain", []):
+            if re.search(rf"\b{re.escape(term)}\b", query_lower):
+                tokens.add(term)
+
+        return list(tokens)
     
     
     def flatten_repo_context_to_natural_language(self, repo_bundle: Dict) -> str:

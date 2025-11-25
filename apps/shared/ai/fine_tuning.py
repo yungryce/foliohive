@@ -1,19 +1,22 @@
 from typing import Tuple, List, Dict, Any, Optional
-from config.cache_manager import cache_manager
-from config.fingerprint_manager import FingerprintManager
-from sentence_transformers import SentenceTransformer, InputExample, losses
-from torch.utils.data import DataLoader
-import logging
 import datetime
+import logging
 import os
+import re
+import shutil
 import tempfile
 import zipfile
-import shutil
+
 from azure.storage.blob import BlobServiceClient, ContentSettings
 import numpy as np
+from sentence_transformers import SentenceTransformer, InputExample, losses
 from sklearn.decomposition import PCA
+from torch.utils.data import DataLoader
 
-logger = logging.getLogger('portfolio.api')
+from ..cache.cache_manager import cache_manager
+from ..cache.fingerprint_manager import FingerprintManager
+
+logger = logging.getLogger(__name__)
 
 
 def keyword_overlap_score(query: str, context_str: str) -> float:
@@ -27,6 +30,8 @@ def keyword_overlap_score(query: str, context_str: str) -> float:
     if not query_tokens:
         return 0.0
     return len(overlap) / len(query_tokens)
+
+
 class SemanticModel:
     """
     A class to handle semantic scoring using a fine-tuned Sentence Transformer model.

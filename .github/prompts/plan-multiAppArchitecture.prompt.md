@@ -324,6 +324,7 @@ Files to update:
 - ✅ Username required in all API calls (fail fast if missing)
 - ✅ Frontend supports `/:username` route parameter
 - ✅ Cache keys scoped by username
+- 🔄 Progress Update (2025-11-25): Backend fallbacks removed in `apps/shared/github/github_api.py` and cache key generation now enforces usernames; updated shared unit tests to cover the multi-tenant requirement.
 
 **Time Estimate**: 6 hours
 

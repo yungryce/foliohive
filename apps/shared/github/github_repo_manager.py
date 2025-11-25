@@ -2,11 +2,11 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Set
 
-from apps.shared.cache.cache_manager import cache_manager
-from apps.shared.github.github_api import GitHubAPI
+from ..cache.cache_manager import cache_manager
+from .github_api import GitHubAPI
 
 
-logger = logging.getLogger('portfolio.api')
+logger = logging.getLogger(__name__)
 
 USERNAME_REQUIRED_ERROR = "Username is required"
 

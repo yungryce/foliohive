@@ -9,8 +9,10 @@ Tests GitHub API interactions:
 import pytest
 import base64
 import responses
-from unittest.mock import patch, Mock
 from apps.shared.github.github_api import GitHubAPI
+
+
+DEFAULT_USERNAME = 'testuser'
 
 
 class TestGitHubAPIInitialization:
@@ -18,29 +20,35 @@ class TestGitHubAPIInitialization:
 
     def test_init_with_token_and_username(self):
         """Test initialization with explicit token and username."""
-        api = GitHubAPI(token='test_token', username='testuser')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         
         assert api.token == 'test_token'
-        assert api.username == 'testuser'
+        assert api.username == DEFAULT_USERNAME
         assert 'Authorization' in api.headers
         assert api.headers['Authorization'] == 'token test_token'
         
     def test_init_with_env_vars(self, mock_env_vars):
-        """Test initialization using environment variables."""
-        api = GitHubAPI()
-        
+        """Test initialization using environment variables when no args provided."""
+        api = GitHubAPI(username=DEFAULT_USERNAME)
+
         assert api.token == 'test_github_token_123'
-        assert api.username == 'yungryce'
+        assert api.username == 'env-user'
         assert 'Authorization' in api.headers
-        
+
     def test_init_without_token(self, monkeypatch):
         """Test initialization without token (unauthenticated)."""
         monkeypatch.delenv('GITHUB_TOKEN', raising=False)
-        
-        api = GitHubAPI()
-        
+
+        api = GitHubAPI(username=DEFAULT_USERNAME)
+
         assert api.token is None
         assert api.headers == {}
+
+    def test_init_without_username_raises(self, monkeypatch):
+        """Ensure a username is required when none is configured."""
+        monkeypatch.delenv('GITHUB_USERNAME', raising=False)
+        with pytest.raises(ValueError):
+            GitHubAPI(token='test_token')
         
 
 class TestGitHubAPIMakeRequest:
@@ -56,7 +64,7 @@ class TestGitHubAPIMakeRequest:
             status=200
         )
         
-        api = GitHubAPI(token='test_token')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         result = api.make_request('GET', '/repos/testuser/test-repo')
         
         assert result['id'] == 123
@@ -73,7 +81,7 @@ class TestGitHubAPIMakeRequest:
             headers={'Content-Type': 'text/plain'}
         )
         
-        api = GitHubAPI(token='test_token')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         result = api.make_request(
             'GET',
             '/repos/testuser/test-repo/contents/README.md',
@@ -92,7 +100,7 @@ class TestGitHubAPIMakeRequest:
             status=200
         )
         
-        api = GitHubAPI(token='test_token')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         result = api.make_request(
             'GET',
             '/users/testuser/repos',
@@ -111,7 +119,7 @@ class TestGitHubAPIMakeRequest:
             status=200
         )
         
-        api = GitHubAPI(token='test_token')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         result = api.make_request(
             'GET',
             '/repos/testuser/test-repo',
@@ -134,7 +142,7 @@ class TestGitHubAPIMakeRequest:
             status=200
         )
         
-        api = GitHubAPI(token='test_token')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         result = api.make_request(
             'GET',
             '/repos/testuser/test-repo/readme',
@@ -157,7 +165,7 @@ class TestGitHubAPIMakeRequest:
             status=404
         )
         
-        api = GitHubAPI(token='test_token')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         result = api.make_request('GET', '/repos/testuser/nonexistent')
         
         assert result is None
@@ -172,7 +180,7 @@ class TestGitHubAPIMakeRequest:
             status=401
         )
         
-        api = GitHubAPI(token='invalid_token')
+        api = GitHubAPI(token='invalid_token', username=DEFAULT_USERNAME)
         
         with pytest.raises(Exception):
             api.make_request('GET', '/repos/testuser/test-repo')
@@ -187,7 +195,7 @@ class TestGitHubAPIMakeRequest:
             status=403
         )
         
-        api = GitHubAPI(token='test_token')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         
         with pytest.raises(Exception):
             api.make_request('GET', '/users/testuser')
@@ -202,7 +210,7 @@ class TestGitHubAPIMakeRequest:
             status=201
         )
         
-        api = GitHubAPI(token='test_token')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         result = api.make_request(
             'POST',
             '/repos/testuser/test-repo/issues',
@@ -222,7 +230,7 @@ class TestGitHubAPIMakeRequest:
             status=200
         )
         
-        api = GitHubAPI(token='test_token')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         
         # Both should work
         result1 = api.make_request('GET', '/users/testuser')
@@ -241,7 +249,7 @@ class TestGitHubAPIMakeRequest:
             status=200
         )
         
-        api = GitHubAPI(token='test_token')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         result = api.make_request('GET', '/users/testuser', timeout=60)
         
         assert result['login'] == 'testuser'
@@ -252,7 +260,7 @@ class TestGitHubAPIDecodeFileContent:
 
     def test_decode_file_content_success(self, mock_github_response_file):
         """Test successfully decoding base64 file content."""
-        api = GitHubAPI()
+        api = GitHubAPI(username=DEFAULT_USERNAME)
         
         decoded = api.decode_file_content(mock_github_response_file)
         
@@ -260,7 +268,7 @@ class TestGitHubAPIDecodeFileContent:
         
     def test_decode_file_content_empty(self):
         """Test decoding file with empty content."""
-        api = GitHubAPI()
+        api = GitHubAPI(username=DEFAULT_USERNAME)
         file_data = {'content': '', 'encoding': 'base64'}
         
         decoded = api.decode_file_content(file_data)
@@ -269,7 +277,7 @@ class TestGitHubAPIDecodeFileContent:
         
     def test_decode_file_content_missing_content(self):
         """Test decoding file without content field."""
-        api = GitHubAPI()
+        api = GitHubAPI(username=DEFAULT_USERNAME)
         file_data = {'name': 'test.txt', 'encoding': 'base64'}
         
         decoded = api.decode_file_content(file_data)
@@ -278,7 +286,7 @@ class TestGitHubAPIDecodeFileContent:
         
     def test_decode_file_content_invalid_base64(self):
         """Test handling of invalid base64 content."""
-        api = GitHubAPI()
+        api = GitHubAPI(username=DEFAULT_USERNAME)
         file_data = {
             'content': 'invalid!@#$%base64',
             'encoding': 'base64'
@@ -291,7 +299,7 @@ class TestGitHubAPIDecodeFileContent:
         
     def test_decode_file_content_unicode(self):
         """Test decoding file with unicode content."""
-        api = GitHubAPI()
+        api = GitHubAPI(username=DEFAULT_USERNAME)
         
         content = "Hello 世界 🌍"
         encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
@@ -303,7 +311,7 @@ class TestGitHubAPIDecodeFileContent:
         
     def test_decode_file_content_multiline(self):
         """Test decoding file with newlines (GitHub base64 format)."""
-        api = GitHubAPI()
+        api = GitHubAPI(username=DEFAULT_USERNAME)
         
         # GitHub returns base64 with newlines
         content = "Line 1\nLine 2\nLine 3"
@@ -334,7 +342,7 @@ class TestGitHubAPIIntegration:
             status=200
         )
         
-        api = GitHubAPI(username='testuser', token='test_token')
+        api = GitHubAPI(username=DEFAULT_USERNAME, token='test_token')
         repos = api.make_request('GET', f'/users/{api.username}/repos')
         
         assert len(repos) == 2
@@ -357,7 +365,7 @@ class TestGitHubAPIIntegration:
             status=200
         )
         
-        api = GitHubAPI(token='test_token')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         repo = api.make_request('GET', '/repos/testuser/test-repo')
         
         assert repo['id'] == 123
@@ -374,7 +382,7 @@ class TestGitHubAPIIntegration:
             status=200
         )
         
-        api = GitHubAPI(token='test_token')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         
         # Fetch README
         readme_data = api.make_request('GET', '/repos/testuser/test-repo/readme')
@@ -403,7 +411,7 @@ def test_make_request_status_code_handling(status_code, should_return_none):
             status=status_code
         )
         
-        api = GitHubAPI(token='test_token')
+        api = GitHubAPI(token='test_token', username=DEFAULT_USERNAME)
         
         if should_return_none:
             result = api.make_request('GET', '/test')

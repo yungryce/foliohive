@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 import requests
 
 
-logger = logging.getLogger('portfolio.api')
+logger = logging.getLogger(__name__)
 
 
 class GitHubAPI:
@@ -16,9 +16,12 @@ class GitHubAPI:
 
     def __init__(self, token: Optional[str] = None, username: Optional[str] = None,
                  base_url: str = DEFAULT_BASE_URL) -> None:
-        """Initialise the client with optional token and username."""
+        """Initialise the client and require an explicit GitHub username."""
         self.token = token or os.getenv('GITHUB_TOKEN')
-        self.username = username
+        resolved_username = username or os.getenv('GITHUB_USERNAME')
+        if not resolved_username:
+            raise ValueError("GitHub username is required")
+        self.username = resolved_username
         self.base_url = base_url.rstrip('/')
         self.headers = {'Authorization': f'token {self.token}'} if self.token else {}
 

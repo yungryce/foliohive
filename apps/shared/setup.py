@@ -4,6 +4,10 @@ setup(
     name="portfolio-shared",
     version="1.0.0",
     packages=find_packages(),
+    include_package_data=True,
+    package_data={
+        "apps.shared.linguist": ["languages.yml"],
+    },
     install_requires=[
         "azure-storage-blob>=12.19.0",
         "azure-identity>=1.15.0",

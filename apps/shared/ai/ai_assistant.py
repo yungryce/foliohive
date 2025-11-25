@@ -5,7 +5,7 @@ import time
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
 
-logger = logging.getLogger('portfolio.api')
+logger = logging.getLogger(__name__)
 
 class AIAssistant:
     """
@@ -15,9 +15,9 @@ class AIAssistant:
     # Increased limit for larger context window
     MAX_TOKENS = 32000  # Safe limit for llama-3.1-8b-instant (out of 131k)
 
-    def __init__(self, username: str = None):
+    def __init__(self, username: Optional[str] = None):
         """Initialize the AI Assistant with API credentials."""
-        logger.info(f"Initializing AI Assistant for user: {username}")
+        logger.info("Initializing AI Assistant for user: %s", username or "<unknown>")
         self.username = username
         self.groq_api_key = os.getenv("GROQ_API_KEY")
         self.openai_client = self._initialize_openai_client()
@@ -45,10 +45,11 @@ class AIAssistant:
             Dictionary with AI response and metadata
         """
         try:
-            logger.info(f"Processing AI response for query: {query[:100]}...")
+            logger.info("Processing AI response for query '%s'", query[:100])
             if not scored_repos:
+                target = self.username or "this candidate"
                 return {
-                    "response": f"No repositories found for {self.username}.",
+                    "response": f"No repositories found for {target}.",
                     "repositories_used": [],
                     "total_repositories": 0,
                     "query": query
@@ -228,21 +229,25 @@ class AIAssistant:
             "- If information is missing, state limitations briefly and proceed with best-available context.\n"
         )
 
+        candidate = self.username or "the candidate"
+
         # Use a single format operation with all parameters
         system_template = (
-            "You are an AI assistant that helps users understand Chigbu Joshua's portfolio projects.\n"
-            "These portfolio projects are returned from his github and have undergone processing to retrieve the most relevant "
-            "repositories based on the user's query.\n\n"
+            "You are an AI assistant that helps recruiters understand {candidate}'s GitHub portfolio projects.\n"
+            "These projects are retrieved dynamically for the requested username and have been pre-processed to surface repositories "
+            "most relevant to the user's query.\n\n"
             "{repositories_intro}"
-            f"Detailed context is provided for the primary repository, but be aware of all relevant repositories in your response.\n"
-            f"Provide a response to '{query}' using the following information.\n\n"
+            "Detailed context is provided for the primary repository, but be aware of all relevant repositories in your response.\n"
+            "Provide a response to '{query}' using the following information.\n\n"
             "PORTFOLIO REPOSITORY ANALYSIS:\n"
             "{context}\n\n"
             "{how_to_respond}\n"
             "{formatting}\n"
             "{what_to_respond}"
         ).format(
+            candidate=candidate,
             repositories_intro=repositories_intro,
+            query=query,
             context=context_str,
             how_to_respond=how_to_respond,
             formatting=formatting,
