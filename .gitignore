@@ -1,3 +1,4 @@
+# Terraform
 *.tfstate
 *.tfstate.backup
 .terraform/
@@ -6,7 +7,6 @@ crash.log
 override.tf
 override.tf.json
 *_override.tf
-
 *_override.tf.json
 .terraformrc
 terraform.rc
@@ -14,5 +14,50 @@ terraform.rc
 *.tfvars.local
 # .tfvars files that are not under version control
 *.tfvars
-portfolio
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node / Angular
+node_modules/
+dist/
+tmp/
+.angular/cache/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+*.local
+*.log
+
+# Azurite + local storage
+.azurite/
+__azurite_db_*.
+__blobstorage__/
+__queuestorage__/
+
+# Tooling
 .trunk/
+/.pytest_cache
+/.ruff_cache
+
+# Portfolio artifacts
+portfolio/

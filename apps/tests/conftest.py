@@ -1,35 +1,66 @@
-"""
-Shared fixtures for portfolio shared module tests.
-"""
-import pytest
+"""Global pytest fixtures and environment setup for all Cloudfolio apps."""
+
+from __future__ import annotations
+
 import os
-import tempfile
+import sys
 from datetime import datetime, timezone
-from unittest.mock import Mock, MagicMock, patch
-from typing import Dict, Any, List
+from pathlib import Path
+from typing import Any, Dict, List
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+APPS_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = APPS_DIR.parent
+for candidate in {str(REPO_ROOT), str(APPS_DIR)}:
+    if candidate not in sys.path:
+        sys.path.insert(0, candidate)
+
+AZURITE_CONNECTION_STRING = (
+    "DefaultEndpointsProtocol=http;"
+    "AccountName=devstoreaccount1;"
+    "AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;"
+    "BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+    "QueueEndpoint=http://127.0.0.1:10001/devstoreaccount1;"
+    "TableEndpoint=http://127.0.0.1:10002/devstoreaccount1;"
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def configure_test_environment() -> None:
+    os.environ.setdefault("AZURE_STORAGE_CONNECTION_STRING", AZURITE_CONNECTION_STRING)
+    os.environ.setdefault("AZURE_STORAGE_ACCOUNT_NAME", "devstoreaccount1")
+    os.environ.setdefault(
+        "AZURE_STORAGE_ACCOUNT_KEY",
+        "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==",
+    )
+    os.environ.setdefault("GITHUB_TOKEN", "test_github_token_123")
+    os.environ.setdefault("ENABLE_QUEUE_MODE", "true")
+    os.environ.setdefault("GROQ_API_KEY", "test_groq_api_key")
+    yield
+
+
+@pytest.fixture(autouse=True)
+def mock_default_credential():
+    with patch('azure.identity.DefaultAzureCredential'):
+        yield
 
 
 @pytest.fixture
 def mock_azure_blob_client():
-    """Mock Azure Blob Storage client."""
     with patch('azure.storage.blob.BlobServiceClient') as mock_client:
         mock_instance = MagicMock()
         mock_client.return_value = mock_instance
-        
-        # Mock container client
         mock_container = MagicMock()
         mock_instance.get_container_client.return_value = mock_container
-        
-        # Mock blob client
         mock_blob = MagicMock()
         mock_container.get_blob_client.return_value = mock_blob
-        
         yield mock_instance
 
 
 @pytest.fixture
 def mock_azure_credential():
-    """Mock Azure DefaultAzureCredential."""
     with patch('azure.identity.DefaultAzureCredential') as mock_cred:
         mock_instance = MagicMock()
         mock_cred.return_value = mock_instance
@@ -38,7 +69,6 @@ def mock_azure_credential():
 
 @pytest.fixture
 def sample_repo_metadata() -> Dict[str, Any]:
-    """Sample repository metadata for testing."""
     return {
         'id': 123456789,
         'name': 'test-repo',
@@ -52,13 +82,12 @@ def sample_repo_metadata() -> Dict[str, Any]:
         'language': 'Python',
         'stargazers_count': 10,
         'forks_count': 5,
-        'topics': ['python', 'testing']
+        'topics': ['python', 'testing'],
     }
 
 
 @pytest.fixture
 def sample_repos_bundle() -> List[Dict[str, Any]]:
-    """Sample repository bundle for testing."""
     return [
         {
             'name': 'repo-1',
@@ -66,7 +95,7 @@ def sample_repos_bundle() -> List[Dict[str, Any]]:
             'last_updated': '2025-01-01T12:00:00Z',
             'readme': '# Repo 1\n\nThis is a test repository.',
             'skills_index': 'Python, FastAPI, PostgreSQL',
-            'architecture': 'Microservices architecture using Docker'
+            'architecture': 'Microservices architecture using Docker',
         },
         {
             'name': 'repo-2',
@@ -74,7 +103,7 @@ def sample_repos_bundle() -> List[Dict[str, Any]]:
             'last_updated': '2025-01-02T12:00:00Z',
             'readme': '# Repo 2\n\nAnother test repository.',
             'skills_index': 'JavaScript, React, Node.js',
-            'architecture': 'Frontend SPA with REST API backend'
+            'architecture': 'Frontend SPA with REST API backend',
         },
         {
             'name': 'repo-3',
@@ -82,54 +111,51 @@ def sample_repos_bundle() -> List[Dict[str, Any]]:
             'last_updated': '2025-01-03T12:00:00Z',
             'readme': '',
             'skills_index': '',
-            'architecture': ''
-        }
+            'architecture': '',
+        },
     ]
 
 
 @pytest.fixture
 def sample_file_extensions() -> Dict[str, int]:
-    """Sample file extensions for type analysis."""
     return {
         '.py': 25,
         '.js': 10,
         '.json': 5,
         '.md': 3,
         '.yml': 2,
-        '.txt': 1
+        '.txt': 1,
     }
 
 
 @pytest.fixture
 def mock_github_response_success():
-    """Mock successful GitHub API response."""
     return {
         'id': 123456789,
         'name': 'test-repo',
         'full_name': 'testuser/test-repo',
         'description': 'A test repository',
         'stargazers_count': 10,
-        'language': 'Python'
+        'language': 'Python',
     }
 
 
 @pytest.fixture
 def mock_github_response_file():
-    """Mock GitHub API file content response."""
     import base64
+
     content = "# Test README\n\nThis is a test file."
     encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
     return {
         'name': 'README.md',
         'path': 'README.md',
         'content': encoded,
-        'encoding': 'base64'
+        'encoding': 'base64',
     }
 
 
 @pytest.fixture
-def temp_linguist_file(tmp_path):
-    """Create a temporary linguist languages.yml file for testing."""
+def temp_linguist_file(tmp_path: Path) -> str:
     linguist_content = """
 Python:
   type: programming
@@ -179,13 +205,12 @@ Text:
 
 @pytest.fixture
 def mock_env_vars(monkeypatch):
-    """Mock environment variables for testing."""
     env_vars = {
         'GITHUB_TOKEN': 'test_github_token_123',
         'GITHUB_USERNAME': 'env-user',
         'BLOB_SERVICE_URI': 'https://teststorage.blob.core.windows.net',
         'AzureWebJobsStorage': 'DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=test_key==',
-        'GROQ_API_KEY': 'test_groq_api_key'
+        'GROQ_API_KEY': 'test_groq_api_key',
     }
     for key, value in env_vars.items():
         monkeypatch.setenv(key, value)
@@ -194,5 +219,4 @@ def mock_env_vars(monkeypatch):
 
 @pytest.fixture
 def current_time():
-    """Fixed timestamp for testing."""
     return datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
