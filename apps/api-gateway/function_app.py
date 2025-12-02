@@ -12,26 +12,22 @@ import json
 import logging
 import mimetypes
 import os
-import sys
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import azure.functions as func
 
-# Ensure shared package is importable when running locally or in Functions
-ROOT_DIR = Path(__file__).resolve().parents[2]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
-
-from apps.shared.ai.ai_assistant import AIAssistant
-from apps.shared.ai.repo_scoring_service import RepoScoringService
-from apps.shared.cache.cache_manager import cache_manager
-from apps.shared.cache.fingerprint_manager import FingerprintManager
-from apps.shared.github.github_api import GitHubAPI
-from apps.shared.github.github_repo_manager import GitHubRepoManager
-from apps.shared.queue import queue_manager
+# Clean imports from installed cloudfolio-shared package
+from cloudfolio_shared import (
+    cache_manager,
+    FingerprintManager,
+    GitHubAPI,
+    GitHubRepoManager,
+    queue_manager,
+    AIAssistant,
+    RepoScoringService,
+)
 
 try:  # Azure SDK may be unavailable in local dev; ignore import failures gracefully
     from azure.core.exceptions import ResourceNotFoundError

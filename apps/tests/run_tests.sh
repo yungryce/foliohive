@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Central test runner for every Cloudfolio app
+# Requires: cloudfolio-shared installed via ../setup-dev.sh
 
 set -euo pipefail
 
@@ -23,6 +24,8 @@ show_help() {
     cat <<'EOF'
 Usage: ./tests/run_tests.sh [options] [path]
 
+Requires: Run ../setup-dev.sh first to install cloudfolio-shared
+
 Options:
   -h, --help            Show this help message
   -v, --verbose         Verbose pytest output (-vv)
@@ -36,10 +39,10 @@ Arguments:
   path                  Optional path to a specific test file or directory
 
 Examples:
-  ./tests/run_tests.sh                      # Run entire suite
-  ./tests/run_tests.sh shared/cache/tests   # Run cache tests
-  ./tests/run_tests.sh -m unit              # Fast unit tests only
-  ./tests/run_tests.sh -c -v                # Verbose with coverage
+  ./tests/run_tests.sh                                    # Run entire suite
+  ./tests/run_tests.sh shared/src/cloudfolio_shared/cache # Run cache tests
+  ./tests/run_tests.sh -m unit                            # Fast unit tests only
+  ./tests/run_tests.sh -c -v                              # Verbose with coverage
 EOF
 }
 
@@ -90,10 +93,18 @@ done
 
 pushd "$APPS_DIR" > /dev/null
 
-REQ_FILE="$SCRIPT_DIR/requirements.txt"
+# Check if cloudfolio-shared is installed
+if ! python -c "import cloudfolio_shared" >/dev/null 2>&1; then
+    echo -e "${RED}❌ cloudfolio-shared not installed.${NC}"
+    echo -e "${YELLOW}Run: ./setup-dev.sh --shared-only${NC}"
+    echo -e "${YELLOW}Then activate: source tests/.venv/bin/activate${NC}"
+    exit 1
+fi
+
+# Install test requirements if pytest is missing
 if ! python -c "import pytest" >/dev/null 2>&1; then
-    echo -e "${YELLOW}Installing test dependencies from ${REQ_FILE}${NC}"
-    python -m pip install -r "$REQ_FILE"
+    echo -e "${YELLOW}Installing test dependencies...${NC}"
+    pip install -r "$SCRIPT_DIR/requirements.txt"
 fi
 
 ensure_azurite() {
@@ -124,7 +135,7 @@ PYTEST_ARGS=("-c" "tests/pytest.ini")
 [[ -n "$TEST_PATH" ]] && PYTEST_ARGS+=("$TEST_PATH")
 
 if [[ "$COVERAGE_FLAG" == "true" ]]; then
-    PYTEST_ARGS+=("--cov=apps" "--cov-report=term-missing" "--cov-report=html")
+    PYTEST_ARGS+=("--cov=cloudfolio_shared" "--cov-report=term-missing" "--cov-report=html")
 fi
 
 echo -e "${GREEN}Running tests with: python -m pytest ${PYTEST_ARGS[*]}${NC}"

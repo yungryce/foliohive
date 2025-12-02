@@ -1,4 +1,6 @@
-from typing import Tuple, List, Dict, Any, Optional
+from __future__ import annotations
+
+from typing import Tuple, List, Dict, Any, Optional, TYPE_CHECKING
 import datetime
 import logging
 import os
@@ -9,12 +11,16 @@ import zipfile
 
 from azure.storage.blob import BlobServiceClient, ContentSettings
 import numpy as np
-from sentence_transformers import SentenceTransformer, InputExample, losses
 from sklearn.decomposition import PCA
-from torch.utils.data import DataLoader
 
 from ..cache.cache_manager import cache_manager
 from ..cache.fingerprint_manager import FingerprintManager
+
+# Heavy ML imports are deferred to avoid pulling torch/sentence-transformers
+# into function app environments that don't need them.
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer, InputExample, losses
+    from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +58,7 @@ class SemanticModel:
         """
         if self.model is None:
             try:
+                from sentence_transformers import SentenceTransformer
                 self.model = SentenceTransformer("all-MiniLM-L6-v2")
             except Exception as e:
                 logger.error(f"Failed to load base model: {e}", exc_info=True)
@@ -213,6 +220,7 @@ class SemanticModel:
         
         if os.path.exists(local_model_path):
             try:
+                from sentence_transformers import SentenceTransformer
                 logger.info(f"Found matching model in local disk cache: {fingerprint[:8]}")
                 self.model = SentenceTransformer(local_model_path)
                 # Fit whitening on current documented contexts
@@ -317,6 +325,7 @@ class SemanticModel:
                 local_model_path = os.path.join(local_cache_dir, f"model_{fingerprint}")
                 if os.path.exists(local_model_path):
                     try:
+                        from sentence_transformers import SentenceTransformer
                         logger.info(f"Loading model from local cache: {local_model_path}")
                         self.model = SentenceTransformer(local_model_path)
                         return True
@@ -334,6 +343,7 @@ class SemanticModel:
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                     zip_ref.extractall(model_dir)
                 
+                from sentence_transformers import SentenceTransformer
                 self.model = SentenceTransformer(model_dir)
 
                 if local_cache_dir and fingerprint:
@@ -434,6 +444,7 @@ class SemanticModel:
                 self._fit_embedding_whitener(corpus)
             else:
                 # Load the trained model into self.model for immediate use
+                from sentence_transformers import SentenceTransformer
                 self.model = SentenceTransformer(temp_model_path)
                 logger.info("Trained model loaded into memory for immediate use.")
                 
@@ -554,7 +565,9 @@ class SemanticModel:
                     random.seed(42)
                     pos_pairs = random.sample(pos_pairs, max_pairs)
                     logger.info(f"Sampled training pairs to {max_pairs} to reduce memory usage")
-                    
+                
+                from sentence_transformers import InputExample, losses
+                from torch.utils.data import DataLoader
                 train_examples = [InputExample(texts=[q, c]) for (q, c) in pos_pairs]
                 train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=batch_size)
                 train_loss = losses.MultipleNegativesRankingLoss(self.model)
@@ -565,7 +578,9 @@ class SemanticModel:
                     random.seed(42)
                     training_pairs = random.sample(training_pairs, max_pairs)
                     logger.info(f"Sampled training pairs to {max_pairs} to reduce memory usage")
-                    
+                
+                from sentence_transformers import InputExample, losses
+                from torch.utils.data import DataLoader
                 train_examples = [InputExample(texts=[q, c], label=y) for (q, c, y) in training_pairs]
                 train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=batch_size)
                 train_loss = losses.CosineSimilarityLoss(self.model)

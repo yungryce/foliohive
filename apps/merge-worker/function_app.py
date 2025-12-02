@@ -11,9 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 
 try:  # pragma: no cover - Azure Functions bindings are unavailable in tests
@@ -41,13 +39,8 @@ if TYPE_CHECKING:  # pragma: no cover - only for type checkers
 else:
     AzureQueueMessage = Any
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
-
-from apps.shared.cache.cache_manager import cache_manager
-from apps.shared.cache.fingerprint_manager import FingerprintManager
-from apps.shared.queue import queue_manager  # type: ignore
+# Clean imports from installed cloudfolio-shared package
+from cloudfolio_shared import cache_manager, FingerprintManager, queue_manager
 
 logger = logging.getLogger("portfolio.merge")
 logger.setLevel(logging.INFO)

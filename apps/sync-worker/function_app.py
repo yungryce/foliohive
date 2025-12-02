@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 try:
@@ -43,17 +41,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing helper
 else:
     AzureQueueMessage = Any
 
-
-ROOT_DIR = Path(__file__).resolve().parents[2]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
-
-from apps.shared.ai.type_analyzer import FileTypeAnalyzer
-from apps.shared.cache.cache_manager import cache_manager
-from apps.shared.cache.fingerprint_manager import FingerprintManager
-from apps.shared.github.github_api import GitHubAPI
-from apps.shared.github.github_repo_manager import GitHubRepoManager
-from apps.shared.queue import queue_manager  # type: ignore
+# Clean imports from installed cloudfolio-shared package
+from cloudfolio_shared import (
+    cache_manager,
+    FingerprintManager,
+    GitHubAPI,
+    GitHubRepoManager,
+    queue_manager,
+    FileTypeAnalyzer,
+)
 
 
 logger = logging.getLogger('portfolio.api')

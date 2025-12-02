@@ -3,20 +3,13 @@
 from __future__ import annotations
 
 import os
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-APPS_DIR = Path(__file__).resolve().parents[1]
-REPO_ROOT = APPS_DIR.parent
-for candidate in {str(REPO_ROOT), str(APPS_DIR)}:
-    if candidate not in sys.path:
-        sys.path.insert(0, candidate)
-
+# Azurite connection string for local testing
 AZURITE_CONNECTION_STRING = (
     "DefaultEndpointsProtocol=http;"
     "AccountName=devstoreaccount1;"

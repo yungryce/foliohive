@@ -9,7 +9,7 @@ Tests validation and serialization for:
 import pytest
 from datetime import datetime
 from pydantic import ValidationError
-from apps.shared.models.schemas import (
+from cloudfolio_shared.models.schemas import (
     SyncJobMessage,
     MergeJobMessage,
     TrainingJobMessage

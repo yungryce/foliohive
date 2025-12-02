@@ -1,0 +1,91 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloudfolio-shared"
+version = "1.0.0"
+description = "Shared modules for Cloudfolio microservices architecture"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+    { name = "yungryce", email = "yungryce@yahoo.com" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    # Azure Storage
+    "azure-storage-blob",
+    "azure-storage-queue",
+    "azure-identity",
+    "requests",
+    "pydantic",
+    # AI/ML core (lightweight, needed for shared module)
+    "numpy",
+    "openai",
+    "pyyaml",
+    "groq",
+    "scikit-learn",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "black",
+    "ruff",
+]
+
+ml = [
+    # CPU-only torch + ST, pinned as previously
+    "torch==2.2.2+cpu",
+    "sentence-transformers==2.6.1",
+    # Required to resolve the +cpu wheel
+    "torch @ https://download.pytorch.org/whl/cpu/torch-2.2.2%2Bcpu-cp311-cp311-linux_x86_64.whl",
+]
+
+[project.urls]
+Homepage = "https://github.com/yungryce/cloudfolio"
+Repository = "https://github.com/yungryce/cloudfolio"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["cloudfolio_shared*"]
+
+[tool.setuptools.package-data]
+"cloudfolio_shared.linguist" = ["languages.yml"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/cloudfolio_shared"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "unit: Unit tests (fast, no external deps)",
+    "integration: Integration tests (require Azurite)",
+    "slow: Slow tests (ML model loading, etc.)",
+]
+
+[tool.black]
+line-length = 120
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = false

@@ -2,13 +2,10 @@
 # The Python Worker is managed by the Azure Functions platform
 # Manually managing azure-functions-worker may cause unexpected issues
 
-azure-functions
--e ../shared
-azure-identity>=1.15.0
-azure-storage-blob>=12.19.0
-azure-storage-queue>=12.9.0
-requests>=2.31.0
-pydantic>=2.5.0
-torch>=2.2.2
-sentence-transformers>=2.6.1
-groq>=0.4.0
+azure-functions>=1.17.0
+
+# Shared package is installed in editable mode by setup-dev.sh:
+#   pip install -e ../shared
+# That install does NOT pull ML extras by default.
+
+# No torch / sentence-transformers here for local dev/test.

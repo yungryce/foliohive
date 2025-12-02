@@ -20,7 +20,7 @@ class FileTypeAnalyzer:
         if linguist_data_path:
             with open(linguist_data_path, 'r', encoding='utf-8') as handle:
                 return yaml.safe_load(handle)
-        with resources.open_text('apps.shared.linguist', 'languages.yml', encoding='utf-8') as handle:
+        with resources.open_text('cloudfolio_shared.linguist', 'languages.yml', encoding='utf-8') as handle:
             return yaml.safe_load(handle)
 
     @staticmethod

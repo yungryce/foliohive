@@ -12,7 +12,7 @@ import pytest
 import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, MagicMock, patch, call
-from apps.shared.cache.cache_manager import CacheManager
+from cloudfolio_shared.cache.cache_manager import CacheManager
 
 
 class TestCacheManagerInitialization:
@@ -39,8 +39,8 @@ class TestCacheManagerInitialization:
         assert cache.default_ttl == 3600
         assert cache.use_cache is False
         
-    @patch('apps.shared.cache.cache_manager.BlobServiceClient')
-    @patch('apps.shared.cache.cache_manager.DefaultAzureCredential')
+    @patch('cloudfolio_shared.cache.cache_manager.BlobServiceClient')
+    @patch('cloudfolio_shared.cache.cache_manager.DefaultAzureCredential')
     def test_init_cache_with_managed_identity(self, mock_credential, mock_blob_client, mock_env_vars):
         """Test cache initialization using Managed Identity."""
         cache = CacheManager()
@@ -50,11 +50,11 @@ class TestCacheManagerInitialization:
         mock_credential.assert_called_once()
         assert cache.blob_service_client is not None
         
-    @patch('apps.shared.cache.cache_manager.BlobServiceClient')
+    @patch('cloudfolio_shared.cache.cache_manager.BlobServiceClient')
     def test_init_cache_with_connection_string_fallback(self, mock_blob_client, mock_env_vars):
         """Test cache initialization falling back to connection string."""
         # Simulate MI failure
-        with patch('apps.shared.cache.cache_manager.DefaultAzureCredential', 
+        with patch('cloudfolio_shared.cache.cache_manager.DefaultAzureCredential', 
                    side_effect=Exception("MI not available")):
             cache = CacheManager()
             cache._init_cache()
@@ -69,7 +69,7 @@ class TestCacheManagerInitialization:
         
         assert cache.blob_service_client is None
         
-    @patch('apps.shared.cache.cache_manager.BlobServiceClient')
+    @patch('cloudfolio_shared.cache.cache_manager.BlobServiceClient')
     def test_init_cache_creates_container(self, mock_blob_client, mock_env_vars):
         """Test that container is created during initialization."""
         mock_instance = MagicMock()
@@ -84,7 +84,7 @@ class TestCacheManagerInitialization:
 class TestCacheManagerGet:
     """Test CacheManager get operations."""
 
-    @patch('apps.shared.cache.cache_manager.BlobServiceClient')
+    @patch('cloudfolio_shared.cache.cache_manager.BlobServiceClient')
     def test_get_valid_cache_entry(self, mock_blob_client, mock_env_vars):
         """Test retrieving a valid cache entry."""
         # Setup mock
@@ -117,7 +117,7 @@ class TestCacheManagerGet:
         assert result['data'] == {'test': 'value'}
         assert result['size_bytes'] == 1024
         
-    @patch('apps.shared.cache.cache_manager.BlobServiceClient')
+    @patch('cloudfolio_shared.cache.cache_manager.BlobServiceClient')
     def test_get_missing_cache_entry(self, mock_blob_client, mock_env_vars):
         """Test retrieving a non-existent cache entry."""
         mock_instance = MagicMock()
@@ -133,7 +133,7 @@ class TestCacheManagerGet:
         assert result['status'] == 'missing'
         assert result['data'] is None
         
-    @patch('apps.shared.cache.cache_manager.BlobServiceClient')
+    @patch('cloudfolio_shared.cache.cache_manager.BlobServiceClient')
     def test_get_expired_cache_entry(self, mock_blob_client, mock_env_vars):
         """Test retrieving an expired cache entry."""
         mock_instance = MagicMock()
@@ -166,7 +166,7 @@ class TestCacheManagerGet:
         assert result['status'] == 'disabled'
         assert result['data'] is None
         
-    @patch('apps.shared.cache.cache_manager.BlobServiceClient')
+    @patch('cloudfolio_shared.cache.cache_manager.BlobServiceClient')
     def test_get_with_fingerprint(self, mock_blob_client, mock_env_vars):
         """Test retrieving cache entry with fingerprint metadata."""
         mock_instance = MagicMock()
@@ -195,7 +195,7 @@ class TestCacheManagerGet:
 class TestCacheManagerSave:
     """Test CacheManager save operations."""
 
-    @patch('apps.shared.cache.cache_manager.BlobServiceClient')
+    @patch('cloudfolio_shared.cache.cache_manager.BlobServiceClient')
     def test_save_without_ttl(self, mock_blob_client, mock_env_vars):
         """Test saving data without TTL (no expiration)."""
         mock_instance = MagicMock()
@@ -216,7 +216,7 @@ class TestCacheManagerSave:
         metadata = call_args.kwargs['metadata']
         assert 'expires_at' not in metadata
         
-    @patch('apps.shared.cache.cache_manager.BlobServiceClient')
+    @patch('cloudfolio_shared.cache.cache_manager.BlobServiceClient')
     def test_save_with_ttl(self, mock_blob_client, mock_env_vars):
         """Test saving data with TTL."""
         mock_instance = MagicMock()
@@ -236,7 +236,7 @@ class TestCacheManagerSave:
         metadata = call_args.kwargs['metadata']
         assert 'expires_at' in metadata
         
-    @patch('apps.shared.cache.cache_manager.BlobServiceClient')
+    @patch('cloudfolio_shared.cache.cache_manager.BlobServiceClient')
     def test_save_with_fingerprint(self, mock_blob_client, mock_env_vars):
         """Test saving data with fingerprint."""
         mock_instance = MagicMock()
@@ -262,7 +262,7 @@ class TestCacheManagerSave:
         
         assert result is False
         
-    @patch('apps.shared.cache.cache_manager.BlobServiceClient')
+    @patch('cloudfolio_shared.cache.cache_manager.BlobServiceClient')
     def test_save_handles_errors(self, mock_blob_client, mock_env_vars):
         """Test that save handles errors gracefully."""
         mock_instance = MagicMock()
@@ -281,7 +281,7 @@ class TestCacheManagerSave:
 class TestCacheManagerDelete:
     """Test CacheManager delete operations."""
 
-    @patch('apps.shared.cache.cache_manager.BlobServiceClient')
+    @patch('cloudfolio_shared.cache.cache_manager.BlobServiceClient')
     def test_delete_existing_entry(self, mock_blob_client, mock_env_vars):
         """Test deleting an existing cache entry."""
         mock_instance = MagicMock()
@@ -297,7 +297,7 @@ class TestCacheManagerDelete:
         assert result is True
         mock_blob.delete_blob.assert_called_once()
         
-    @patch('apps.shared.cache.cache_manager.BlobServiceClient')
+    @patch('cloudfolio_shared.cache.cache_manager.BlobServiceClient')
     def test_delete_non_existing_entry(self, mock_blob_client, mock_env_vars):
         """Test deleting a non-existent entry returns True."""
         mock_instance = MagicMock()

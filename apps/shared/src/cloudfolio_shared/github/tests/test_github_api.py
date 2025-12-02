@@ -9,7 +9,7 @@ Tests GitHub API interactions:
 import pytest
 import base64
 import responses
-from apps.shared.github.github_api import GitHubAPI
+from cloudfolio_shared.github.github_api import GitHubAPI
 
 
 DEFAULT_USERNAME = 'testuser'

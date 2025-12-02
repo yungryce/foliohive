@@ -8,7 +8,7 @@ Tests file type categorization and scoring using linguist data:
 """
 import pytest
 import yaml
-from apps.shared.ai.type_analyzer import FileTypeAnalyzer
+from cloudfolio_shared.ai.type_analyzer import FileTypeAnalyzer
 
 
 class TestFileTypeAnalyzer:
