@@ -149,7 +149,7 @@ setup_function_app() {
     # Install shared package in editable mode
     log_info "Installing cloudfolio-shared in editable mode..."
     if [[ "$INSTALL_DEV" == true ]]; then
-        pip install -e "$SHARED_DIR[dev]"
+        pip install -e "$SHARED_DIR"[dev]
     else
         pip install -e "$SHARED_DIR"
     fi

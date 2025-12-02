@@ -359,16 +359,20 @@ class TestCacheManagerCacheKeyGeneration:
         key = CacheManager.generate_cache_key(kind='repo', username='testuser', repo='my/repo name')
         assert key == 'repo_level_bundle_testuser_my_repo_name'
 
-@pytest.mark.parametrize("kind,username,repo,expected_prefix", [
-    ('bundle', 'user1', None, 'repos_bundle_context_'),
-    ('repo', 'user2', 'test-repo', 'repo_level_bundle_'),
-    ('model', 'user3', None, 'model_'),
+@pytest.mark.parametrize("kind,username,repo,fingerprint,expected_prefix", [
+    ('bundle', 'user1', None, None, 'repos_bundle_context_'),
+    ('repo', 'user2', 'test-repo', None, 'repo_level_bundle_'),
+    ('model', None, None, 'abc123', 'model_'),
 ])
-def test_generate_cache_key_parametrized(kind, username, repo, expected_prefix):
+def test_generate_cache_key_parametrized(kind, username, repo, fingerprint, expected_prefix):
     """Parametrized test for cache key generation."""
-    kwargs = {'kind': kind, 'username': username}
+    kwargs = {'kind': kind}
+    if username:
+        kwargs['username'] = username
     if repo:
         kwargs['repo'] = repo
+    if fingerprint:
+        kwargs['fingerprint'] = fingerprint
     
     key = CacheManager.generate_cache_key(**kwargs)
     assert key.startswith(expected_prefix)

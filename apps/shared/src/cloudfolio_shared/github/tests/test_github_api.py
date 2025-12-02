@@ -29,7 +29,7 @@ class TestGitHubAPIInitialization:
         
     def test_init_with_env_vars(self, mock_env_vars):
         """Test initialization using environment variables when no args provided."""
-        api = GitHubAPI(username=DEFAULT_USERNAME)
+        api = GitHubAPI()
 
         assert api.token == 'test_github_token_123'
         assert api.username == 'env-user'
