@@ -1,6 +1,6 @@
 # Testing Guide: Cloudfolio Multi-App Architecture
 
-Complete guide for testing the Cloudfolio microservices using the new optimized packaging structure with isolated virtual environments, modern `pyproject.toml` packaging, and clean imports.
+Complete guide for testing the Cloudfolio microservices using a consolidated virtual environment, modern `pyproject.toml` packaging, and clean imports.
 
 ---
 
@@ -9,11 +9,11 @@ Complete guide for testing the Cloudfolio microservices using the new optimized 
 ```bash
 cd apps
 
-# One-time setup: creates isolated venvs for each app + shared package
+# One-time setup: creates consolidated venv with all dependencies
 ./setup-dev.sh
 
 # Run all tests
-source tests/.venv/bin/activate
+source .venv/bin/activate
 ./tests/run_tests.sh -m unit  # Fast unit tests
 ./tests/run_tests.sh          # All tests (requires Azurite)
 ```
@@ -22,51 +22,47 @@ source tests/.venv/bin/activate
 
 ## Architecture Overview
 
-### New Package Structure
+### Package Structure
 
 ```
 apps/
-├── setup-dev.sh                  # Setup script: creates all venvs
+├── setup-dev.sh                  # Setup script: creates consolidated venv
+├── .venv/                        # Single consolidated venv (all deps)
 ├── .gitignore                    # Ignores .venv/, __pycache__, etc.
 │
 ├── shared/
 │   ├── pyproject.toml            # Modern PEP 517/518 packaging (replaces setup.py)
 │   ├── README.md                 # Package documentation
-│   ├── src/
-│   │   └── cloudfolio_shared/    # Installable package
-│   │       ├── __init__.py       # Lazy-loading exports
-│   │       ├── ai/
-│   │       ├── cache/
-│   │       ├── github/
-│   │       ├── linguist/
-│   │       ├── models/
-│   │       └── queue/
-│   └── .venv/                    # Shared package venv (created by setup-dev.sh)
+│   └── src/
+│       └── cloudfolio_shared/    # Installable package
+│           ├── __init__.py       # Lazy-loading exports
+│           ├── ai/
+│           ├── cache/
+│           ├── github/
+│           ├── linguist/
+│           ├── models/
+│           └── queue/
 │
 ├── api-gateway/
 │   ├── function_app.py           # Clean: from cloudfolio_shared import ...
-│   ├── requirements.txt          # Only azure-functions + heavy ML deps
-│   ├── tests/
-│   └── .venv/                    # Function app venv (created by setup-dev.sh)
+│   ├── requirements.txt          # App-specific requirements
+│   └── tests/
 │
 ├── sync-worker/
 │   ├── function_app.py
 │   ├── requirements.txt
-│   ├── tests/
-│   └── .venv/
+│   └── tests/
 │
 ├── merge-worker/
 │   ├── function_app.py
 │   ├── requirements.txt
-│   ├── tests/
-│   └── .venv/
+│   └── tests/
 │
 └── tests/
     ├── conftest.py               # Global fixtures, Azurite setup
     ├── pytest.ini                # Updated test discovery paths
     ├── requirements.txt          # Test-only dependencies
     ├── run_tests.sh              # Central test runner
-    ├── .venv/                    # Tests venv (created by setup-dev.sh)
     └── integration/
         └── test_e2e_flow.py
 ```
@@ -76,6 +72,7 @@ apps/
 | Aspect | Before | After |
 |--------|--------|-------|
 | **Packaging** | `setup.py` in root | `pyproject.toml` in `apps/shared/` |
+| **Virtual envs** | Per-app `.venv` in each folder | Single consolidated `apps/.venv` |
 | **Import paths** | `sys.path.append()` + `from apps.shared...` | Clean `from cloudfolio_shared import ...` |
 | **Module location** | `apps/shared/ai/`, `apps/shared/cache/` | `apps/shared/src/cloudfolio_shared/ai/` |
 | **Local dev setup** | Manual venv creation | `./setup-dev.sh` (one command) |
@@ -102,25 +99,17 @@ cd /home/juk/DEV/cloudfolio/apps
 
 ### What `setup-dev.sh` Does
 
-1. **Shared package**: Creates `.venv` in `apps/shared/` and installs `cloudfolio-shared[dev]` in editable mode
-2. **Function apps**: Creates `.venv` in each app directory (`api-gateway`, `sync-worker`, `merge-worker`)
-   - Installs `cloudfolio-shared` (via editable install from shared)
-   - Installs app-specific requirements
-3. **Tests**: Creates `.venv` in `apps/tests/`
-   - Installs `cloudfolio-shared[dev]`
-   - Installs test dependencies
+1. **Creates consolidated venv**: Single `.venv` in `apps/` containing all dependencies
+2. **Installs shared package**: Installs `cloudfolio-shared[dev]` in editable mode
+3. **Installs function app requirements**: Sequentially installs requirements from each app
+4. **Installs test dependencies**: Installs test-specific requirements
 
-### Activate Specific Environment
+### Activate Environment
 
 ```bash
-# For shared package development
-source apps/shared/.venv/bin/activate
-
-# For function app development
-source apps/api-gateway/.venv/bin/activate
-
-# For running tests
-source apps/tests/.venv/bin/activate
+# Single consolidated environment for all development
+cd apps
+source .venv/bin/activate
 ```
 
 ---
@@ -133,7 +122,7 @@ The `apps/tests/run_tests.sh` script provides unified test execution for all com
 
 ```bash
 # From any directory
-cd apps && source tests/.venv/bin/activate
+cd apps && source .venv/bin/activate
 
 # Run entire suite
 ./tests/run_tests.sh

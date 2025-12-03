@@ -7,6 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APPS_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$APPS_DIR")"
+VENV_DIR="$APPS_DIR/.venv"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -96,8 +97,8 @@ pushd "$APPS_DIR" > /dev/null
 # Check if cloudfolio-shared is installed
 if ! python -c "import cloudfolio_shared" >/dev/null 2>&1; then
     echo -e "${RED}❌ cloudfolio-shared not installed.${NC}"
-    echo -e "${YELLOW}Run: ./setup-dev.sh --shared-only${NC}"
-    echo -e "${YELLOW}Then activate: source tests/.venv/bin/activate${NC}"
+    echo -e "${YELLOW}Run: ./setup-dev.sh${NC}"
+    echo -e "${YELLOW}Then activate: source .venv/bin/activate${NC}"
     exit 1
 fi
 
