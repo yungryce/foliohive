@@ -56,7 +56,7 @@ BUNDLE_TTL_SECONDS = 3600
 TRAINING_PARAMS = {"batch_size": 8, "epochs": 2}
 
 
-def _deserialize_message(msg: AzureQueueMessage) -> Dict[str, Any]:
+def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     body = msg.get_body()
     decoded = body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else str(body)
     payload = json.loads(decoded)

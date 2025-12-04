@@ -20,7 +20,7 @@
 #   -u, --username USER GitHub username to test (default: yungryce)
 #   --api-port PORT     API Gateway port (default: 7071)
 #   --skip-prereqs      Skip prerequisite checks
-#   --only SUITE        Run only specific suite (health|bundles|refresh|ai|surveys)
+#   --only SUITE        Run only specific suite (health|bundles|refresh|ai)
 # =============================================================================
 
 set -euo pipefail
@@ -80,7 +80,7 @@ Options:
   -u, --username USER     GitHub username to test (default: yungryce)
   --api-port PORT         API Gateway port (default: 7071)
   --skip-prereqs          Skip Azurite/server checks
-  --only SUITE            Run only: health, bundles, refresh, ai, surveys
+  --only SUITE            Run only: health, bundles, refresh, ai
 
 Prerequisites:
   1. Start Azurite:
@@ -477,67 +477,6 @@ test_ai() {
     fi
 }
 
-test_surveys() {
-    log_section "Survey Endpoint Tests"
-    
-    local response status body
-    
-    # Test 1: List survey images
-    log_test "GET /surveys"
-    response=$(curl_request "GET" "/surveys")
-    status=$(echo "$response" | tail -1)
-    body=$(echo "$response" | head -n -1)
-    
-    if [[ "$status" == "200" ]]; then
-        log_pass "Survey listing accessible"
-        local count
-        count=$(echo "$body" | jq -r '.count' 2>/dev/null)
-        log_info "Found $count survey images"
-        [[ "$VERBOSE" == true ]] && echo "$body" | jq . 2>/dev/null || true
-    elif [[ "$status" == "500" ]]; then
-        log_warn "Survey container may not exist in Azurite"
-    else
-        log_fail "Unexpected status $status"
-    fi
-    
-    # Test 2: Filter by theme
-    log_test "GET /surveys?theme=dark"
-    response=$(curl_request "GET" "/surveys?theme=dark")
-    status=$(echo "$response" | tail -1)
-    
-    if [[ "$status" == "200" ]]; then
-        log_pass "Theme filtering works"
-    elif [[ "$status" == "500" ]]; then
-        log_skip "Survey container not available"
-    fi
-    
-    # Test 3: Invalid theme
-    log_test "GET /surveys?theme=invalid"
-    response=$(curl_request "GET" "/surveys?theme=invalid")
-    status=$(echo "$response" | tail -1)
-    
-    if assert_status "400" "$status" "Invalid theme rejected"; then
-        :
-    fi
-    
-    # Test 4: Survey image endpoint (missing path)
-    log_test "GET /survey-image (missing path)"
-    response=$(curl_request "GET" "/survey-image")
-    status=$(echo "$response" | tail -1)
-    
-    if assert_status "400" "$status" "Missing path rejected"; then
-        :
-    fi
-    
-    # Test 5: Survey image path traversal blocked
-    log_test "GET /survey-image?path=../etc/passwd"
-    response=$(curl_request "GET" "/survey-image?path=../etc/passwd")
-    status=$(echo "$response" | tail -1)
-    
-    if assert_status "400" "$status" "Path traversal blocked"; then
-        :
-    fi
-}
 
 # =============================================================================
 # Integration/Workflow Tests
@@ -683,9 +622,6 @@ main() {
         ai)
             test_ai
             ;;
-        surveys)
-            test_surveys
-            ;;
         workflow)
             test_full_workflow
             ;;
@@ -695,11 +631,10 @@ main() {
             test_bundles
             test_refresh
             test_ai
-            test_surveys
             ;;
         *)
             log_error "Unknown suite: $ONLY_SUITE"
-            log_info "Valid suites: health, bundles, refresh, ai, surveys, workflow"
+            log_info "Valid suites: health, bundles, refresh, ai, workflow"
             exit 1
             ;;
     esac

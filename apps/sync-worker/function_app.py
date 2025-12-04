@@ -71,7 +71,7 @@ def _get_repo_manager(username: str) -> GitHubRepoManager:
     return GitHubRepoManager(api, username=username)
 
 
-def _deserialize_message(msg: AzureQueueMessage) -> Dict[str, Any]:
+def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     body_bytes = msg.get_body()
     body_str = body_bytes.decode('utf-8') if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
     payload = json.loads(body_str)
