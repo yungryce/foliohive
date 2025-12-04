@@ -60,5 +60,8 @@ AzuriteConfig
 /.pytest_cache
 /.ruff_cache
 
+# Function app
+**/local.settings.json
+
 # Portfolio artifacts
 portfolio/
