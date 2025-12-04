@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import os
@@ -103,7 +104,12 @@ class QueueManager:
         if not client:
             logger.warning("Queue client unavailable for %s", queue_alias)
             return False
-        client.send_message(json.dumps(payload))
+
+        # client send message payload
+        json_str = json.dumps(payload)
+        encoded_message = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
+        client.send_message(encoded_message)
+        logger.info("Sent message to queue %s", queue_alias)
         return True
 
     def enqueue_sync_job(self, job_id: str, username: str, repo_metadata: Dict, fingerprint: Optional[str] = None) -> bool:

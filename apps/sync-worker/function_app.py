@@ -12,6 +12,8 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+print("[SYNC-INIT] Starting function_app.py module load...")
+
 try:
     import azure.functions as func  # type: ignore
 except ImportError:  # pragma: no cover - local/unit-test fallback
@@ -72,6 +74,7 @@ def _get_repo_manager(username: str) -> GitHubRepoManager:
 
 
 def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
+    # message = json.loads(msg.get_body().decode())
     body_bytes = msg.get_body()
     body_str = body_bytes.decode('utf-8') if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
     payload = json.loads(body_str)
@@ -123,7 +126,7 @@ def _update_job_progress(job_id: str, username: str, repo_name: str) -> None:
     job_entry = cache_manager.get(job_key)
     if job_entry.get('status') != 'valid' or not isinstance(job_entry.get('data'), dict):
         logger.warning("Job metadata not found for job %s", job_id)
-        return
+        return # <-- SILENT RETURN - no progress update!
 
     job_info = job_entry['data']
     synced = set(job_info.get('synced_repos', []))
@@ -152,6 +155,7 @@ def _update_job_progress(job_id: str, username: str, repo_name: str) -> None:
 @app.queue_trigger(arg_name="msg", queue_name="github-sync", connection="AzureWebJobsStorage")
 def process_sync_job(msg: func.QueueMessage) -> None:
     """Process a single repository sync message."""
+    logger.info("Sync worker processing message from github-sync queue")
     import traceback
     print("[SYNC] Starting message processing...")
     
