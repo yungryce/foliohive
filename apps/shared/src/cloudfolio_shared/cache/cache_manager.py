@@ -224,12 +224,8 @@ class CacheManager:
             # If legacy expires_at exists, honor it
             expires_at_str = metadata.get('expires_at')
             if expires_at_str:
-                try:
-                    expires_at = datetime.fromisoformat(expires_at_str)
-                except Exception:
-                    # If malformed, treat as expired and delete
-                    expires_at = datetime.min
-                if datetime.now() > expires_at:
+                expires_at = self._parse_expiry(expires_at_str)
+                if datetime.now(timezone.utc) > expires_at:
                     try:
                         blob_client.delete_blob()
                     except Exception:
@@ -276,7 +272,7 @@ class CacheManager:
             metadata = {}
             cache_data = {
                 'data': data,
-                'cached_at': datetime.now().isoformat()
+                'cached_at': datetime.now(timezone.utc).isoformat()
             }
             
             # Store fingerprint if provided
@@ -462,7 +458,7 @@ class CacheManager:
                 "deleted_count": deleted_count,
                 "error_count": error_count,
                 "dry_run": dry_run,
-                "cleanup_time": datetime.now().isoformat()
+                "cleanup_time": datetime.now(timezone.utc).isoformat()
             }
         except Exception as e:
             logger.error(f"Error during cache cleanup: {str(e)}")

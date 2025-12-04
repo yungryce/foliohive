@@ -39,7 +39,11 @@ except ImportError:  # pragma: no cover - local/unit-test fallback
 if TYPE_CHECKING:  # pragma: no cover - typing helper
     from azure.functions import QueueMessage as AzureQueueMessage  # type: ignore
 else:
-    AzureQueueMessage = Any
+    # At runtime, use the real type if available, otherwise fall back to Any
+    try:
+        from azure.functions import QueueMessage as AzureQueueMessage  # type: ignore
+    except ImportError:
+        AzureQueueMessage = Any
 
 # Clean imports from installed cloudfolio-shared package
 from cloudfolio_shared import (
@@ -146,20 +150,40 @@ def _update_job_progress(job_id: str, username: str, repo_name: str) -> None:
 
 
 @app.queue_trigger(arg_name="msg", queue_name="github-sync", connection="AzureWebJobsStorage")
-def process_sync_job(msg: AzureQueueMessage) -> None:
+def process_sync_job(msg: func.QueueMessage) -> None:
     """Process a single repository sync message."""
+    import traceback
+    print("[SYNC] Starting message processing...")
+    
     try:
+        # Step 1: Deserialize message
+        print("[SYNC] Step 1: Deserializing message...")
+        logger.info("Sync worker processing message from github-sync queue")
         payload = _deserialize_message(msg)
         username = payload.get('username')
         job_id = payload.get('job_id')
         repo_metadata = payload.get('metadata') or {}
         repo_name = repo_metadata.get('name')
+        print(f"[SYNC] Parsed: username={username}, job_id={job_id}, repo={repo_name}")
 
         if not username or not job_id or not repo_name:
             raise ValueError("username, job_id, and repo metadata are required")
 
+        # Step 2: Fetch repo bundle
+        print(f"[SYNC] Step 2: Fetching repo bundle for {username}/{repo_name}...")
         _fetch_repo_bundle(username, repo_metadata, payload.get('fingerprint'))
+        print(f"[SYNC] Step 2 complete: repo bundle fetched")
+        
+        # Step 3: Update job progress
+        print(f"[SYNC] Step 3: Updating job progress for {job_id}...")
         _update_job_progress(job_id, username, repo_name)
-    except Exception as exc:  # pragma: no cover - allow queue retry handling
+        print(f"[SYNC] Step 3 complete: job progress updated")
+        
+        print(f"[SYNC] SUCCESS: Processed {username}/{repo_name}")
+        
+    except Exception as exc:
+        error_tb = traceback.format_exc()
+        print(f"[SYNC] ERROR: {type(exc).__name__}: {exc}")
+        print(f"[SYNC] TRACEBACK:\n{error_tb}")
         logger.error("Sync worker failure: %s", exc, exc_info=True)
         raise

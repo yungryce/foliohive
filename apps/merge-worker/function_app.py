@@ -37,7 +37,11 @@ except ImportError:  # pragma: no cover - lightweight stubs for unit tests
 if TYPE_CHECKING:  # pragma: no cover - only for type checkers
     from azure.functions import QueueMessage as AzureQueueMessage  # type: ignore
 else:
-    AzureQueueMessage = Any
+    # At runtime, use the real type if available, otherwise fall back to Any
+    try:
+        from azure.functions import QueueMessage as AzureQueueMessage  # type: ignore
+    except ImportError:
+        AzureQueueMessage = Any
 
 # Clean imports from installed cloudfolio-shared package
 from cloudfolio_shared import cache_manager, FingerprintManager, queue_manager
@@ -191,7 +195,7 @@ def _process_merge_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 @app.queue_trigger(arg_name="msg", queue_name="merge-results", connection="AzureWebJobsStorage")
-def process_merge_job(msg: AzureQueueMessage) -> None:
+def process_merge_job(msg: func.QueueMessage) -> None:
     try:
         payload = _deserialize_message(msg)
         _process_merge_payload(payload)
