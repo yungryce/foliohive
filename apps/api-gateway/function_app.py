@@ -160,12 +160,34 @@ def _queue_mode_enabled() -> bool:
     return env_flag and queue_manager.is_enabled()
 
 
-def _persist_job_metadata(job_id: str, username: str, repo_names: List[str]) -> None:
+def _persist_job_metadata(
+    job_id: str,
+    username: str,
+    expected_repo_names: List[str],
+    *,
+    queued_repo_names: Optional[List[str]] = None,
+    total_repos: Optional[int] = None,
+) -> None:
+    """Persist job metadata so workers can safely update progress.
+
+    expected_repo_names
+        All repos the API *intended* to process for this job (stale set).
+    queued_repo_names
+        Subset that were actually enqueued to the sync queue. If omitted,
+        we assume all expected repos were queued.
+    total_repos
+        Optional explicit total used for progress; when not provided we
+        default to ``len(queued_repo_names or expected_repo_names)`` so
+        workers base completion on what was really queued.
+    """
+    queued = queued_repo_names if queued_repo_names is not None else list(expected_repo_names)
+    resolved_total = total_repos if total_repos is not None else len(queued)
     job_payload = {
         'job_id': job_id,
         'username': username,
-        'repo_names': repo_names,
-        'total_repos': len(repo_names),
+        'expected_repos': list(expected_repo_names),
+        'queued_repos': list(queued),
+        'total_repos': resolved_total,
         'completed_repos': 0,
         'status': 'queued',
         'created_at': datetime.now(timezone.utc).isoformat(),
@@ -295,26 +317,45 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         })
 
     job_id = str(uuid.uuid4())
-    repo_names = [repo.get('name') for repo in stale_repos if repo.get('name')]
+    expected_repo_names = [repo.get('name') for repo in stale_repos if repo.get('name')]
 
-    if not repo_names and not force_refresh:
+    if not expected_repo_names and not force_refresh:
         return _create_success_response({
             "status": "cached",
             "repos_count": len(freshness['cached_bundle']),
         })
 
+    # Seed job metadata before enqueue so workers never see a missing job record.
+    # At this point we only know the *expected* repos; queued set may shrink.
+    _persist_job_metadata(job_id, username, expected_repo_names)
+
     enqueued = 0
+    enqueued_names: List[str] = []
     for repo_metadata in stale_repos:
         repo_name = repo_metadata.get('name')
         if not repo_name:
             continue
         if queue_manager.enqueue_sync_job(job_id, username, repo_metadata, repo_metadata.get('fingerprint')):
             enqueued += 1
+            enqueued_names.append(repo_name)
 
     if enqueued == 0:
+        _persist_job_metadata(job_id, username, [], queued_repo_names=[], total_repos=0)
         return _create_error_response("Failed to enqueue sync jobs", 502)
 
-    _persist_job_metadata(job_id, username, repo_names)
+    if enqueued != len(expected_repo_names):
+        logger.warning("Queued %s/%s repos for job %s", enqueued, len(expected_repo_names), job_id)
+
+    # Update job metadata to reflect the actual enqueue count.
+    # expected_repos stays as the full stale set; queued_repos captures
+    # what the worker should eventually process and drive merge off.
+    _persist_job_metadata(
+        job_id,
+        username,
+        expected_repo_names,
+        queued_repo_names=enqueued_names,
+        total_repos=enqueued,
+    )
     response = {
         "status": "processing",
         "job_id": job_id,

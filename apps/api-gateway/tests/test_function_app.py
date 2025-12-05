@@ -75,10 +75,15 @@ def test_trigger_bundle_refresh_enqueues_jobs(monkeypatch, capture_success):
 
     job_records = {}
 
-    def fake_persist(job_id, username, repo_names):
+    def fake_persist(job_id, username, expected_repo_names, queued_repo_names=None, total_repos=None):
+        effective_queued = queued_repo_names if queued_repo_names is not None else list(expected_repo_names)
         job_records['job_id'] = job_id
         job_records['username'] = username
-        job_records['repo_names'] = list(repo_names)
+        job_records['expected_repos'] = list(expected_repo_names)
+        job_records['queued_repos'] = list(effective_queued)
+        job_records['total_repos'] = (
+            total_repos if total_repos is not None else len(effective_queued)
+        )
 
     monkeypatch.setattr(gateway, "_persist_job_metadata", fake_persist)
     monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID(int=1))
@@ -88,7 +93,8 @@ def test_trigger_bundle_refresh_enqueues_jobs(monkeypatch, capture_success):
 
     assert response['status_code'] == 202
     assert set(enqueued) == {"repo-one", "repo-two"}
-    assert job_records['repo_names'] == ["repo-one", "repo-two"]
+    assert job_records['expected_repos'] == ["repo-one", "repo-two"]
+    assert job_records['queued_repos'] == ["repo-one", "repo-two"]
     assert capture_success['data']['job_id'] == str(uuid.UUID(int=1))
 
 

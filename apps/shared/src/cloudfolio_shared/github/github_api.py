@@ -4,6 +4,8 @@ from base64 import b64decode
 from typing import Any, Dict, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,22 @@ class GitHubAPI:
         self.username = resolved_username
         self.base_url = base_url.rstrip('/')
         self.headers = {'Authorization': f'token {self.token}'} if self.token else {}
+        self.session = self._build_session()
+
+    def _build_session(self) -> requests.Session:
+        """Create a shared session with retries and connection pooling to reduce SNAT usage."""
+        retry = Retry(
+            total=5,
+            backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=("HEAD", "GET", "OPTIONS", "POST", "PUT", "DELETE", "PATCH"),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=20, pool_maxsize=20)
+        session = requests.Session()
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        return session
 
     def make_request(
         self,
@@ -44,14 +62,24 @@ class GitHubAPI:
         if accept_raw:
             request_headers['Accept'] = 'application/vnd.github.v3.raw'
 
-        response = requests.request(
-            method=method,
-            url=full_url,
-            headers=request_headers,
-            params=params,
-            json=data,
-            timeout=timeout,
-        )
+        try:
+            response = self.session.request(
+                method=method,
+                url=full_url,
+                headers=request_headers,
+                params=params,
+                json=data,
+                timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            logger.warning("GitHub request failed: %s %s (%s)", method, full_url, exc)
+            return None
+
+        # Respect GitHub rate limits: if we're limited, log and return None so caller can decide.
+        if response.status_code == 403 and response.headers.get("X-RateLimit-Remaining") == "0":
+            reset = response.headers.get("X-RateLimit-Reset")
+            logger.warning("GitHub rate limit hit for %s; reset=%s", full_url, reset)
+            return None
 
         if response.status_code == 404:
             logger.info("GitHub resource not found: %s", full_url)

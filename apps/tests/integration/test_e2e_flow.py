@@ -195,7 +195,8 @@ class TestAPIGatewayIntegration:
         job_payload = {
             'job_id': job_id,
             'username': username,
-            'repo_names': repo_names,
+            'expected_repos': list(repo_names),
+            'queued_repos': list(repo_names),
             'total_repos': len(repo_names),
             'completed_repos': 0,
             'status': 'queued',

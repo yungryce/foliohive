@@ -64,6 +64,8 @@ logger.propagate = True
 
 app = func.FunctionApp()
 
+JOB_METADATA_TTL_SECONDS = 4 * 3600
+
 
 def _get_repo_manager(username: str) -> GitHubRepoManager:
     if not username:
@@ -90,29 +92,31 @@ def _fetch_repo_bundle(username: str, repo_metadata: Dict[str, Any], fingerprint
 
     resolved_fingerprint = fingerprint or FingerprintManager.generate_metadata_fingerprint(repo_metadata)
 
-    # Fetch standard content artifacts
-    repo_context_raw = repo_manager.get_file_content(username=username, repo=repo_name, path='.repo-context.json')
-    repo_context = json.loads(repo_context_raw) if repo_context_raw else {}
-    readme_content = repo_manager.get_file_content(username=username, repo=repo_name, path='README.md') or ""
-    skills_index = repo_manager.get_file_content(username=username, repo=repo_name, path='SKILLS-INDEX.md') or ""
-    architecture = repo_manager.get_file_content(username=username, repo=repo_name, path='ARCHITECTURE.md') or ""
+    # Fetch standard content artifacts (tolerate missing files and network hiccups)
+    try:
+        readme_content = repo_manager.get_file_content(username=username, repo=repo_name, path='README.md') or ""
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("Failed to fetch README for %s/%s: %s", username, repo_name, exc)
+        readme_content = ""
 
-    file_types = repo_manager.get_all_file_types(repo_name, username)
-    analyzer = FileTypeAnalyzer()
-    categorized_types = analyzer.analyze_repository_files(file_types)
+    try:
+        file_types = repo_manager.get_all_file_types(repo_name, username)
+        analyzer = FileTypeAnalyzer()
+        categorized_types = analyzer.analyze_repository_files(file_types)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("Failed to fetch file types for %s/%s: %s", username, repo_name, exc)
+        file_types = []
+        categorized_types = {}
 
     result = {
         "name": repo_name,
         "metadata": repo_metadata,
-        "repoContext": repo_context,
         "readme": readme_content,
-        "skills_index": skills_index,
-        "architecture": architecture,
         "file_types": file_types,
         "categorized_types": categorized_types,
         "fingerprint": resolved_fingerprint,
         "languages": repo_metadata.get("languages", {}),
-        "has_documentation": bool(repo_context) and bool(readme_content),
+        "has_documentation": bool(readme_content),
     }
 
     cache_key = cache_manager.generate_cache_key(kind='repo', username=username, repo=repo_name)
@@ -125,26 +129,48 @@ def _update_job_progress(job_id: str, username: str, repo_name: str) -> None:
     job_key = f"job:{job_id}"
     job_entry = cache_manager.get(job_key)
     if job_entry.get('status') != 'valid' or not isinstance(job_entry.get('data'), dict):
-        logger.warning("Job metadata not found for job %s", job_id)
-        return # <-- SILENT RETURN - no progress update!
-
-    job_info = job_entry['data']
+        logger.warning("Job metadata missing or expired for job %s; reinitializing", job_id)
+        job_info: Dict[str, Any] = {
+            'job_id': job_id,
+            'username': username,
+            'synced_repos': [],
+            'expected_repos': [],
+            'queued_repos': [],
+            'completed_repos': 0,
+            'total_repos': 0,
+            'status': 'queued',
+        }
+    else:
+        job_info = dict(job_entry['data'])
     synced = set(job_info.get('synced_repos', []))
     if repo_name:
         synced.add(repo_name)
     job_info['synced_repos'] = sorted(synced)
     job_info['completed_repos'] = len(synced)
 
-    total = job_info.get('total_repos', len(synced))
-    job_info.setdefault('total_repos', total)
+    # Derive a realistic total based on the repos we *intend* workers
+    # to process (queued_repos), falling back to expected_repos and the
+    # current synced set. This makes completion resilient to repos that
+    # were never actually queued or later dropped.
+    queued_repos = job_info.get('queued_repos') or []
+    expected_repos = job_info.get('expected_repos') or []
+    inferred_total = len(queued_repos) or len(expected_repos) or len(synced)
+    total = job_info.get('total_repos') or inferred_total
+    job_info['total_repos'] = max(total, inferred_total, len(synced))
 
-    cache_manager.save(job_key, job_info, ttl=3600)
+    cache_manager.save(job_key, job_info, ttl=JOB_METADATA_TTL_SECONDS)
     logger.info("Job %s progress: %s/%s", job_id, job_info['completed_repos'], job_info['total_repos'])
 
-    should_merge = job_info['completed_repos'] >= job_info['total_repos'] > 0
+    # Trigger merge when we've processed everything we realistically
+    # expect to see: when completed_repos covers all queued_repos and
+    # there is at least one repo. This avoids jobs stalling because an
+    # expected repo never produced a queue message.
+    queued_set = set(queued_repos)
+    completed_set = set(job_info['synced_repos'])
+    should_merge = bool(queued_set) and queued_set.issubset(completed_set)
     if should_merge:
         job_info['status'] = 'synced'
-        cache_manager.save(job_key, job_info, ttl=3600)
+        cache_manager.save(job_key, job_info, ttl=JOB_METADATA_TTL_SECONDS)
         if queue_manager.is_enabled():
             queue_manager.enqueue_merge_job(job_id, username, job_info['synced_repos'])
             logger.info("Job %s enqueued for merge", job_id)

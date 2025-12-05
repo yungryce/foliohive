@@ -29,15 +29,12 @@ declare -a WORKER_PIDS=()
 declare -a WORKER_NAMES=()
 declare -a WORKER_LOGS=()
 
-PYTHON_SITE_PACKAGES=""
-PYTHONPATH_EXTRA=""
-
 SKIP_PULL=false
-SKIP_SETUP=false
 SKIP_E2E=false
 QUIET=false
 VENV_ACTIVE=false
 NO_TEST_RUN=false
+SETUP_ARGS=()
 
 usage() {
     cat <<'EOF'
@@ -46,10 +43,12 @@ Usage: ./run-dev-session.sh [options]
 Options:
   -h, --help          Show this help message
   -sp, --skip-pull    Skip git fetch/pull for pilot branch
-  -ss, --skip-setup   Skip ./setup-dev.sh (and tests)
   --no-test-run       Skip tests during setup (runs setup only)
   --skip-e2e          Skip ./tests/e2e_curl_tests.sh
   --quiet             Reduce log chatter once workers are running
+
+Additional options are forwarded to ./setup-dev.sh, e.g.:
+    ./run-dev-session.sh -- --clean --python-version 3.12
 
 The script always starts api-gateway, sync-worker, and merge-worker using
 Azure Functions Core Tools, writing logs to apps/logs/<worker>.log. All
@@ -94,30 +93,35 @@ parse_args() {
             -sp|--skip-pull)
                 SKIP_PULL=true
                 shift
-                ;;
-            -ss|--skip-setup)
-                SKIP_SETUP=true
-                shift
+                continue
                 ;;
             --no-test-run)
                 NO_TEST_RUN=true
                 shift
+                continue
                 ;;
             --skip-e2e)
                 SKIP_E2E=true
                 shift
+                continue
                 ;;
             --quiet)
                 QUIET=true
                 shift
+                continue
                 ;;
             --)
                 shift
+                while [[ $# -gt 0 ]]; do
+                    SETUP_ARGS+=("$1")
+                    shift
+                done
                 break
                 ;;
             *)
-                log_error "Unknown option: $1"
-                exit 1
+                SETUP_ARGS+=("$1")
+                shift
+                continue
                 ;;
         esac
     done
@@ -129,6 +133,14 @@ require_command() {
         log_error "Required command '$cmd' not found in PATH"
         exit 1
     fi
+}
+
+setup_args_contains() {
+    local seek="$1"
+    for arg in "${SETUP_ARGS[@]}"; do
+        [[ "$arg" == "$seek" ]] && return 0
+    done
+    return 1
 }
 
 ensure_branch_synced() {
@@ -148,18 +160,28 @@ ensure_branch_synced() {
 }
 
 run_setup() {
-    if [[ "$SKIP_SETUP" == true ]]; then
-        log_warn "Skipping setup-dev.sh as requested"
-        return
-    fi
-    local setup_cmd="./setup-dev.sh"
+    local setup_cmd=("./setup-dev.sh")
+
     if [[ "$NO_TEST_RUN" != true ]]; then
-        setup_cmd="$setup_cmd --run-tests"
+        if ! setup_args_contains "--run-tests"; then
+            setup_cmd+=("--run-tests")
+        fi
         log_step "Running setup-dev.sh with tests"
     else
         log_step "Running setup-dev.sh (tests skipped)"
+        # Ensure we do not force tests if user explicitly asked to skip
+        for i in "${!SETUP_ARGS[@]}"; do
+            if [[ "${SETUP_ARGS[$i]}" == "--run-tests" ]]; then
+                unset 'SETUP_ARGS[$i]'
+            fi
+        done
     fi
-    (cd "$APPS_DIR" && $setup_cmd)
+
+    if [[ ${#SETUP_ARGS[@]} -gt 0 ]]; then
+        setup_cmd+=("${SETUP_ARGS[@]}")
+    fi
+
+    (cd "$APPS_DIR" && "${setup_cmd[@]}")
 }
 
 activate_venv() {
@@ -173,6 +195,22 @@ activate_venv() {
     VENV_ACTIVE=true
 }
 
+validate_env() {
+    if ! python - <<'PY' >/dev/null 2>&1
+import cloudfolio_shared
+PY
+    then
+        log_error "cloudfolio-shared not importable from venv. Run ./setup-dev.sh (without skipping)."
+        exit 1
+    fi
+}
+
+clean_logs() {
+    if [[ -d "$LOG_DIR" ]]; then
+        rm -rf "$LOG_DIR"
+    fi
+}
+
 prepare_logs() {
     mkdir -p "$LOG_DIR"
 }
@@ -181,20 +219,6 @@ ensure_dependencies() {
     require_command func
     require_command curl
     require_command jq
-}
-
-compute_python_paths() {
-    PYTHON_SITE_PACKAGES=$(python - <<'PY'
-import sysconfig
-print(sysconfig.get_path("purelib"))
-PY
-)
-    if [[ -n "$PYTHON_SITE_PACKAGES" ]]; then
-        PYTHONPATH_EXTRA="$PYTHON_SITE_PACKAGES:$APPS_DIR/shared/src"
-    else
-        log_warn "Unable to determine site-packages path; Function Apps may not see shared deps"
-        PYTHONPATH_EXTRA="$APPS_DIR/shared/src"
-    fi
 }
 
 wait_for_worker_ready() {
@@ -239,16 +263,7 @@ start_worker() {
     : > "$log_file"
     (
         cd "$app_dir"
-        local worker_pythonpath="$PYTHONPATH_EXTRA"
-        if [[ -n "${PYTHONPATH:-}" ]]; then
-            if [[ -n "$worker_pythonpath" ]]; then
-                worker_pythonpath="$worker_pythonpath:${PYTHONPATH}"
-            else
-                worker_pythonpath="${PYTHONPATH}"
-            fi
-        fi
         PYTHON_ISOLATE_WORKER_DEPENDENCIES=0 \
-        PYTHONPATH="$worker_pythonpath" \
         func start --python --port "$port" >"$log_file" 2>&1
     ) &
     local pid=$!
@@ -311,7 +326,8 @@ main() {
     ensure_branch_synced
     run_setup
     activate_venv
-    compute_python_paths
+    validate_env
+    clean_logs
     prepare_logs
 
     for worker in "${WORKER_SEQUENCE[@]}"; do

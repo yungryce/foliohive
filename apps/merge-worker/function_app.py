@@ -131,12 +131,13 @@ def _update_job_status(job_id: str, username: str, merged_count: int, fingerprin
     job_key = f"job:{job_id}"
     entry = cache_manager.get(job_key)
     payload = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+    total_repos = payload.get("total_repos", merged_count)
     payload.update(
         {
             "job_id": job_id,
             "username": username,
             "completed_repos": merged_count,
-            "total_repos": payload.get("total_repos", merged_count),
+            "total_repos": max(total_repos, merged_count),
             "status": "completed",
             "bundle_fingerprint": fingerprint,
             "completed_at": datetime.now(timezone.utc).isoformat(),

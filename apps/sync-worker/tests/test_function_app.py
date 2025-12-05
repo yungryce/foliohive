@@ -65,7 +65,6 @@ def test_fetch_repo_bundle_caches_and_returns_expected(monkeypatch):
 
     assert result["name"] == "demo"
     assert result["fingerprint"] == "fingerprint-value"
-    assert result["repoContext"] == {"context": "data"}
     assert result["categorized_types"] == {"detected": [".py"]}
     assert captured["cache_key"] == "repo:demo"
     assert captured["fingerprint"] == "fingerprint-value"
@@ -78,6 +77,9 @@ def test_update_job_progress_tracks_completion(monkeypatch):
             "synced_repos": [],
             "completed_repos": 0,
             "total_repos": 1,
+            "expected_repos": ["demo"],
+            "queued_repos": ["demo"],
+            "status": "queued",
         },
     }
 
@@ -103,7 +105,7 @@ def test_update_job_progress_tracks_completion(monkeypatch):
 
     assert len(saves) == 2
     assert merge_jobs == [("job-123", "tester", ["demo"])]
-    assert job_state["data"]["status"] == "synced"
+    assert saves[-1][1]["status"] == "synced"
 
 
 def test_process_sync_job_invokes_handlers(monkeypatch):

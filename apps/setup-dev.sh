@@ -21,7 +21,6 @@ readonly NC='\033[0m'
 
 # Configuration - function apps to install requirements from
 readonly FUNCTION_APPS=("api-gateway" "sync-worker" "merge-worker")
-readonly MARKER_FILE=".setup-complete"
 
 # =============================================================================
 # Logging
@@ -80,61 +79,17 @@ ensure_venv() {
     fi
 }
 
-# Activate venv and upgrade pip (only if needed)
+# Activate venv and upgrade pip
 activate_venv() {
     # shellcheck source=/dev/null
     source "$VENV_DIR/bin/activate" || die "Failed to activate venv at $VENV_DIR"
-    
-    # Only upgrade pip/wheel/setuptools if pip is outdated (check once per venv)
-    if [[ ! -f "$VENV_DIR/$MARKER_FILE" ]] || [[ "$CLEAN" == true ]]; then
-        pip install --upgrade pip wheel setuptools >/dev/null 2>&1
-    fi
+    pip install --upgrade pip wheel setuptools >/dev/null 2>&1
 }
 
 # Check if a package is installed in current venv
 # Usage: is_installed <package_name>
 is_installed() {
     pip show "$1" >/dev/null 2>&1
-}
-
-# Check if editable install is current (compare pyproject.toml mtime with egg-info)
-# Usage: is_editable_current <package_dir>
-is_editable_current() {
-    local pkg_dir="$1"
-    local egg_info
-    
-    # Find egg-info directory
-    egg_info=$(find "$pkg_dir" -maxdepth 3 -name "*.egg-info" -type d 2>/dev/null | head -1)
-    
-    if [[ -z "$egg_info" ]]; then
-        return 1  # Not installed
-    fi
-    
-    # Check if pyproject.toml is newer than egg-info
-    if [[ "$pkg_dir/pyproject.toml" -nt "$egg_info" ]]; then
-        return 1  # Needs reinstall
-    fi
-    
-    return 0  # Current
-}
-
-# Install package only if needed
-# Usage: smart_install <pip_args...>
-smart_install() {
-    local pkg_spec="$1"
-    shift
-    local pkg_name
-    
-    # Extract package name from spec (e.g., "package[extra]" -> "package")
-    pkg_name="${pkg_spec%%\[*}"
-    pkg_name="${pkg_name%%-e *}"
-    
-    if is_installed "$pkg_name" && [[ "$FORCE_REINSTALL" != true ]]; then
-        log_debug "Package $pkg_name already installed, skipping"
-        return 0
-    fi
-    
-    pip install "$pkg_spec" "$@"
 }
 
 # Install editable package only if needed
@@ -163,11 +118,6 @@ smart_editable_install() {
     pip install $pkg_spec
 }
 
-# Mark venv setup as complete
-mark_complete() {
-    touch "$VENV_DIR/$MARKER_FILE"
-}
-
 # =============================================================================
 # CLI
 # =============================================================================
@@ -176,22 +126,26 @@ show_help() {
 Usage: ./setup-dev.sh [options]
 
 Options:
-  -h, --help          Show this help message
-  -c, --clean         Remove existing virtual environments before setup
-  -f, --force         Force reinstall all packages even if installed
-  -s, --shared-only   Only setup the shared package (skip function apps)
-  -a, --app NAME      Setup only a specific function app
-  --no-dev            Skip development dependencies
-  --run-tests         Run tests after setup completes
-  --debug             Enable debug output
+  -h, --help               Show this help message
+  -c, --clean              Remove existing virtual environments before setup
+  -f, --force              Force reinstall all packages even if installed
+  -s, --shared-only        Only setup the shared package (skip function apps)
+  -a, --app NAME           Setup only a specific function app
+  -p, --python-version VER Specify Python version (e.g., 3.11, 3.12)
+                           Default: 3.11 (Azure Functions supported)
+                           Supported: 3.9, 3.10, 3.11, 3.12
+  --no-dev                 Skip development dependencies
+  --run-tests              Run tests after setup completes
+  --debug                  Enable debug output
 
 Examples:
-  ./setup-dev.sh                    # Full setup (shared + all apps)
-  ./setup-dev.sh --clean            # Clean reinstall
-  ./setup-dev.sh --force            # Force reinstall packages
-  ./setup-dev.sh --app api-gateway  # Setup only api-gateway
-  ./setup-dev.sh --shared-only      # Setup only shared package
-  ./setup-dev.sh --run-tests        # Setup and run full test suite
+  ./setup-dev.sh                       # Full setup (shared + all apps)
+  ./setup-dev.sh --clean               # Clean reinstall
+  ./setup-dev.sh --force               # Force reinstall packages
+  ./setup-dev.sh --python-version 3.12 # Use Python 3.12
+  ./setup-dev.sh --app api-gateway     # Setup only api-gateway
+  ./setup-dev.sh --shared-only         # Setup only shared package
+  ./setup-dev.sh --run-tests           # Setup and run full test suite
 EOF
 }
 
@@ -202,6 +156,7 @@ INSTALL_DEV=true
 FORCE_REINSTALL=false
 DEBUG=false
 RUN_TESTS=false
+REQUESTED_PYTHON_VERSION=""  # User-specified Python version (e.g., "3.11", "3.12")
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -228,6 +183,11 @@ parse_args() {
                 SPECIFIC_APP="$2"
                 shift 2
                 ;;
+            -p|--python-version)
+                [[ -z "${2:-}" ]] && die "Option --python-version requires an argument (e.g., 3.11)"
+                REQUESTED_PYTHON_VERSION="$2"
+                shift 2
+                ;;
             --no-dev)
                 INSTALL_DEV=false
                 shift
@@ -252,12 +212,32 @@ parse_args() {
 # =============================================================================
 
 check_python() {
-    local candidates=("python3.11" "python3")
+    # Supported Python versions for Azure Functions v4
+    local supported_versions=("3.11" "3.12" "3.13" "3.14")
+    local default_version="3.11"
+    local target_version="${REQUESTED_PYTHON_VERSION:-$default_version}"
+    
+    # Validate requested version
+    local version_valid=false
+    for v in "${supported_versions[@]}"; do
+        if [[ "$target_version" == "$v" ]]; then
+            version_valid=true
+            break
+        fi
+    done
+    
+    if [[ "$version_valid" != true ]]; then
+        die "Python $target_version is not supported. Supported versions: ${supported_versions[*]}"
+    fi
+    
+    # Build candidate list based on target version
+    local candidates=("python${target_version}" "python3")
+    
     for candidate in "${candidates[@]}"; do
         if command -v "$candidate" &>/dev/null; then
             local detected_version
             detected_version=$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-            if [[ "$detected_version" == 3.11* ]]; then
+            if [[ "$detected_version" == "$target_version"* ]]; then
                 PYTHON_BIN="$candidate"
                 PYTHON_VERSION="$detected_version"
                 break
@@ -266,9 +246,14 @@ check_python() {
     done
 
     if [[ -z "$PYTHON_BIN" ]]; then
-        die "Python 3.11 is required for local Azure Functions. Install python3.11 and retry."
+        die "Python $target_version not found. Install python${target_version} and retry."
     fi
 
+    if [[ -n "$REQUESTED_PYTHON_VERSION" && "$REQUESTED_PYTHON_VERSION" != "3.11" ]]; then
+        log_warn "Using Python $PYTHON_VERSION. Note: Azure Functions officially supports 3.11-3.14."
+        log_warn "Python 3.12 may work but is not officially supported for production deployments."
+    fi
+    
     log_info "Using Python $PYTHON_VERSION via $PYTHON_BIN"
 }
 
@@ -400,7 +385,6 @@ main() {
     setup_shared
     
     if [[ "$SHARED_ONLY" == true ]]; then
-        mark_complete
         deactivate
         log_info "Shared-only mode: skipping function apps"
         echo ""
@@ -418,8 +402,6 @@ main() {
         done
         setup_tests
     fi
-    
-    mark_complete
     
     # Run tests if requested and venv still active
     if [[ "$RUN_TESTS" == true ]]; then
