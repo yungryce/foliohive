@@ -94,11 +94,13 @@ done
 
 pushd "$APPS_DIR" > /dev/null
 
-# Check if cloudfolio-shared is installed
+# Ensure shared package is available (installed by setup-dev.sh)
 if ! python -c "import cloudfolio_shared" >/dev/null 2>&1; then
-    echo -e "${RED}❌ cloudfolio-shared not installed.${NC}"
-    echo -e "${YELLOW}Run: ./setup-dev.sh${NC}"
-    echo -e "${YELLOW}Then activate: source .venv/bin/activate${NC}"
+    echo -e "${RED}❌ cloudfolio-shared not found in active environment.${NC}"
+    echo -e "${YELLOW}Make sure the consolidated venv is activated:${NC}"
+    echo -e "${YELLOW}  source .venv/bin/activate${NC}"
+    echo -e "${YELLOW}Or run full setup:${NC}"
+    echo -e "${YELLOW}  ./setup-dev.sh${NC}"
     exit 1
 fi
 

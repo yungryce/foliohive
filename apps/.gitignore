@@ -29,3 +29,6 @@ htmlcov/
 
 # mypy cache
 .mypy_cache/
+
+# Local log output
+logs/

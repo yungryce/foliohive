@@ -8,6 +8,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPS_DIR="$SCRIPT_DIR"
 SHARED_DIR="$APPS_DIR/shared"
 VENV_DIR="$APPS_DIR/.venv"
+REPO_ROOT="$(dirname "$APPS_DIR")"
+PYTHON_BIN=""
+PYTHON_VERSION=""
 
 # Colors for output
 readonly RED='\033[0;31m'
@@ -60,9 +63,20 @@ ensure_venv() {
         rm -rf "$VENV_DIR" || die "Failed to remove $VENV_DIR"
     fi
     
+    if [[ -d "$VENV_DIR" && "$CLEAN" != true ]]; then
+        local current_version=""
+        if [[ -x "$VENV_DIR/bin/python" ]]; then
+            current_version=$("$VENV_DIR/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+        fi
+        if [[ "$current_version" != "$PYTHON_VERSION" ]]; then
+            log_warn "Existing venv uses Python ${current_version:-unknown}; recreating with $PYTHON_VERSION..."
+            rm -rf "$VENV_DIR" || die "Failed to remove $VENV_DIR"
+        fi
+    fi
+
     if [[ ! -d "$VENV_DIR" ]]; then
         log_info "Creating consolidated virtual environment at $VENV_DIR..."
-        python3 -m venv "$VENV_DIR" || die "Failed to create venv at $VENV_DIR"
+        "$PYTHON_BIN" -m venv "$VENV_DIR" || die "Failed to create venv at $VENV_DIR"
     fi
 }
 
@@ -129,19 +143,23 @@ smart_editable_install() {
     local pkg_dir="$1"
     local extras="${2:-}"
     local pkg_spec
-    
+
     if [[ -n "$extras" ]]; then
         pkg_spec="-e ${pkg_dir}[${extras}]"
     else
         pkg_spec="-e ${pkg_dir}"
     fi
-    
-    if is_editable_current "$pkg_dir" && [[ "$FORCE_REINSTALL" != true ]]; then
-        log_info "Shared package up-to-date, skipping reinstall"
-        return 0
+
+    if pip show cloudfolio-shared >/dev/null 2>&1; then
+        if [[ "$FORCE_REINSTALL" == true ]]; then
+            log_info "Reinstalling cloudfolio-shared (force enabled)..."
+        else
+            log_info "Refreshing cloudfolio-shared editable install..."
+        fi
+    else
+        log_info "Installing cloudfolio-shared${extras:+ with $extras}..."
     fi
-    
-    log_info "Installing cloudfolio-shared${extras:+ with $extras}..."
+
     pip install $pkg_spec
 }
 
@@ -164,6 +182,7 @@ Options:
   -s, --shared-only   Only setup the shared package (skip function apps)
   -a, --app NAME      Setup only a specific function app
   --no-dev            Skip development dependencies
+  --run-tests         Run tests after setup completes
   --debug             Enable debug output
 
 Examples:
@@ -172,6 +191,7 @@ Examples:
   ./setup-dev.sh --force            # Force reinstall packages
   ./setup-dev.sh --app api-gateway  # Setup only api-gateway
   ./setup-dev.sh --shared-only      # Setup only shared package
+  ./setup-dev.sh --run-tests        # Setup and run full test suite
 EOF
 }
 
@@ -181,6 +201,7 @@ SPECIFIC_APP=""
 INSTALL_DEV=true
 FORCE_REINSTALL=false
 DEBUG=false
+RUN_TESTS=false
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -211,6 +232,10 @@ parse_args() {
                 INSTALL_DEV=false
                 shift
                 ;;
+            --run-tests)
+                RUN_TESTS=true
+                shift
+                ;;
             --debug)
                 DEBUG=true
                 shift
@@ -227,15 +252,24 @@ parse_args() {
 # =============================================================================
 
 check_python() {
-    command -v python3 &>/dev/null || die "Python 3 is required but not installed."
-    
-    local python_ver
-    python_ver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    log_info "Found Python $python_ver"
-    
-    if [[ ! "$python_ver" =~ ^3\.(11|12|13)$ ]]; then
-        log_warn "Python 3.11+ recommended, found $python_ver"
+    local candidates=("python3.11" "python3")
+    for candidate in "${candidates[@]}"; do
+        if command -v "$candidate" &>/dev/null; then
+            local detected_version
+            detected_version=$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+            if [[ "$detected_version" == 3.11* ]]; then
+                PYTHON_BIN="$candidate"
+                PYTHON_VERSION="$detected_version"
+                break
+            fi
+        fi
+    done
+
+    if [[ -z "$PYTHON_BIN" ]]; then
+        die "Python 3.11 is required for local Azure Functions. Install python3.11 and retry."
     fi
+
+    log_info "Using Python $PYTHON_VERSION via $PYTHON_BIN"
 }
 
 setup_shared() {
@@ -306,6 +340,34 @@ setup_tests() {
     log_info "Test dependencies installed"
 }
 
+run_tests() {
+    local tests_dir="$APPS_DIR/tests"
+    log_step "Running test suite..."
+    
+    # Check if pytest is available
+    if ! python -c "import pytest" >/dev/null 2>&1; then
+        log_error "pytest not found"
+        return 1
+    fi
+    
+    # Ensure Azurite for integration tests
+    if curl -s http://127.0.0.1:10000/ >/dev/null 2>&1; then
+        log_info "Azurite detected on localhost:10000"
+    else
+        if command -v azurite >/dev/null 2>&1; then
+            log_warn "Starting Azurite in background..."
+            mkdir -p "$REPO_ROOT/.azurite"
+            nohup azurite --location "$REPO_ROOT/.azurite" --silent >/dev/null 2>&1 &
+            sleep 3
+        else
+            log_warn "Azurite not available; integration tests will be skipped"
+        fi
+    fi
+    
+    # Run pytest from apps/ to preserve expected import paths
+    (cd "$APPS_DIR" && python -m pytest -c tests/pytest.ini) || return 1
+}
+
 print_success() {
     echo ""
     echo -e "${GREEN}✅ Development environment setup complete!${NC}"
@@ -316,7 +378,10 @@ print_success() {
     echo "  source apps/.venv/bin/activate"
     echo ""
     echo "To run tests:"
-    echo "  cd apps && source .venv/bin/activate && ./tests/run_tests.sh"
+    echo "  source apps/.venv/bin/activate && python -m pytest -c tests/pytest.ini"
+    echo ""
+    echo "To run full workflow with workers:"
+    echo "  ./run-dev-session.sh"
 }
 
 # =============================================================================
@@ -355,6 +420,15 @@ main() {
     fi
     
     mark_complete
+    
+    # Run tests if requested and venv still active
+    if [[ "$RUN_TESTS" == true ]]; then
+        run_tests || {
+            deactivate 2>/dev/null || true
+            exit 1
+        }
+    fi
+    
     deactivate
     print_success
 }
