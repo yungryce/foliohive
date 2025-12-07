@@ -63,8 +63,6 @@ apps/shared/
 │       │   └── github_repo_manager.py
 │       ├── linguist/           # Language detection
 │       │   └── languages.yml
-│       ├── models/             # Pydantic schemas
-│       │   └── schemas.py
 │       └── queue/              # Azure Storage Queues
 │           └── queue_manager.py
 ```
@@ -83,8 +81,6 @@ source tests/.venv/bin/activate
 Core dependencies (installed automatically):
 - `azure-storage-blob`, `azure-storage-queue`, `azure-identity` - Azure SDK
 - `requests` - GitHub API client
-- `pyyaml` - Language detection
-- `pydantic` - Data validation
 - `openai`, `groq` - AI/ML inference
 
 Optional dependencies:

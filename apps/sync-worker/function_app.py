@@ -176,6 +176,7 @@ def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, A
         fingerprint=repo_payload.get('fingerprint'),
         job_id=job_id,
         document=document,
+        metadata=repo_payload.get('metadata', {}),
         content_blob=content_blob,
         languages=repo_payload.get('languages', {}),
         categorized_types=repo_payload.get('categorized_types', {}),

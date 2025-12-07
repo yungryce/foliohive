@@ -83,7 +83,8 @@ def test_enqueue_sync_job_serializes_message(monkeypatch) -> None:
     assert payload["bundle_cache_key"].endswith(username)
     assert payload["repo"]["name"] == "repo-one"
     queued_at = datetime.fromisoformat(payload["queued_at"].replace("Z", "+00:00"))
-    assert queued_at.timestamp() >= pytest.approx(before, rel=1e-3)
+    tolerance = max(abs(before) * 1e-3, 1e-3)
+    assert queued_at.timestamp() >= before - tolerance
 
 
 def test_enqueue_training_job_defaults_params(monkeypatch) -> None:

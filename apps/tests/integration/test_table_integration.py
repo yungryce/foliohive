@@ -31,6 +31,8 @@ def mock_table_manager():
         candidate_sessions[key] = {
             'PartitionKey': row.username,
             'RowKey': row.job_id,
+            'username': row.username,
+            'job_id': row.job_id,
             'status': row.status,
             'total_repos': row.total_repos,
             'completed_repos': row.completed_repos,
@@ -62,6 +64,7 @@ def mock_table_manager():
         repo_metadata[key] = {
             'PartitionKey': row.username,
             'RowKey': row.repo_name,
+            'username': row.username,
             'job_id': row.job_id,
             'repo_name': row.repo_name,
             'fingerprint': row.fingerprint,
@@ -90,6 +93,8 @@ def mock_table_manager():
         model_metadata[key] = {
             'PartitionKey': row.username,
             'RowKey': row.model_fingerprint,
+            'username': row.username,
+            'model_fingerprint': row.model_fingerprint,
             'experiment_name': row.experiment_name,
             'trained_at': row.trained_at,
             'repos_count': row.repos_count,

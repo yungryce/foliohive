@@ -44,7 +44,7 @@ else:
         AzureQueueMessage = Any
 
 # Clean imports from installed cloudfolio-shared package
-from cloudfolio_shared import cache_manager, FingerprintManager, queue_manager
+from cloudfolio_shared import cache_manager, FingerprintManager, queue_manager, table_manager
 
 logger = logging.getLogger("portfolio.merge")
 logger.setLevel(logging.INFO)
@@ -78,7 +78,8 @@ def _extract_repo_name(repo: Dict[str, Any]) -> Optional[str]:
     return name if isinstance(name, str) and name else None
 
 
-def _load_cached_bundle(username: str) -> List[Dict[str, Any]]:
+def _load_cached_bundle(username: str, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    _ = job_id  # Placeholder for future table-aware logic
     bundle_key = cache_manager.generate_cache_key(kind="bundle", username=username)
     result = cache_manager.get(bundle_key)
     if result.get("status") == "valid" and isinstance(result.get("data"), list):
@@ -86,7 +87,8 @@ def _load_cached_bundle(username: str) -> List[Dict[str, Any]]:
     return []
 
 
-def _load_repos_from_cache(username: str, repo_names: Iterable[str]) -> List[Dict[str, Any]]:
+def _load_repos_from_cache(username: str, repo_names: Iterable[str], job_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    _ = job_id  # Placeholder for future table-aware logic
     bundles: List[Dict[str, Any]] = []
     for repo_name in repo_names:
         if not repo_name:
@@ -127,10 +129,11 @@ def _save_bundle(username: str, bundle: List[Dict[str, Any]], fingerprint: str) 
     logger.info("Saved merged bundle for %s (%s repos)", username, len(bundle))
 
 
-def _update_job_status(job_id: str, username: str, merged_count: int, fingerprint: str) -> None:
+def _update_job_status(job_id: str, username: str, synced_repo_names: List[str], fingerprint: str) -> None:
     job_key = f"job:{job_id}"
     entry = cache_manager.get(job_key)
     payload = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+    merged_count = len(synced_repo_names)
     total_repos = payload.get("total_repos", merged_count)
     payload.update(
         {
@@ -141,6 +144,7 @@ def _update_job_status(job_id: str, username: str, merged_count: int, fingerprin
             "status": "completed",
             "bundle_fingerprint": fingerprint,
             "completed_at": datetime.now(timezone.utc).isoformat(),
+            "synced_repos": list(synced_repo_names),
         }
     )
     cache_manager.save(job_key, payload, ttl=BUNDLE_TTL_SECONDS)
@@ -160,19 +164,19 @@ def _enqueue_training_job(username: str, bundle: List[Dict[str, Any]]) -> None:
         logger.warning("Failed to enqueue training job for %s", username)
 
 
-def _resolve_fresh_repos(payload: Dict[str, Any], username: str) -> List[Dict[str, Any]]:
+def _resolve_fresh_repos(payload: Dict[str, Any], username: str, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
     fresh = payload.get("fresh_repos")
     if isinstance(fresh, list) and fresh:
         return [repo for repo in fresh if isinstance(repo, dict)]
     repo_names: Iterable[str] = payload.get("synced_repos") or payload.get("repo_names") or []
-    return _load_repos_from_cache(username, repo_names)
+    return _load_repos_from_cache(username, repo_names, job_id)
 
 
-def _resolve_cached_bundle(payload: Dict[str, Any], username: str) -> List[Dict[str, Any]]:
+def _resolve_cached_bundle(payload: Dict[str, Any], username: str, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
     cached = payload.get("cached_bundle")
     if isinstance(cached, list) and cached:
         return [repo for repo in cached if isinstance(repo, dict)]
-    return _load_cached_bundle(username)
+    return _load_cached_bundle(username, job_id)
 
 
 def _process_merge_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -181,8 +185,8 @@ def _process_merge_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not username or not job_id:
         raise ValueError("username and job_id are required")
 
-    fresh_repos = _resolve_fresh_repos(payload, username)
-    cached_bundle = _resolve_cached_bundle(payload, username)
+    fresh_repos = _resolve_fresh_repos(payload, username, job_id)
+    cached_bundle = _resolve_cached_bundle(payload, username, job_id)
     if not fresh_repos and not cached_bundle:
         logger.warning("Nothing to merge for job %s", job_id)
         return []
@@ -190,7 +194,8 @@ def _process_merge_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     merged_bundle = _merge_repos(fresh_repos, cached_bundle)
     fingerprint = _calculate_bundle_fingerprint(merged_bundle)
     _save_bundle(username, merged_bundle, fingerprint)
-    _update_job_status(job_id, username, len(merged_bundle), fingerprint)
+    synced_repo_names = [name for name in (_extract_repo_name(repo) for repo in merged_bundle) if name]
+    _update_job_status(job_id, username, synced_repo_names, fingerprint)
     _enqueue_training_job(username, merged_bundle)
     return merged_bundle
 

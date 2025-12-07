@@ -142,6 +142,7 @@ ensure_dependencies() {
     require_command func
     require_command curl
     require_command jq
+    require_command lsof
 }
 
 wait_for_worker_ready() {
@@ -158,7 +159,6 @@ wait_for_worker_ready() {
             exit 1
         fi
         if grep -qE 'Host lock lease acquired|Job host started|Host started' "$log_file"; then
-            ready=true
             break
         fi
         sleep 1
@@ -197,6 +197,44 @@ start_worker() {
     log_info "$name PID: $pid (log: $log_file)"
 
     wait_for_worker_ready "$name" "$log_file" "$pid"
+}
+
+run_worker_live_tests() {
+    log_step "Running live worker curl suites"
+    
+    # Sync worker tests
+    log_info "Testing sync-worker (port 7072)"
+    if [[ -f "$APPS_DIR/sync-worker/tests/live_curl_tests.sh" ]]; then
+        if ! "$APPS_DIR/sync-worker/tests/live_curl_tests.sh" --port 7072; then
+            log_error "Sync worker live tests failed"
+            exit 1
+        fi
+    else
+        log_warn "Sync worker live tests not found"
+    fi
+
+    # Merge worker tests
+    log_info "Testing merge-worker (port 7073)"
+    if [[ -f "$APPS_DIR/merge-worker/tests/live_curl_tests.sh" ]]; then
+        if ! "$APPS_DIR/merge-worker/tests/live_curl_tests.sh" --port 7073; then
+            log_error "Merge worker live tests failed"
+            exit 1
+        fi
+    else
+        log_warn "Merge worker live tests not found"
+    fi
+
+    # Training worker tests (optional, skip if no health URL)
+    if [[ -n "${TRAINING_HEALTH_URL:-}" ]]; then
+        log_info "Testing training-worker health endpoint"
+        if [[ -f "$APPS_DIR/training-worker/tests/live_curl_tests.sh" ]]; then
+            if ! "$APPS_DIR/training-worker/tests/live_curl_tests.sh" --health-url "$TRAINING_HEALTH_URL"; then
+                log_warn "Training worker live tests failed (non-fatal)"
+            fi
+        fi
+    else
+        log_info "Skipping training-worker tests (TRAINING_HEALTH_URL not set)"
+    fi
 }
 
 run_e2e_tests() {
@@ -240,6 +278,8 @@ main() {
     for worker in "${WORKER_SEQUENCE[@]}"; do
         start_worker "$worker" "${WORKER_PORTS[$worker]}"
     done
+
+    run_worker_live_tests
 
     run_e2e_tests
 

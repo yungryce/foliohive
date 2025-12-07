@@ -63,11 +63,13 @@ class RepoMetadataRow:
     fingerprint: Optional[str]
     job_id: Optional[str] = None
     document: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     content_blob: Optional[str] = None
     languages: Dict[str, Any] = field(default_factory=dict)
     categorized_types: Dict[str, Any] = field(default_factory=dict)
     has_documentation: Optional[bool] = None
     readme_excerpt: Optional[str] = None
+    created_at: Optional[str] = None
     last_synced_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -77,19 +79,31 @@ class ModelMetadataRow:
     """Metadata describing trained semantic models."""
 
     username: str
-    fingerprint: str
+    fingerprint: Optional[str] = None
     experiment_name: str = "default"
     status: str = "pending"
     artifact_blob: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     training_params: Dict[str, Any] = field(default_factory=dict)
+    repos_count: int = 0
+    repo_names: List[str] = field(default_factory=list)
     trained_at: Optional[str] = None
     updated_at: Optional[str] = None
+    model_fingerprint: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.model_fingerprint and not self.fingerprint:
+            self.fingerprint = self.model_fingerprint
+        if self.fingerprint and not self.model_fingerprint:
+            self.model_fingerprint = self.fingerprint
+        if not self.fingerprint:
+            raise ValueError("fingerprint or model_fingerprint must be provided")
 
 
 _JSON_LIST_FIELDS = {"expected_repos", "queued_repos", "synced_repos"}
-_JSON_FIELDS_REPO = {"document", "languages", "categorized_types"}
-_JSON_FIELDS_MODEL = {"metadata", "training_params"}
+_JSON_FIELDS_REPO = {"document", "metadata", "languages", "categorized_types"}
+_JSON_FIELDS_MODEL = {"metadata", "training_params", "repo_names"}
+_AZURE_META_FIELDS = {"etag", "odata.etag", "odata.metadata"}
 
 
 def _utcnow_iso() -> str:
@@ -97,7 +111,7 @@ def _utcnow_iso() -> str:
 
 
 def _safe_json_dump(value: Any) -> str:
-    return json.dumps(value or {}, separators=(",", ":"))
+    return json.dumps({} if value is None else value, separators=(",", ":"))
 
 
 class TableManager:
@@ -237,9 +251,10 @@ class TableManager:
 
     def _deserialize_candidate_session(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
-        for field_name in list(payload.keys()):
-            if field_name in {"etag", "odata.metadata", "odata.etag"}:
-                payload.pop(field_name, None)
+        for meta_key in _AZURE_META_FIELDS:
+            payload.pop(meta_key, None)
+        payload["username"] = payload.get("PartitionKey")
+        payload["job_id"] = payload.get("RowKey")
         for field_name in _JSON_LIST_FIELDS:
             try:
                 payload[field_name] = json.loads(payload.get(field_name) or "[]")
@@ -251,6 +266,8 @@ class TableManager:
         payload["force_refresh"] = bool(payload.get("force_refresh"))
         payload["total_repos"] = int(payload.get("total_repos", 0))
         payload["completed_repos"] = int(payload.get("completed_repos", 0))
+        payload["created_at"] = payload.get("created_at") or None
+        payload["updated_at"] = payload.get("updated_at") or None
         return payload
 
     # ------------------------------------------------------------------
@@ -305,6 +322,7 @@ class TableManager:
             "content_blob": row.content_blob or "",
             "has_documentation": bool(row.has_documentation),
             "readme_excerpt": (row.readme_excerpt or "")[:16384],
+            "created_at": row.created_at or now,
             "last_synced_at": row.last_synced_at or now,
             "updated_at": row.updated_at or now,
         }
@@ -314,7 +332,7 @@ class TableManager:
 
     def _deserialize_repo_entity(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
-        for meta_key in {"etag", "odata.etag", "odata.metadata"}:
+        for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
         for field_name in _JSON_FIELDS_REPO:
             try:
@@ -325,6 +343,9 @@ class TableManager:
         payload["job_id"] = payload.get("job_id") or None
         payload["content_blob"] = payload.get("content_blob") or None
         payload["has_documentation"] = bool(payload.get("has_documentation"))
+        payload["repo_name"] = payload.get("RowKey")
+        payload["username"] = payload.get("PartitionKey")
+        payload["created_at"] = payload.get("created_at") or None
         return payload
 
     # ------------------------------------------------------------------
@@ -337,10 +358,11 @@ class TableManager:
         now = _utcnow_iso()
         entity: Dict[str, Any] = {
             "PartitionKey": row.username,
-            "RowKey": row.fingerprint,
+            "RowKey": row.fingerprint or row.model_fingerprint,
             "experiment_name": row.experiment_name,
             "status": row.status,
             "artifact_blob": row.artifact_blob or "",
+            "repos_count": int(row.repos_count or 0),
             "trained_at": row.trained_at or "",
             "updated_at": row.updated_at or now,
         }
@@ -367,7 +389,7 @@ class TableManager:
 
     def _deserialize_model_entity(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
-        for meta_key in {"etag", "odata.etag", "odata.metadata"}:
+        for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
         for field_name in _JSON_FIELDS_MODEL:
             try:
@@ -375,6 +397,11 @@ class TableManager:
             except json.JSONDecodeError:
                 payload[field_name] = {}
         payload["artifact_blob"] = payload.get("artifact_blob") or None
+        payload["repo_names"] = payload.get("repo_names") or []
+        payload["repos_count"] = int(payload.get("repos_count", 0))
+        payload["fingerprint"] = payload.get("RowKey")
+        payload["model_fingerprint"] = payload.get("fingerprint")
+        payload["username"] = payload.get("PartitionKey")
         return payload
 
 

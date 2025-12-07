@@ -1,4 +1,5 @@
 """Edge case and failure scenario tests for API Gateway."""
+import json
 import uuid
 from unittest.mock import MagicMock
 
@@ -34,17 +35,18 @@ def mock_queue_full(monkeypatch):
 class TestRateLimitHandling:
     """Test GitHub rate limit and Azure storage throttling scenarios."""
 
-    def test_github_rate_limit_returns_500(self, monkeypatch, mock_github_api_throttled, capture_error):
+    def test_github_rate_limit_returns_500(self, monkeypatch, mock_github_api_throttled):
         """Verify API returns 500 when GitHub rate limits."""
         monkeypatch.setattr(gateway, "_queue_mode_enabled", lambda: True)
         
         request = FakeRequest(route_params={'username': 'testuser'})
         response = gateway.trigger_bundle_refresh(request)
-        
-        assert response['status_code'] == 500
-        assert 'Failed to analyze repositories' in capture_error['message']
+        payload = json.loads(response.get_body())
 
-    def test_queue_throttling_handles_partial_enqueue(self, monkeypatch, capture_success):
+        assert response.status_code == 500
+        assert 'Failed to analyze repositories' in payload.get('error', '')
+
+    def test_queue_throttling_handles_partial_enqueue(self, monkeypatch):
         """Verify API handles partial queue enqueue gracefully."""
         monkeypatch.setattr(gateway, "_queue_mode_enabled", lambda: True)
         
@@ -71,16 +73,16 @@ class TestRateLimitHandling:
         
         request = FakeRequest(route_params={'username': 'testuser'})
         response = gateway.trigger_bundle_refresh(request)
-        
-        # Should still succeed with partial enqueue
-        assert response['status_code'] == 202
-        assert capture_success['data']['repos_queued'] == 2
+        payload = json.loads(response.get_body())
+
+        assert response.status_code == 202
+        assert payload['repos_queued'] == 2
 
 
 class TestMissingDataRecovery:
     """Test recovery from missing or corrupted cache/table data."""
 
-    def test_missing_session_returns_404(self, monkeypatch, capture_error):
+    def test_missing_session_returns_404(self, monkeypatch):
         """Verify API returns 404 when session not found."""
         monkeypatch.setattr(gateway.table_manager, "is_enabled", lambda: True)
         monkeypatch.setattr(gateway.table_manager, "get_candidate_session", lambda u, j: None)
@@ -88,10 +90,10 @@ class TestMissingDataRecovery:
         
         request = FakeRequest(route_params={'username': 'tester'}, params={'job_id': 'missing'})
         response = gateway.get_job_status(request)
-        
-        assert response['status_code'] == 404
 
-    def test_corrupted_table_row_falls_back_to_cache(self, monkeypatch, capture_success):
+        assert response.status_code == 404
+
+    def test_corrupted_table_row_falls_back_to_cache(self, monkeypatch):
         """Verify cache fallback when table query fails."""
         monkeypatch.setattr(gateway.table_manager, "is_enabled", lambda: True)
         monkeypatch.setattr(
@@ -109,11 +111,12 @@ class TestMissingDataRecovery:
         
         request = FakeRequest(route_params={'username': 'tester'})
         response = gateway.get_repo_bundle(request)
-        
-        assert response['status_code'] == 200
-        assert capture_success['data']['data'][0]['name'] == 'cached-repo'
+        payload = json.loads(response.get_body())
 
-    def test_job_status_merges_table_and_cache(self, monkeypatch, capture_success):
+        assert response.status_code == 200
+        assert payload['data'][0]['name'] == 'cached-repo'
+
+    def test_job_status_merges_table_and_cache(self, monkeypatch):
         """Verify job status merges table session with cache fallback data."""
         session = {
             'PartitionKey': 'tester',
@@ -140,16 +143,16 @@ class TestMissingDataRecovery:
         
         request = FakeRequest(route_params={'username': 'tester'}, params={'job_id': 'job-1'})
         response = gateway.get_job_status(request)
-        
-        assert response['status_code'] == 200
-        # Should merge cache progress into session
-        assert capture_success['data']['progress']['completed'] == 3
+        payload = json.loads(response.get_body())
+
+        assert response.status_code == 200
+        assert payload['progress']['completed'] == 3
 
 
 class TestFingerprintMismatch:
     """Test fingerprint validation and stale detection."""
 
-    def test_stale_fingerprint_triggers_refresh(self, monkeypatch, capture_success):
+    def test_stale_fingerprint_triggers_refresh(self, monkeypatch):
         """Verify stale repos detected by fingerprint comparison."""
         cached_bundle = {
             'status': 'valid',
@@ -184,35 +187,37 @@ class TestFingerprintMismatch:
         
         request = FakeRequest(route_params={'username': 'tester'})
         response = gateway.trigger_bundle_refresh(request)
-        
-        assert response['status_code'] == 202
+
+        assert response.status_code == 202
         assert 'repo-1' in enqueued  # Should enqueue due to fingerprint mismatch
 
 
 class TestPoisonQueueScenarios:
     """Test handling of malformed queue messages and poison queue behavior."""
 
-    def test_invalid_username_rejected(self, monkeypatch, capture_error):
+    def test_invalid_username_rejected(self, monkeypatch):
         """Verify API rejects requests with invalid usernames."""
         request = FakeRequest(route_params={'username': ''})
         response = gateway.get_repo_bundle(request)
-        
-        assert response['status_code'] == 400
-        assert 'Username required' in capture_error['message']
+        payload = json.loads(response.get_body())
 
-    def test_missing_job_id_parameter(self, monkeypatch, capture_error):
+        assert response.status_code == 400
+        assert 'Username required' in payload.get('error', '')
+
+    def test_missing_job_id_parameter(self, monkeypatch):
         """Verify job status requires job_id parameter."""
         request = FakeRequest(route_params={'username': 'tester'}, params={})
         response = gateway.get_job_status(request)
-        
-        assert response['status_code'] == 400
-        assert 'job_id query parameter required' in capture_error['message']
+        payload = json.loads(response.get_body())
+
+        assert response.status_code == 400
+        assert 'job_id query parameter required' in payload.get('error', '')
 
 
 class TestForceRefreshBehavior:
     """Test force_refresh flag ignores cache and re-syncs all repos."""
 
-    def test_force_refresh_requeues_all_repos(self, monkeypatch, capture_success):
+    def test_force_refresh_requeues_all_repos(self, monkeypatch):
         """Verify force_refresh=true enqueues all repos even when cached."""
         cached_bundle = [{'name': 'repo-1', 'fingerprint': 'fp-1'}]
         all_repos = [{'name': 'repo-1', 'fingerprint': 'fp-1'}]  # Same fingerprint
@@ -250,7 +255,7 @@ class TestForceRefreshBehavior:
 class TestConcurrentJobHandling:
     """Test handling of multiple concurrent jobs for same user."""
 
-    def test_latest_session_returned_when_no_job_id(self, monkeypatch, capture_success):
+    def test_latest_session_returned_when_no_job_id(self, monkeypatch):
         """Verify API returns latest session when job_id not specified."""
         sessions = [
             {
@@ -285,4 +290,4 @@ class TestConcurrentJobHandling:
         # Should fetch latest session (job-new) when no job_id specified
         # Current implementation would return 404 if no repos found.
         # This tests session selection logic.
-        assert response['status_code'] == 404  # No repos, but session selected
+        assert response.status_code == 404  # No repos, but session selected

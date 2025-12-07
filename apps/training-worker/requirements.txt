@@ -2,7 +2,6 @@
 torch==2.2.2
 sentence-transformers==2.6.1
 transformers==4.38.0
-scikit-learn==1.4.0
 numpy==1.26.4
 
 # Azure SDKs

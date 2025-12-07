@@ -1,41 +1,11 @@
+import json
 import uuid
-
-import pytest
 
 import function_app as gateway
 
 from .conftest import FakeRequest
 
-
-@pytest.fixture
-def capture_success(monkeypatch):
-    payload = {}
-
-    def _capture(data, status_code=200, cache_control=None):
-        payload['data'] = data
-        payload['status_code'] = status_code
-        payload['cache_control'] = cache_control
-        return payload
-
-    monkeypatch.setattr(gateway, "_create_success_response", _capture)
-    return payload
-
-
-@pytest.fixture
-def capture_error(monkeypatch):
-    payload = {}
-
-    def _capture(message, status_code=500, details=None):
-        payload['message'] = message
-        payload['status_code'] = status_code
-        payload['details'] = details
-        return payload
-
-    monkeypatch.setattr(gateway, "_create_error_response", _capture)
-    return payload
-
-
-def test_trigger_bundle_refresh_returns_cached_when_no_stale(monkeypatch, capture_success):
+def test_trigger_bundle_refresh_returns_cached_when_no_stale(monkeypatch):
     monkeypatch.setattr(gateway, "_queue_mode_enabled", lambda: True)
     monkeypatch.setattr(
         gateway,
@@ -45,13 +15,14 @@ def test_trigger_bundle_refresh_returns_cached_when_no_stale(monkeypatch, captur
 
     request = FakeRequest(route_params={'username': 'tester'})
     response = gateway.trigger_bundle_refresh(request)
+    payload = json.loads(response.get_body())
 
-    assert response['status_code'] == 200
-    assert capture_success['data']['status'] == 'cached'
-    assert capture_success['data']['repos_count'] == 1
+    assert response.status_code == 200
+    assert payload['status'] == 'cached'
+    assert payload['repos_count'] == 1
 
 
-def test_trigger_bundle_refresh_enqueues_jobs(monkeypatch, capture_success):
+def test_trigger_bundle_refresh_enqueues_jobs(monkeypatch):
     monkeypatch.setattr(gateway, "_queue_mode_enabled", lambda: True)
     monkeypatch.setattr(
         gateway,
@@ -118,28 +89,30 @@ def test_trigger_bundle_refresh_enqueues_jobs(monkeypatch, capture_success):
 
     request = FakeRequest(route_params={'username': 'tester'})
     response = gateway.trigger_bundle_refresh(request)
+    payload = json.loads(response.get_body())
 
     job_id = str(uuid.UUID(int=1))
-    assert response['status_code'] == 202
+    assert response.status_code == 202
     assert set(enqueued) == {"repo-one", "repo-two"}
     assert cache_records['payload']['queued_repos'] == ["repo-one", "repo-two"]
     assert stored_sessions[("tester", job_id)]['queued_repos'] == ["repo-one", "repo-two"]
-    assert capture_success['data']['job_id'] == job_id
+    assert payload['job_id'] == job_id
 
 
-def test_get_job_status_handles_missing_job(monkeypatch, capture_error):
+def test_get_job_status_handles_missing_job(monkeypatch):
     monkeypatch.setattr(gateway.table_manager, "is_enabled", lambda: True)
     monkeypatch.setattr(gateway.table_manager, "get_candidate_session", lambda username, job_id: None)
     monkeypatch.setattr(gateway.cache_manager, "get", lambda key: {"status": "missing", "data": None})
 
     request = FakeRequest(route_params={'username': 'tester'}, params={'job_id': 'abc'})
     response = gateway.get_job_status(request)
+    payload = json.loads(response.get_body())
 
-    assert response['status_code'] == 404
-    assert capture_error['message'] == "Job not found or expired"
+    assert response.status_code == 404
+    assert payload['error'] == "Job not found or expired"
 
 
-def test_get_job_status_returns_progress(monkeypatch, capture_success):
+def test_get_job_status_returns_progress(monkeypatch):
     session = {
         'PartitionKey': 'tester',
         'RowKey': 'abc',
@@ -158,13 +131,14 @@ def test_get_job_status_returns_progress(monkeypatch, capture_success):
 
     request = FakeRequest(route_params={'username': 'tester'}, params={'job_id': 'abc'})
     response = gateway.get_job_status(request)
+    payload = json.loads(response.get_body())
 
-    assert response['status_code'] == 200
-    assert capture_success['data']['progress']['percentage'] == 50
-    assert capture_success['data']['status'] == 'queued'
+    assert response.status_code == 200
+    assert payload['progress']['percentage'] == 50
+    assert payload['status'] == 'queued'
 
 
-def test_get_repo_bundle_prefers_table(monkeypatch, capture_success):
+def test_get_repo_bundle_prefers_table(monkeypatch):
     session = {
         'PartitionKey': 'tester',
         'RowKey': 'job-1',
@@ -201,8 +175,8 @@ def test_get_repo_bundle_prefers_table(monkeypatch, capture_success):
 
     request = FakeRequest(route_params={'username': 'tester'})
     response = gateway.get_repo_bundle(request)
+    payload = json.loads(response.get_body())
 
-    assert response['status_code'] == 200
-    payload = capture_success['data']
+    assert response.status_code == 200
     assert payload['fingerprint'] == 'bundle-fp'
     assert payload['data'][0]['name'] == 'repo-one'

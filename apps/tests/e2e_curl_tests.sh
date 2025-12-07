@@ -33,6 +33,9 @@ APPS_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Defaults
 API_PORT="${API_PORT:-7071}"
+SYNC_PORT="${SYNC_PORT:-7072}"
+MERGE_PORT="${MERGE_PORT:-7073}"
+TRAINING_HEALTH_URL="${TRAINING_HEALTH_URL:-}"
 API_BASE="http://localhost:${API_PORT}/api"
 TEST_USERNAME="${TEST_USERNAME:-yungryce}"
 VERBOSE=false
@@ -79,8 +82,11 @@ Options:
   -v, --verbose           Show full response bodies
   -u, --username USER     GitHub username to test (default: yungryce)
   --api-port PORT         API Gateway port (default: 7071)
+    --sync-port PORT        Sync worker port (default: 7072)
+    --merge-port PORT       Merge worker port (default: 7073)
+    --training-health-url   Optional HTTP health endpoint for training worker
   --skip-prereqs          Skip Azurite/server checks
-  --only SUITE            Run only: health, bundles, refresh, ai
+    --only SUITE            Run only: health, bundles, refresh, ai, worker-health, pipeline
 
 Prerequisites:
   1. Start Azurite:
@@ -122,6 +128,18 @@ parse_args() {
             --api-port)
                 API_PORT="$2"
                 API_BASE="http://localhost:${API_PORT}/api"
+                shift 2
+                ;;
+            --sync-port)
+                SYNC_PORT="$2"
+                shift 2
+                ;;
+            --merge-port)
+                MERGE_PORT="$2"
+                shift 2
+                ;;
+            --training-health-url)
+                TRAINING_HEALTH_URL="$2"
                 shift 2
                 ;;
             --skip-prereqs)
@@ -233,6 +251,13 @@ check_service() {
     fi
 }
 
+# Query Azure Functions host status endpoint for a worker
+func_host_status() {
+    local port="$1"
+    local url="http://localhost:${port}/admin/host/status"
+    curl -s --max-time 5 "$url" -w '\n%{http_code}' 2>/dev/null || echo -e "\n000"
+}
+
 # =============================================================================
 # Prerequisite Checks
 # =============================================================================
@@ -265,6 +290,52 @@ check_prerequisites() {
         log_error "API Gateway must be running on port $API_PORT"
         log_info "Start with: cd apps/api-gateway && func start --port $API_PORT"
         exit 1
+    fi
+}
+
+test_worker_health() {
+    log_section "Worker Host Health"
+
+    declare -A WORKERS=(
+        [api-gateway]="$API_PORT"
+        [sync-worker]="$SYNC_PORT"
+        [merge-worker]="$MERGE_PORT"
+    )
+
+    for name in "${!WORKERS[@]}"; do
+        local port="${WORKERS[$name]}"
+        log_test "$name /admin/host/status (port $port)"
+        local response status body
+        response=$(func_host_status "$port")
+        status=$(echo "$response" | tail -1)
+        body=$(echo "$response" | head -n -1)
+
+        if assert_status "200" "$status" "$name host reachable"; then
+            local state
+            state=$(echo "$body" | jq -r '.state // .runtimeState // empty' 2>/dev/null)
+            if [[ "$state" =~ ^(Running|Default)$ ]]; then
+                log_pass "$name runtime state: $state"
+            else
+                log_warn "$name reported state '$state'"
+            fi
+            [[ "$VERBOSE" == true ]] && echo "$body" | jq . 2>/dev/null || true
+        fi
+    done
+
+    if [[ -n "$TRAINING_HEALTH_URL" ]]; then
+        log_test "training-worker health"
+        local resp status body
+        resp=$(curl -s "$TRAINING_HEALTH_URL" -w '\n%{http_code}' --max-time 5 2>/dev/null || echo -e "\n000")
+        status=$(echo "$resp" | tail -1)
+        body=$(echo "$resp" | head -n -1)
+        if assert_status "200" "$status" "training-worker reachable"; then
+            log_pass "training-worker responded"
+        else
+            log_warn "training-worker health endpoint not ready"
+        fi
+        [[ "$VERBOSE" == true ]] && echo "$body" || true
+    else
+        log_skip "training-worker health skipped (set TRAINING_HEALTH_URL to enable)"
     fi
 }
 
@@ -481,12 +552,12 @@ test_ai() {
 # =============================================================================
 # Integration/Workflow Tests
 # =============================================================================
-test_full_workflow() {
-    log_section "Full Workflow Integration Test"
+test_pipeline() {
+    log_section "API → Sync → Merge Pipeline"
     
     local response status body job_id
     
-    log_info "Testing complete refresh → poll → query workflow for $TEST_USERNAME"
+    log_info "Testing complete refresh → sync → merge → bundle for $TEST_USERNAME"
     
     # Step 1: Trigger refresh
     log_test "Step 1: Trigger refresh"
@@ -504,7 +575,7 @@ test_full_workflow() {
     if [[ -z "$job_id" ]]; then
         log_info "Bundle was cached, skipping poll"
     else
-        log_pass "Job started: ${job_id:0:8}..."
+        log_pass "Job started: ${job_id:0:8}... (sync-worker should consume github-sync)"
         
         # Step 2: Poll for completion (max 60 seconds)
         log_test "Step 2: Poll job status"
@@ -602,6 +673,7 @@ main() {
     log_info "API Base: $API_BASE"
     log_info "Test Username: $TEST_USERNAME"
     log_info "Verbose: $VERBOSE"
+    log_info "Worker ports: api=$API_PORT sync=$SYNC_PORT merge=$MERGE_PORT"
     
     # Prerequisites
     if [[ "$SKIP_PREREQS" != true ]]; then
@@ -613,6 +685,9 @@ main() {
         health)
             test_health
             ;;
+        worker-health)
+            test_worker_health
+            ;;
         bundles)
             test_bundles
             ;;
@@ -622,19 +697,21 @@ main() {
         ai)
             test_ai
             ;;
-        workflow)
-            test_full_workflow
+        pipeline)
+            test_pipeline
             ;;
         "")
             # Run all suites
+            test_worker_health
             test_health
             test_bundles
             test_refresh
+            test_pipeline
             test_ai
             ;;
         *)
             log_error "Unknown suite: $ONLY_SUITE"
-            log_info "Valid suites: health, bundles, refresh, ai, workflow"
+            log_info "Valid suites: health, worker-health, bundles, refresh, ai, pipeline"
             exit 1
             ;;
     esac

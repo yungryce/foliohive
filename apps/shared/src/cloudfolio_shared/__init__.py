@@ -5,7 +5,6 @@ This package provides reusable utilities for:
 - Cache: Azure Blob storage management, fingerprinting
 - GitHub: API client, repository management
 - Queue: Azure Storage Queue operations
-- Models: Pydantic schemas
 - Linguist: Language detection based on GitHub Linguist
 
 Usage:
