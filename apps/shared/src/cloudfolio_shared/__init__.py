@@ -26,6 +26,7 @@ __all__ = [
     "linguist",
     "models",
     "queue",
+    "table",
     # Version
     "__version__",
 ]
@@ -60,6 +61,12 @@ def __getattr__(name: str):
     if name == "QueueManager":
         from cloudfolio_shared.queue.queue_manager import QueueManager
         return QueueManager
+    if name == "table_manager":
+        from cloudfolio_shared.table import table_manager
+        return table_manager
+    if name == "TableManager":
+        from cloudfolio_shared.table import TableManager
+        return TableManager
     
     # AI utilities
     if name == "AIAssistant":

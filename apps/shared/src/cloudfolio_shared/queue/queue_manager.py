@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
@@ -18,6 +19,13 @@ JOB_STATUS_QUEUE = "job-status-updates"
 
 def _clean_queue_name(name: str) -> str:
     return name.strip().lower()
+
+
+def _bundle_cache_key(username: str) -> str:
+    username_str = str(username or "").strip()
+    if not username_str:
+        return ""
+    return f"repos_bundle_context_{username_str}"
 
 
 class QueueManager:
@@ -113,12 +121,22 @@ class QueueManager:
         return True
 
     def enqueue_sync_job(self, job_id: str, username: str, repo_metadata: Dict, fingerprint: Optional[str] = None) -> bool:
+        repo_name = repo_metadata.get('name') if isinstance(repo_metadata, dict) else None
+        resolved_fingerprint = fingerprint or (repo_metadata.get('fingerprint') if isinstance(repo_metadata, dict) else None)
         message = {
+            "schema_version": "2025-12-01",
             "job_id": job_id,
             "username": username,
-            "repo_name": repo_metadata.get('name'),
+            "repo_name": repo_name,
             "metadata": repo_metadata,
-            "fingerprint": fingerprint or repo_metadata.get('fingerprint')
+            "fingerprint": resolved_fingerprint,
+            "bundle_cache_key": _bundle_cache_key(username),
+            "blob_batch": {"status": "pending", "items": []},
+            "queued_at": datetime.now(timezone.utc).isoformat(),
+            "repo": {
+                "name": repo_name,
+                "fingerprint": resolved_fingerprint,
+            },
         }
         return self.send_message(SYNC_QUEUE, message)
 

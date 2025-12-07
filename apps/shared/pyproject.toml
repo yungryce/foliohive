@@ -25,6 +25,7 @@ dependencies = [
     "azure-storage-blob",
     "azure-storage-queue",
     "azure-identity",
+    "azure-data-tables",
     "requests",
     "pydantic",
     # AI/ML core (lightweight, needed for shared module)
