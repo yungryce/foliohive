@@ -12,6 +12,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+try:
+    from cloudfolio_shared import table_manager
+    from cloudfolio_shared.table import ModelMetadataRow
+except ImportError:  # pragma: no cover - graceful degradation for local dev without shared package
+    table_manager = None
+    ModelMetadataRow = None
+
 MODULE_DIR = Path(__file__).resolve().parent
 if str(MODULE_DIR) not in sys.path:  # pragma: no cover - runtime convenience
     sys.path.append(str(MODULE_DIR))
@@ -134,7 +141,8 @@ class TrainingWorker:
             training_params=training_params,
             repos=documented_repos,
         )
-        self._save_metadata(metadata)
+        self._save_metadata_blob(metadata)
+        self._save_metadata_table(username, fingerprint, experiment_name, metadata)
         logger.info("Training job completed for %s (%s)", username, fingerprint[:8])
         return True
 
@@ -181,11 +189,36 @@ class TrainingWorker:
         else:  # Allow fake messages in unit tests
             self.queue_client.delete_message(message)
 
-    def _save_metadata(self, metadata: Dict[str, Any]) -> None:
+    def _save_metadata_blob(self, metadata: Dict[str, Any]) -> None:
+        """Save metadata to blob storage for historical audit and debugging."""
         container = self.blob_service.get_container_client(self.container_name)
         blob_name = f"model_metadata_{metadata['fingerprint']}.json"
         blob = container.get_blob_client(blob_name)
         blob.upload_blob(json.dumps(metadata, indent=2), overwrite=True)
+
+    def _save_metadata_table(self, username: str, fingerprint: str, experiment_name: str, metadata: Dict[str, Any]) -> None:
+        """Persist model metadata to Azure Tables via table_manager per plan-modelTraining.prompt.md."""
+        if not table_manager or not ModelMetadataRow:
+            logger.warning("table_manager unavailable; skipping table metadata write")
+            return
+        if not table_manager.is_enabled():
+            logger.info("Table storage disabled; model metadata only in blobs")
+            return
+        
+        try:
+            row = ModelMetadataRow(
+                username=username,
+                model_fingerprint=fingerprint,
+                experiment_name=experiment_name,
+                trained_at=metadata.get('timestamp') or datetime.now(timezone.utc).isoformat(),
+                repos_count=metadata.get('repos_count', 0),
+                repo_names=metadata.get('repo_names', []),
+                training_params=metadata.get('training_params', {}),
+            )
+            table_manager.upsert_model_metadata(row)
+            logger.info("Model metadata written to table for %s (%s)", username, fingerprint[:8])
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.error("Failed to write model metadata to table: %s", exc, exc_info=True)
 
     # ----------------------------------------------------------------------------------
     # Utility helpers

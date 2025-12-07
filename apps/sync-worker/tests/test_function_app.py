@@ -37,6 +37,19 @@ def test_fetch_repo_bundle_caches_and_returns_expected(monkeypatch):
         def get_all_file_types(self, repo_name, username):
             return {".py": 3}
 
+    class StubTableManager:
+        def __init__(self):
+            self.rows = []
+
+        def is_enabled(self):
+            return True
+
+        def upsert_repo_metadata(self, row):
+            self.rows.append(row)
+
+    table_stub = StubTableManager()
+
+    monkeypatch.setattr(sync_app, "table_manager", table_stub)
     monkeypatch.setattr(sync_app, "_get_repo_manager", lambda username: FakeRepoManager())
     monkeypatch.setattr(
         sync_app.FingerprintManager,
@@ -61,29 +74,44 @@ def test_fetch_repo_bundle_caches_and_returns_expected(monkeypatch):
     monkeypatch.setattr(sync_app.cache_manager, "generate_cache_key", lambda **kwargs: "repo:demo")
     monkeypatch.setattr(sync_app.cache_manager, "save", fake_save)
 
-    result = sync_app._fetch_repo_bundle("tester", repo_metadata, None)
+    result = sync_app._fetch_repo_bundle("job-1", "tester", repo_metadata, None)
 
     assert result["name"] == "demo"
     assert result["fingerprint"] == "fingerprint-value"
-    assert result["categorized_types"] == {"detected": [".py"]}
     assert captured["cache_key"] == "repo:demo"
-    assert captured["fingerprint"] == "fingerprint-value"
+    assert table_stub.rows and table_stub.rows[0].repo_name == "demo"
+    assert table_stub.rows[0].job_id == "job-1"
+    assert table_stub.rows[0].fingerprint == "fingerprint-value"
 
 
 def test_update_job_progress_tracks_completion(monkeypatch):
-    job_state = {
-        "status": "valid",
-        "data": {
-            "synced_repos": [],
-            "completed_repos": 0,
-            "total_repos": 1,
-            "expected_repos": ["demo"],
-            "queued_repos": ["demo"],
-            "status": "queued",
-        },
-    }
+    class StubTableManager:
+        def __init__(self):
+            self.session = {
+                "job_id": "job-123",
+                "username": "tester",
+                "synced_repos": [],
+                "completed_repos": 0,
+                "total_repos": 1,
+                "expected_repos": ["demo"],
+                "queued_repos": ["demo"],
+                "status": "queued",
+            }
+            self.last_update = None
 
-    monkeypatch.setattr(sync_app.cache_manager, "get", lambda key: job_state)
+        def is_enabled(self):
+            return True
+
+        def get_candidate_session(self, username, job_id):
+            return dict(self.session)
+
+        def update_candidate_session(self, username, job_id, updates):
+            self.last_update = updates
+            self.session.update(updates)
+
+    table_stub = StubTableManager()
+    monkeypatch.setattr(sync_app, "table_manager", table_stub)
+    monkeypatch.setattr(sync_app.cache_manager, "get", lambda key: {"status": "missing", "data": None})
 
     saves = []
 
@@ -103,9 +131,14 @@ def test_update_job_progress_tracks_completion(monkeypatch):
 
     sync_app._update_job_progress("job-123", "tester", "demo")
 
-    assert len(saves) == 2
+    assert table_stub.last_update == {
+        "synced_repos": ["demo"],
+        "completed_repos": 1,
+        "total_repos": 1,
+        "status": "synced",
+    }
+    assert saves and saves[0][1]["synced_repos"] == ["demo"]
     assert merge_jobs == [("job-123", "tester", ["demo"])]
-    assert saves[-1][1]["status"] == "synced"
 
 
 def test_process_sync_job_invokes_handlers(monkeypatch):
@@ -121,8 +154,8 @@ def test_process_sync_job_invokes_handlers(monkeypatch):
     monkeypatch.setattr(
         sync_app,
         "_fetch_repo_bundle",
-        lambda username, repo_metadata, fingerprint: calls.setdefault(
-            "fetch", (username, repo_metadata.copy(), fingerprint)
+        lambda job_id, username, repo_metadata, fingerprint: calls.setdefault(
+            "fetch", (job_id, username, repo_metadata.copy(), fingerprint)
         ),
     )
     monkeypatch.setattr(
@@ -133,5 +166,5 @@ def test_process_sync_job_invokes_handlers(monkeypatch):
 
     sync_app.process_sync_job(message)
 
-    assert calls["fetch"] == ("tester", {"name": "demo"}, "abc")
+    assert calls["fetch"] == ("job-456", "tester", {"name": "demo"}, "abc")
     assert calls["progress"] == ("job-456", "tester", "demo")

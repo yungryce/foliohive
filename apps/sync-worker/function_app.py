@@ -12,8 +12,6 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
-print("[SYNC-INIT] Starting function_app.py module load...")
-
 try:
     import azure.functions as func  # type: ignore
 except ImportError:  # pragma: no cover - local/unit-test fallback
@@ -55,7 +53,9 @@ from cloudfolio_shared import (
     GitHubRepoManager,
     queue_manager,
     FileTypeAnalyzer,
+    table_manager,
 )
+from cloudfolio_shared.table import RepoMetadataRow
 
 
 logger = logging.getLogger('portfolio.api')
@@ -65,6 +65,7 @@ logger.propagate = True
 app = func.FunctionApp()
 
 JOB_METADATA_TTL_SECONDS = 4 * 3600
+READ_ME_EXCERPT_MAX_CHARS = 4096
 
 
 def _get_repo_manager(username: str) -> GitHubRepoManager:
@@ -76,7 +77,6 @@ def _get_repo_manager(username: str) -> GitHubRepoManager:
 
 
 def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
-    # message = json.loads(msg.get_body().decode())
     body_bytes = msg.get_body()
     body_str = body_bytes.decode('utf-8') if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
     payload = json.loads(body_str)
@@ -84,7 +84,7 @@ def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     return payload
 
 
-def _fetch_repo_bundle(username: str, repo_metadata: Dict[str, Any], fingerprint: Optional[str]) -> Dict[str, Any]:
+def _fetch_repo_bundle(job_id: str, username: str, repo_metadata: Dict[str, Any], fingerprint: Optional[str]) -> Dict[str, Any]:
     repo_manager = _get_repo_manager(username)
     repo_name = repo_metadata.get('name')
     if not repo_name:
@@ -121,58 +121,105 @@ def _fetch_repo_bundle(username: str, repo_metadata: Dict[str, Any], fingerprint
 
     cache_key = cache_manager.generate_cache_key(kind='repo', username=username, repo=repo_name)
     cache_manager.save(cache_key, result, ttl=None, fingerprint=resolved_fingerprint)
+    _persist_repo_metadata(job_id, username, result, cache_key)
     logger.info("Cached repo %s/%s fingerprint=%s", username, repo_name, resolved_fingerprint)
     return result
 
 
-def _update_job_progress(job_id: str, username: str, repo_name: str) -> None:
+def _load_job_snapshot(job_id: str, username: str) -> Dict[str, Any]:
+    snapshot: Dict[str, Any] = {}
+    if table_manager.is_enabled():
+        table_row = table_manager.get_candidate_session(username, job_id)
+        if table_row:
+            snapshot = dict(table_row)
+    if snapshot:
+        return snapshot
+
     job_key = f"job:{job_id}"
     job_entry = cache_manager.get(job_key)
-    if job_entry.get('status') != 'valid' or not isinstance(job_entry.get('data'), dict):
-        logger.warning("Job metadata missing or expired for job %s; reinitializing", job_id)
-        job_info: Dict[str, Any] = {
-            'job_id': job_id,
-            'username': username,
-            'synced_repos': [],
-            'expected_repos': [],
-            'queued_repos': [],
-            'completed_repos': 0,
-            'total_repos': 0,
-            'status': 'queued',
-        }
-    else:
-        job_info = dict(job_entry['data'])
+    if job_entry.get('status') == 'valid' and isinstance(job_entry.get('data'), dict):
+        return dict(job_entry['data'])
+
+    logger.warning("Job metadata missing for %s; initializing defaults", job_id)
+    return {
+        'job_id': job_id,
+        'username': username,
+        'synced_repos': [],
+        'expected_repos': [],
+        'queued_repos': [],
+        'completed_repos': 0,
+        'total_repos': 0,
+        'status': 'queued',
+    }
+
+
+def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, Any], content_blob: str) -> None:
+    if not table_manager.is_enabled():
+        return
+
+    repo_name = repo_payload.get('name')
+    if not repo_name:
+        return
+
+    document = {
+        'name': repo_name,
+        'metadata': repo_payload.get('metadata'),
+        'file_types': repo_payload.get('file_types'),
+        'categorized_types': repo_payload.get('categorized_types'),
+        'fingerprint': repo_payload.get('fingerprint'),
+        'has_documentation': repo_payload.get('has_documentation'),
+    }
+
+    row = RepoMetadataRow(
+        username=username,
+        repo_name=repo_name,
+        fingerprint=repo_payload.get('fingerprint'),
+        job_id=job_id,
+        document=document,
+        content_blob=content_blob,
+        languages=repo_payload.get('languages', {}),
+        categorized_types=repo_payload.get('categorized_types', {}),
+        has_documentation=repo_payload.get('has_documentation'),
+        readme_excerpt=(repo_payload.get('readme') or '')[:READ_ME_EXCERPT_MAX_CHARS],
+        last_synced_at=repo_payload.get('metadata', {}).get('updated_at') if isinstance(repo_payload.get('metadata'), dict) else None,
+    )
+    table_manager.upsert_repo_metadata(row)
+
+
+def _update_job_progress(job_id: str, username: str, repo_name: str) -> None:
+    job_info = _load_job_snapshot(job_id, username)
     synced = set(job_info.get('synced_repos', []))
     if repo_name:
         synced.add(repo_name)
-    job_info['synced_repos'] = sorted(synced)
-    job_info['completed_repos'] = len(synced)
 
-    # Derive a realistic total based on the repos we *intend* workers
-    # to process (queued_repos), falling back to expected_repos and the
-    # current synced set. This makes completion resilient to repos that
-    # were never actually queued or later dropped.
     queued_repos = job_info.get('queued_repos') or []
     expected_repos = job_info.get('expected_repos') or []
-    inferred_total = len(queued_repos) or len(expected_repos) or len(synced)
-    total = job_info.get('total_repos') or inferred_total
-    job_info['total_repos'] = max(total, inferred_total, len(synced))
+    synced_list = sorted(synced)
+    completed = len(synced_list)
+    inferred_total = len(queued_repos) or len(expected_repos) or completed
+    total_target = max(job_info.get('total_repos', 0), inferred_total, completed)
 
-    cache_manager.save(job_key, job_info, ttl=JOB_METADATA_TTL_SECONDS)
+    updates = {
+        'synced_repos': synced_list,
+        'completed_repos': completed,
+        'total_repos': total_target,
+    }
+
+    queued_set = set(queued_repos)
+    should_merge = bool(queued_set) and queued_set.issubset(synced)
+    if should_merge:
+        updates['status'] = 'synced'
+
+    if table_manager.is_enabled():
+        table_manager.update_candidate_session(username, job_id, updates)
+
+    job_info.update(updates)
+    cache_manager.save(f"job:{job_id}", job_info, ttl=JOB_METADATA_TTL_SECONDS)
     logger.info("Job %s progress: %s/%s", job_id, job_info['completed_repos'], job_info['total_repos'])
 
-    # Trigger merge when we've processed everything we realistically
-    # expect to see: when completed_repos covers all queued_repos and
-    # there is at least one repo. This avoids jobs stalling because an
-    # expected repo never produced a queue message.
-    queued_set = set(queued_repos)
-    completed_set = set(job_info['synced_repos'])
-    should_merge = bool(queued_set) and queued_set.issubset(completed_set)
     if should_merge:
-        job_info['status'] = 'synced'
-        cache_manager.save(job_key, job_info, ttl=JOB_METADATA_TTL_SECONDS)
         if queue_manager.is_enabled():
-            queue_manager.enqueue_merge_job(job_id, username, job_info['synced_repos'])
+            queue_manager.enqueue_merge_job(job_id, username, synced_list)
             logger.info("Job %s enqueued for merge", job_id)
         else:
             logger.warning("Queue manager disabled; merge job not enqueued for %s", job_id)
@@ -182,38 +229,18 @@ def _update_job_progress(job_id: str, username: str, repo_name: str) -> None:
 def process_sync_job(msg: func.QueueMessage) -> None:
     """Process a single repository sync message."""
     logger.info("Sync worker processing message from github-sync queue")
-    import traceback
-    print("[SYNC] Starting message processing...")
-    
     try:
-        # Step 1: Deserialize message
-        print("[SYNC] Step 1: Deserializing message...")
-        logger.info("Sync worker processing message from github-sync queue")
         payload = _deserialize_message(msg)
         username = payload.get('username')
         job_id = payload.get('job_id')
         repo_metadata = payload.get('metadata') or {}
         repo_name = repo_metadata.get('name')
-        print(f"[SYNC] Parsed: username={username}, job_id={job_id}, repo={repo_name}")
 
         if not username or not job_id or not repo_name:
             raise ValueError("username, job_id, and repo metadata are required")
 
-        # Step 2: Fetch repo bundle
-        print(f"[SYNC] Step 2: Fetching repo bundle for {username}/{repo_name}...")
-        _fetch_repo_bundle(username, repo_metadata, payload.get('fingerprint'))
-        print(f"[SYNC] Step 2 complete: repo bundle fetched")
-        
-        # Step 3: Update job progress
-        print(f"[SYNC] Step 3: Updating job progress for {job_id}...")
+        _fetch_repo_bundle(job_id, username, repo_metadata, payload.get('fingerprint'))
         _update_job_progress(job_id, username, repo_name)
-        print(f"[SYNC] Step 3 complete: job progress updated")
-        
-        print(f"[SYNC] SUCCESS: Processed {username}/{repo_name}")
-        
     except Exception as exc:
-        error_tb = traceback.format_exc()
-        print(f"[SYNC] ERROR: {type(exc).__name__}: {exc}")
-        print(f"[SYNC] TRACEBACK:\n{error_tb}")
         logger.error("Sync worker failure: %s", exc, exc_info=True)
         raise

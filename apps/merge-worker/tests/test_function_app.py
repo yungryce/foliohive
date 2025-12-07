@@ -6,6 +6,8 @@ import function_app as merge_app
 def test_process_merge_payload_merges_cached_and_fresh(monkeypatch):
     payload = {"job_id": "job-1", "username": "tester", "synced_repos": ["repo-a"]}
 
+    monkeypatch.setattr(merge_app.table_manager, "is_enabled", lambda: False)
+
     def fake_generate_cache_key(kind, username, repo=None):
         if kind == "bundle":
             return f"bundle:{username}"
@@ -48,6 +50,7 @@ def test_process_merge_payload_merges_cached_and_fresh(monkeypatch):
     assert saves[0][0] == "bundle:tester"
     assert saves[0][3]  # fingerprint saved with bundle
     assert saves[1][0] == "job:job-1"
+    assert saves[1][1]["synced_repos"] == ["repo-a", "repo-b"]
     assert enqueued and enqueued[0][0] == "tester"
     assert len(enqueued[0][1]) == 2
 
@@ -64,23 +67,26 @@ def test_resolve_fresh_repos_prefers_payload(monkeypatch):
         raise AssertionError("should not call cache hydrator")
 
     monkeypatch.setattr(merge_app, "_load_repos_from_cache", explode)
+    monkeypatch.setattr(merge_app.table_manager, "is_enabled", lambda: False)
 
-    fresh = merge_app._resolve_fresh_repos(payload, "tester")
+    fresh = merge_app._resolve_fresh_repos(payload, "tester", "job-1")
 
     assert fresh == payload["fresh_repos"]
 
 
 def test_resolve_cached_bundle_falls_back_to_cache(monkeypatch):
-    monkeypatch.setattr(merge_app, "_load_cached_bundle", lambda username: [{"name": "cached"}])
+    monkeypatch.setattr(merge_app, "_load_cached_bundle", lambda username, job_id: [{"name": "cached"}])
+    monkeypatch.setattr(merge_app.table_manager, "is_enabled", lambda: False)
 
-    result = merge_app._resolve_cached_bundle({}, "tester")
+    result = merge_app._resolve_cached_bundle({}, "tester", "job-1")
 
     assert result == [{"name": "cached"}]
 
 
 def test_process_merge_payload_handles_empty_data(monkeypatch):
-    monkeypatch.setattr(merge_app, "_resolve_fresh_repos", lambda payload, username: [])
-    monkeypatch.setattr(merge_app, "_resolve_cached_bundle", lambda payload, username: [])
+    monkeypatch.setattr(merge_app, "_resolve_fresh_repos", lambda payload, username, job_id: [])
+    monkeypatch.setattr(merge_app, "_resolve_cached_bundle", lambda payload, username, job_id: [])
+    monkeypatch.setattr(merge_app.table_manager, "is_enabled", lambda: False)
 
     merged = merge_app._process_merge_payload({"job_id": "job-2", "username": "tester"})
 

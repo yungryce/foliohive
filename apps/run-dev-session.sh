@@ -29,12 +29,9 @@ declare -a WORKER_PIDS=()
 declare -a WORKER_NAMES=()
 declare -a WORKER_LOGS=()
 
-SKIP_PULL=false
 SKIP_E2E=false
 QUIET=false
 VENV_ACTIVE=false
-NO_TEST_RUN=false
-SETUP_ARGS=()
 
 usage() {
     cat <<'EOF'
@@ -42,8 +39,6 @@ Usage: ./run-dev-session.sh [options]
 
 Options:
   -h, --help          Show this help message
-  -sp, --skip-pull    Skip git fetch/pull for pilot branch
-  --no-test-run       Skip tests during setup (runs setup only)
   --skip-e2e          Skip ./tests/e2e_curl_tests.sh
   --quiet             Reduce log chatter once workers are running
 
@@ -90,16 +85,6 @@ parse_args() {
                 usage
                 exit 0
                 ;;
-            -sp|--skip-pull)
-                SKIP_PULL=true
-                shift
-                continue
-                ;;
-            --no-test-run)
-                NO_TEST_RUN=true
-                shift
-                continue
-                ;;
             --skip-e2e)
                 SKIP_E2E=true
                 shift
@@ -107,19 +92,6 @@ parse_args() {
                 ;;
             --quiet)
                 QUIET=true
-                shift
-                continue
-                ;;
-            --)
-                shift
-                while [[ $# -gt 0 ]]; do
-                    SETUP_ARGS+=("$1")
-                    shift
-                done
-                break
-                ;;
-            *)
-                SETUP_ARGS+=("$1")
                 shift
                 continue
                 ;;
@@ -133,55 +105,6 @@ require_command() {
         log_error "Required command '$cmd' not found in PATH"
         exit 1
     fi
-}
-
-setup_args_contains() {
-    local seek="$1"
-    for arg in "${SETUP_ARGS[@]}"; do
-        [[ "$arg" == "$seek" ]] && return 0
-    done
-    return 1
-}
-
-ensure_branch_synced() {
-    if [[ "$SKIP_PULL" == true ]]; then
-        log_warn "Skipping git pull as requested"
-        return
-    fi
-    log_step "Syncing branch 'pilot' with origin"
-    require_command git
-    local current_branch
-    current_branch=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
-    if [[ "$current_branch" != "pilot" ]]; then
-        log_warn "Current branch is $current_branch (expected pilot)"
-    fi
-    git -C "$REPO_ROOT" fetch origin
-    git -C "$REPO_ROOT" pull --ff-only origin pilot
-}
-
-run_setup() {
-    local setup_cmd=("./setup-dev.sh")
-
-    if [[ "$NO_TEST_RUN" != true ]]; then
-        if ! setup_args_contains "--run-tests"; then
-            setup_cmd+=("--run-tests")
-        fi
-        log_step "Running setup-dev.sh with tests"
-    else
-        log_step "Running setup-dev.sh (tests skipped)"
-        # Ensure we do not force tests if user explicitly asked to skip
-        for i in "${!SETUP_ARGS[@]}"; do
-            if [[ "${SETUP_ARGS[$i]}" == "--run-tests" ]]; then
-                unset 'SETUP_ARGS[$i]'
-            fi
-        done
-    fi
-
-    if [[ ${#SETUP_ARGS[@]} -gt 0 ]]; then
-        setup_cmd+=("${SETUP_ARGS[@]}")
-    fi
-
-    (cd "$APPS_DIR" && "${setup_cmd[@]}")
 }
 
 activate_venv() {
@@ -271,6 +194,7 @@ start_worker() {
     WORKER_NAMES+=("$name")
     WORKER_PIDS+=("$pid")
     WORKER_LOGS+=("$log_file")
+    log_info "$name PID: $pid (log: $log_file)"
 
     wait_for_worker_ready "$name" "$log_file" "$pid"
 }
@@ -308,23 +232,6 @@ main() {
     parse_args "$@"
     ensure_dependencies
     
-    # Warn about git pull if not skipped
-    if [[ "$SKIP_PULL" == false ]]; then
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "${YELLOW}⚠️  Git pull will be performed on branch 'pilot'${NC}"
-        echo -e "${YELLOW}To skip: use -sp or --skip-pull${NC}"
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo ""
-        read -p "Continue? (y/n) " -n 1 -r
-        echo ""
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_warn "Aborted by user"
-            exit 0
-        fi
-    fi
-    
-    ensure_branch_synced
-    run_setup
     activate_venv
     validate_env
     clean_logs

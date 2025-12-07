@@ -1,9 +1,10 @@
 """API Gateway Function App for Cloudfolio.
 
 This app exposes HTTP endpoints for recruiters to trigger repo refresh jobs,
-poll job status, fetch cached bundles, query the semantic assistant, and
-retrieve survey media. It replaces the old Durable Functions monolith with a
-queue-based architecture described in `.github/prompts/plan-azureStorageQueuesArchitecture.prompt.md`.
+poll job status, fetch cached bundles, and query the semantic assistant.
+It implements the queue-based architecture described in 
+`.github/prompts/plan-dataProcessingArchitecture.prompt.md` with table-first
+data access per `.github/prompts/plan-sharedArchitecture.prompt.md`.
 """
 
 from __future__ import annotations
@@ -27,7 +28,10 @@ from cloudfolio_shared import (
     queue_manager,
     AIAssistant,
     RepoScoringService,
+    table_manager,
 )
+
+from cloudfolio_shared.table import CandidateSessionRow
 
 try:  # Azure SDK may be unavailable in local dev; ignore import failures gracefully
     from azure.core.exceptions import ResourceNotFoundError
@@ -40,6 +44,8 @@ logger.setLevel(logging.INFO)
 logger.propagate = True
 
 app = func.FunctionApp()
+
+USERNAME_REQUIRED_MESSAGE = "Username required"
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +97,157 @@ def _get_github_repo_manager(username: str) -> GitHubRepoManager:
 
 def _job_cache_key(job_id: str) -> str:
     return f"job:{job_id}"
+
+
+def _table_enabled() -> bool:
+    try:
+        return table_manager.is_enabled()
+    except Exception:  # pragma: no cover - defensive fallback
+        return False
+
+
+def _parse_iso(timestamp: Optional[str]) -> datetime:
+    if not timestamp:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        if timestamp.endswith('Z'):
+            timestamp = timestamp[:-1] + '+00:00'
+        return datetime.fromisoformat(timestamp)
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _normalize_candidate_session(payload: Optional[Dict[str, Any]], username: str, job_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not payload:
+        return None
+    session = dict(payload)
+    session['username'] = username or session.get('PartitionKey')
+    session['job_id'] = job_id or session.get('RowKey') or session.get('job_id')
+    session.pop('PartitionKey', None)
+    session.pop('RowKey', None)
+    return session
+
+
+def _fetch_candidate_session(username: str, job_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    if not _table_enabled():
+        return None
+    if job_id:
+        session = table_manager.get_candidate_session(username, job_id)
+        return _normalize_candidate_session(session, username, job_id)
+
+    sessions = table_manager.list_candidate_sessions(username)
+    if not sessions:
+        return None
+    normalized = [
+        _normalize_candidate_session(session, username, session.get('RowKey'))
+        for session in sessions
+    ]
+    normalized = [session for session in normalized if session and session.get('job_id')]
+    if not normalized:
+        return None
+    normalized.sort(key=lambda row: _parse_iso(row.get('updated_at')), reverse=True)
+    return normalized[0]
+
+
+def _repo_row_to_bundle_entry(row: Dict[str, Any]) -> Dict[str, Any]:
+    repo_name = row.get('RowKey') or row.get('repo_name')
+    document = row.get('document') if isinstance(row.get('document'), dict) else {}
+    entry: Dict[str, Any] = dict(document)
+    entry.setdefault('name', repo_name)
+    metadata_candidate = document.get('metadata') if isinstance(document.get('metadata'), dict) else row.get('metadata')
+    entry.setdefault('metadata', metadata_candidate or {})
+    languages_candidate = document.get('languages') if isinstance(document.get('languages'), dict) else row.get('languages')
+    entry.setdefault('languages', languages_candidate or {})
+    categorized_candidate = document.get('categorized_types') if isinstance(document.get('categorized_types'), dict) else row.get('categorized_types')
+    entry.setdefault('categorized_types', categorized_candidate or {})
+    entry.setdefault('fingerprint', document.get('fingerprint') if isinstance(document.get('fingerprint'), str) else row.get('fingerprint'))
+    if 'has_documentation' not in entry and row.get('has_documentation') is not None:
+        entry['has_documentation'] = bool(row.get('has_documentation'))
+    if 'readme_excerpt' not in entry and row.get('readme_excerpt'):
+        entry['readme_excerpt'] = row.get('readme_excerpt')
+    if 'content_blob' not in entry and row.get('content_blob'):
+        entry['content_blob'] = row.get('content_blob')
+    return entry
+
+
+def _query_repo_rows(username: str, session: Optional[Dict[str, Any]], repo_names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    if not (_table_enabled() and session):
+        return []
+    job_id = session.get('job_id')
+    try:
+        rows = table_manager.query_repo_metadata(
+            username,
+            job_id=job_id,
+            repo_names=repo_names,
+        )
+    except Exception:  # pragma: no cover - degraded path
+        return []
+    normalized: List[Dict[str, Any]] = []
+    for row in rows:
+        normalized_row = dict(row)
+        normalized_row.setdefault('repo_name', normalized_row.get('RowKey'))
+        normalized_row.pop('PartitionKey', None)
+        normalized.append(normalized_row)
+    return normalized
+
+
+def _bundle_from_table(username: str, session: Dict[str, Any], repo_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    entries = [_repo_row_to_bundle_entry(row) for row in repo_rows]
+    return {
+        'username': username,
+        'job_id': session.get('job_id'),
+        'fingerprint': session.get('bundle_fingerprint'),
+        'last_modified': session.get('updated_at'),
+        'size_bytes': None,
+        'status': session.get('status'),
+        'expected_repos': session.get('expected_repos', []),
+        'queued_repos': session.get('queued_repos', []),
+        'synced_repos': session.get('synced_repos', []),
+        'data': entries,
+    }
+
+
+def _bundle_from_cache(username: str) -> Optional[Dict[str, Any]]:
+    bundle_cache_key = cache_manager.generate_cache_key(kind='bundle', username=username)
+    result = cache_manager.get(bundle_cache_key)
+    if result.get('status') != 'valid' or result.get('data') is None:
+        return None
+    return {
+        'username': username,
+        'fingerprint': result.get('fingerprint'),
+        'last_modified': result.get('last_modified'),
+        'size_bytes': result.get('size_bytes'),
+        'data': result.get('data'),
+    }
+
+
+def _repo_bundle_from_cache(username: str, repo: str) -> Optional[Dict[str, Any]]:
+    repo_cache_key = cache_manager.generate_cache_key(kind='repo', username=username, repo=repo)
+    result = cache_manager.get(repo_cache_key)
+    if result.get('status') != 'valid' or result.get('data') is None:
+        return None
+    return {
+        'username': username,
+        'repo': repo,
+        'fingerprint': result.get('fingerprint'),
+        'last_modified': result.get('last_modified'),
+        'size_bytes': result.get('size_bytes'),
+        'data': result.get('data'),
+    }
+
+
+def _merge_session_with_cache(session: Dict[str, Any], cache_payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not cache_payload:
+        return session
+    merged = dict(session)
+    merged['completed_repos'] = cache_payload.get('completed_repos', merged.get('completed_repos', 0))
+    merged['total_repos'] = cache_payload.get('total_repos', merged.get('total_repos', 0))
+    merged['synced_repos'] = cache_payload.get('synced_repos', merged.get('synced_repos', []))
+    merged['queued_repos'] = cache_payload.get('queued_repos', merged.get('queued_repos', []))
+    merged['expected_repos'] = cache_payload.get('expected_repos', merged.get('expected_repos', []))
+    merged['status'] = cache_payload.get('status', merged.get('status'))
+    merged['created_at'] = cache_payload.get('created_at', merged.get('created_at'))
+    return merged
 
 
 def _identify_repo_freshness(username: str) -> Dict[str, Any]:
@@ -160,6 +317,43 @@ def _queue_mode_enabled() -> bool:
     return env_flag and queue_manager.is_enabled()
 
 
+def _upsert_candidate_session_row(
+    job_id: str,
+    username: str,
+    expected_repo_names: List[str],
+    queued: List[str],
+    resolved_total: int,
+    *,
+    status: str,
+    force_refresh: bool,
+    synced_repos: Optional[List[str]],
+    created_at: str,
+) -> None:
+    if not _table_enabled():
+        return
+
+    existing = table_manager.get_candidate_session(username, job_id)
+    existing_synced = existing.get('synced_repos', []) if existing else []
+    merged_synced = list(synced_repos or existing_synced)
+    row = CandidateSessionRow(
+        username=username,
+        job_id=job_id,
+        status=status,
+        total_repos=resolved_total,
+        completed_repos=len(merged_synced),
+        expected_repos=list(expected_repo_names),
+        queued_repos=list(queued),
+        synced_repos=merged_synced,
+        bundle_fingerprint=(existing.get('bundle_fingerprint') if existing else None),
+        force_refresh=force_refresh if not existing else bool(existing.get('force_refresh') or force_refresh),
+        model_status=(existing.get('model_status') if existing else None),
+        model_fingerprint=(existing.get('model_fingerprint') if existing else None),
+        created_at=(existing.get('created_at') if existing else created_at) or created_at,
+        updated_at=existing.get('updated_at') if existing else None,
+    )
+    table_manager.upsert_candidate_session(row)
+
+
 def _persist_job_metadata(
     job_id: str,
     username: str,
@@ -167,6 +361,9 @@ def _persist_job_metadata(
     *,
     queued_repo_names: Optional[List[str]] = None,
     total_repos: Optional[int] = None,
+    status: str = 'queued',
+    force_refresh: bool = False,
+    synced_repos: Optional[List[str]] = None,
 ) -> None:
     """Persist job metadata so workers can safely update progress.
 
@@ -182,17 +379,33 @@ def _persist_job_metadata(
     """
     queued = queued_repo_names if queued_repo_names is not None else list(expected_repo_names)
     resolved_total = total_repos if total_repos is not None else len(queued)
-    job_payload = {
+    created_at = datetime.now(timezone.utc).isoformat()
+    cache_payload = {
         'job_id': job_id,
         'username': username,
         'expected_repos': list(expected_repo_names),
         'queued_repos': list(queued),
         'total_repos': resolved_total,
-        'completed_repos': 0,
-        'status': 'queued',
-        'created_at': datetime.now(timezone.utc).isoformat(),
+        'completed_repos': 0 if synced_repos is None else len(synced_repos),
+        'synced_repos': list(synced_repos) if synced_repos is not None else [],
+        'status': status,
+        'created_at': created_at,
+        'force_refresh': force_refresh,
     }
-    cache_manager.save(_job_cache_key(job_id), job_payload, ttl=3600)
+
+    _upsert_candidate_session_row(
+        job_id,
+        username,
+        expected_repo_names,
+        list(queued),
+        resolved_total,
+        status=status,
+        force_refresh=force_refresh,
+        synced_repos=list(synced_repos) if synced_repos is not None else None,
+        created_at=created_at,
+    )
+
+    cache_manager.save(_job_cache_key(job_id), cache_payload, ttl=3600)
 
 
 def _validate_blob_path(blob_path: str) -> None:
@@ -250,21 +463,24 @@ def health_check(req: func.HttpRequest) -> func.HttpResponse:
 def get_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
     username = req.route_params.get('username')
     if not username:
-        return _create_error_response("Username required", 400)
+        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
 
-    bundle_cache_key = cache_manager.generate_cache_key(kind='bundle', username=username)
-    result = cache_manager.get(bundle_cache_key)
-    if result.get('status') != 'valid' or result.get('data') is None:
-        return _create_error_response(f"No valid bundle found for '{username}'", 404)
+    requested_job_id = req.params.get('job_id')
+    session = _fetch_candidate_session(username, requested_job_id)
+    repo_rows = _query_repo_rows(username, session)
 
-    payload = {
-        "username": username,
-        "fingerprint": result.get('fingerprint'),
-        "last_modified": result.get('last_modified'),
-        "size_bytes": result.get('size_bytes'),
-        "data": result.get('data'),
-    }
-    return _create_success_response(payload)
+    if session and repo_rows:
+        payload = _bundle_from_table(username, session, repo_rows)
+        return _create_success_response(payload)
+
+    cache_payload = _bundle_from_cache(username)
+    if cache_payload:
+        return _create_success_response(cache_payload)
+
+    if session:
+        return _create_error_response(f"Bundle for '{username}' not ready", 404)
+
+    return _create_error_response(f"No valid bundle found for '{username}'", 404)
 
 
 @app.route(route="bundles/{username}/{repo}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
@@ -274,27 +490,37 @@ def get_single_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
     if not username or not repo:
         return _create_error_response("Username and repository name are required", 400)
 
-    repo_cache_key = cache_manager.generate_cache_key(kind='repo', username=username, repo=repo)
-    result = cache_manager.get(repo_cache_key)
-    if result.get('status') != 'valid' or result.get('data') is None:
-        return _create_error_response(f"No valid repository data found for '{repo}' by user '{username}'", 404)
+    requested_job_id = req.params.get('job_id')
+    session = _fetch_candidate_session(username, requested_job_id)
+    repo_rows = _query_repo_rows(username, session, repo_names=[repo])
 
-    payload = {
-        "username": username,
-        "repo": repo,
-        "fingerprint": result.get('fingerprint'),
-        "last_modified": result.get('last_modified'),
-        "size_bytes": result.get('size_bytes'),
-        "data": result.get('data'),
-    }
-    return _create_success_response(payload)
+    if session and repo_rows:
+        entry = _repo_row_to_bundle_entry(repo_rows[0])
+        payload = {
+            'username': username,
+            'repo': entry.get('name') or repo,
+            'fingerprint': entry.get('fingerprint'),
+            'last_modified': repo_rows[0].get('updated_at'),
+            'size_bytes': None,
+            'data': entry,
+        }
+        return _create_success_response(payload)
+
+    cache_payload = _repo_bundle_from_cache(username, repo)
+    if cache_payload:
+        return _create_success_response(cache_payload)
+
+    if session:
+        return _create_error_response(f"No table metadata ready for '{repo}'", 404)
+
+    return _create_error_response(f"No valid repository data found for '{repo}' by user '{username}'", 404)
 
 
 @app.route(route="bundles/{username}/refresh", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
     username = req.route_params.get('username')
     if not username:
-        return _create_error_response("Username required", 400)
+        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
 
     body = _parse_json(req)
     force_refresh = bool(body.get('force_refresh', False))
@@ -327,7 +553,7 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
 
     # Seed job metadata before enqueue so workers never see a missing job record.
     # At this point we only know the *expected* repos; queued set may shrink.
-    _persist_job_metadata(job_id, username, expected_repo_names)
+    _persist_job_metadata(job_id, username, expected_repo_names, force_refresh=force_refresh)
 
     enqueued = 0
     enqueued_names: List[str] = []
@@ -355,6 +581,7 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         expected_repo_names,
         queued_repo_names=enqueued_names,
         total_repos=enqueued,
+        force_refresh=force_refresh,
     )
     response = {
         "status": "processing",
@@ -367,30 +594,44 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="bundles/{username}/status", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
+    username = req.route_params.get('username')
     job_id = req.params.get('job_id')
+    if not username:
+        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
     if not job_id:
         return _create_error_response("job_id query parameter required", 400)
 
-    job_data = cache_manager.get(_job_cache_key(job_id))
-    if job_data.get('status') != 'valid' or not job_data.get('data'):
+    session = _fetch_candidate_session(username, job_id)
+    cache_result = cache_manager.get(_job_cache_key(job_id))
+    cache_data = cache_result.get('data') if cache_result.get('status') == 'valid' else None
+
+    if not session and not cache_data:
         return _create_error_response("Job not found or expired", 404)
 
-    info = job_data['data']
+    info = session or {}
+    if session and cache_data:
+        info = _merge_session_with_cache(session, cache_data)
+    elif not session and cache_data:
+        info = cache_data
+
     total = info.get('total_repos', 0)
     completed = info.get('completed_repos', 0)
     status = info.get('status', 'unknown')
     if total and completed >= total and status != 'completed':
         status = 'completed'
     payload = {
-        "job_id": job_id,
-        "username": info.get('username'),
-        "status": status,
-        "progress": {
-            "total": total,
-            "completed": completed,
-            "percentage": int((completed / total * 100) if total else 0),
+        'job_id': job_id,
+        'username': username,
+        'status': status,
+        'progress': {
+            'total': total,
+            'completed': completed,
+            'percentage': int((completed / total * 100) if total else 0),
         },
-        "created_at": info.get('created_at'),
+        'created_at': info.get('created_at'),
+        'expected_repos': info.get('expected_repos', []),
+        'queued_repos': info.get('queued_repos', []),
+        'synced_repos': info.get('synced_repos', []),
     }
     return _create_success_response(payload, cache_control="no-cache")
 

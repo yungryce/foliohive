@@ -57,20 +57,23 @@ die() {
 
 # Ensure the consolidated venv exists, optionally cleaning first
 ensure_venv() {
-    if [[ "$CLEAN" == true && -d "$VENV_DIR" ]]; then
+    local needs_recreate=false
+    if [[ -d "$VENV_DIR" && "$CLEAN" == true ]]; then
+        needs_recreate=true
         log_warn "Removing existing consolidated venv..."
-        rm -rf "$VENV_DIR" || die "Failed to remove $VENV_DIR"
-    fi
-    
-    if [[ -d "$VENV_DIR" && "$CLEAN" != true ]]; then
+    elif [[ -d "$VENV_DIR" && "$CLEAN" != true ]]; then
         local current_version=""
         if [[ -x "$VENV_DIR/bin/python" ]]; then
             current_version=$("$VENV_DIR/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
         fi
         if [[ "$current_version" != "$PYTHON_VERSION" ]]; then
+            needs_recreate=true
             log_warn "Existing venv uses Python ${current_version:-unknown}; recreating with $PYTHON_VERSION..."
-            rm -rf "$VENV_DIR" || die "Failed to remove $VENV_DIR"
         fi
+    fi
+
+    if [[ "$needs_recreate" == true ]]; then
+        rm -rf "$VENV_DIR" || die "Failed to remove $VENV_DIR"
     fi
 
     if [[ ! -d "$VENV_DIR" ]]; then
@@ -267,6 +270,15 @@ setup_shared() {
     
     smart_editable_install "$SHARED_DIR" "$extras"
     log_info "Shared package installed"
+
+
+    # Log installed packages for debugging, deleted afterward
+    local pkg_log="$VENV_DIR/.installed-packages.log"
+    pip list --format=columns >"$pkg_log"
+    log_info "Dependencies presently installed (see temporary log):"
+    sed -n '1,20p' "$pkg_log"
+    log_info "Full list recorded in $pkg_log (deleted immediately afterward)."
+    rm -f "$pkg_log"
 }
 
 install_requirements() {
@@ -394,17 +406,18 @@ main() {
         exit 0
     fi
     
+    local apps_to_setup=()
     if [[ -n "$SPECIFIC_APP" ]]; then
-        setup_function_app "$SPECIFIC_APP"
+        apps_to_setup=("$SPECIFIC_APP")
     else
-        for app in "${FUNCTION_APPS[@]}"; do
-            setup_function_app "$app"
-        done
-        setup_tests
+        apps_to_setup=("${FUNCTION_APPS[@]}")
     fi
-    
-    # Run tests if requested and venv still active
+    for app in "${apps_to_setup[@]}"; do
+        setup_function_app "$app"
+    done
+
     if [[ "$RUN_TESTS" == true ]]; then
+        setup_tests
         run_tests || {
             deactivate 2>/dev/null || true
             exit 1

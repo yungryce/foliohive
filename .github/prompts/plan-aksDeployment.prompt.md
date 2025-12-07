@@ -4,6 +4,10 @@
 **Status**: Future Planning Phase (Post-Function App Implementation)  
 **Priority**: Alternative Deployment Strategy (Learning & Advanced Configurations)
 
+## Terminology
+- **User**: recruiter driving Cloudfolio interactions (refresh requests, chat evaluations).
+- **Candidate**: GitHub username indexed by Cloudfolio on behalf of the recruiter.
+
 ---
 
 ## Executive Summary
@@ -147,7 +151,7 @@ Note: Uses Azure Storage Queues (github-sync, merge-results,
 
 ### 1. plan-multiAppArchitecture.prompt.md Clarification
 
-**Original Statement (Line 35)**: "Infrastructure: Azure-locked (Durable Functions) → Cloud-agnostic (containers + queues)"
+**Original Statement (Line 35)**: "Infrastructure: Azure-locked (Function Apps) → Cloud-agnostic (containers + queues)"
 
 **CLARIFICATION**:
 ```diff

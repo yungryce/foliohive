@@ -73,35 +73,66 @@ def test_trigger_bundle_refresh_enqueues_jobs(monkeypatch, capture_success):
         lambda job_id, username, repo_metadata, fingerprint=None: enqueued.append(repo_metadata['name']) or True,
     )
 
-    job_records = {}
+    stored_sessions = {}
 
-    def fake_persist(job_id, username, expected_repo_names, queued_repo_names=None, total_repos=None):
-        effective_queued = queued_repo_names if queued_repo_names is not None else list(expected_repo_names)
-        job_records['job_id'] = job_id
-        job_records['username'] = username
-        job_records['expected_repos'] = list(expected_repo_names)
-        job_records['queued_repos'] = list(effective_queued)
-        job_records['total_repos'] = (
-            total_repos if total_repos is not None else len(effective_queued)
-        )
+    def fake_is_enabled() -> bool:
+        return True
 
-    monkeypatch.setattr(gateway, "_persist_job_metadata", fake_persist)
+    monkeypatch.setattr(gateway.table_manager, "is_enabled", fake_is_enabled)
+
+    def fake_get_session(username: str, job_id: str):
+        return stored_sessions.get((username, job_id))
+
+    def fake_upsert(row):
+        stored_sessions[(row.username, row.job_id)] = {
+            'PartitionKey': row.username,
+            'RowKey': row.job_id,
+            'expected_repos': list(row.expected_repos),
+            'queued_repos': list(row.queued_repos),
+            'synced_repos': list(row.synced_repos),
+            'status': row.status,
+            'total_repos': row.total_repos,
+            'completed_repos': row.completed_repos,
+            'bundle_fingerprint': row.bundle_fingerprint,
+            'force_refresh': row.force_refresh,
+            'model_status': row.model_status,
+            'model_fingerprint': row.model_fingerprint,
+            'created_at': row.created_at,
+            'updated_at': row.updated_at,
+        }
+
+    monkeypatch.setattr(gateway.table_manager, "get_candidate_session", fake_get_session)
+    monkeypatch.setattr(gateway.table_manager, "upsert_candidate_session", fake_upsert)
+
+    cache_records = {}
+
+    def fake_cache_save(key, payload, ttl=None, fingerprint=None):
+        cache_records['key'] = key
+        cache_records['payload'] = payload
+        cache_records['ttl'] = ttl
+        cache_records['fingerprint'] = fingerprint
+        return True
+
+    monkeypatch.setattr(gateway.cache_manager, "save", fake_cache_save)
     monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID(int=1))
 
     request = FakeRequest(route_params={'username': 'tester'})
     response = gateway.trigger_bundle_refresh(request)
 
+    job_id = str(uuid.UUID(int=1))
     assert response['status_code'] == 202
     assert set(enqueued) == {"repo-one", "repo-two"}
-    assert job_records['expected_repos'] == ["repo-one", "repo-two"]
-    assert job_records['queued_repos'] == ["repo-one", "repo-two"]
-    assert capture_success['data']['job_id'] == str(uuid.UUID(int=1))
+    assert cache_records['payload']['queued_repos'] == ["repo-one", "repo-two"]
+    assert stored_sessions[("tester", job_id)]['queued_repos'] == ["repo-one", "repo-two"]
+    assert capture_success['data']['job_id'] == job_id
 
 
 def test_get_job_status_handles_missing_job(monkeypatch, capture_error):
+    monkeypatch.setattr(gateway.table_manager, "is_enabled", lambda: True)
+    monkeypatch.setattr(gateway.table_manager, "get_candidate_session", lambda username, job_id: None)
     monkeypatch.setattr(gateway.cache_manager, "get", lambda key: {"status": "missing", "data": None})
 
-    request = FakeRequest(params={'job_id': 'abc'})
+    request = FakeRequest(route_params={'username': 'tester'}, params={'job_id': 'abc'})
     response = gateway.get_job_status(request)
 
     assert response['status_code'] == 404
@@ -109,22 +140,69 @@ def test_get_job_status_handles_missing_job(monkeypatch, capture_error):
 
 
 def test_get_job_status_returns_progress(monkeypatch, capture_success):
-    job_payload = {
-        'status': 'valid',
-        'data': {
-            'job_id': 'abc',
-            'username': 'tester',
-            'total_repos': 4,
-            'completed_repos': 2,
-            'status': 'queued',
-            'created_at': '2025-11-24T00:00:00Z',
-        },
+    session = {
+        'PartitionKey': 'tester',
+        'RowKey': 'abc',
+        'expected_repos': ['repo-one', 'repo-two'],
+        'queued_repos': ['repo-one', 'repo-two'],
+        'synced_repos': ['repo-one'],
+        'status': 'queued',
+        'total_repos': 2,
+        'completed_repos': 1,
+        'created_at': '2025-11-24T00:00:00Z',
+        'updated_at': '2025-11-24T01:00:00Z',
     }
-    monkeypatch.setattr(gateway.cache_manager, "get", lambda key: job_payload)
+    monkeypatch.setattr(gateway.table_manager, "is_enabled", lambda: True)
+    monkeypatch.setattr(gateway.table_manager, "get_candidate_session", lambda username, job_id: session)
+    monkeypatch.setattr(gateway.cache_manager, "get", lambda key: {"status": "missing", "data": None})
 
-    request = FakeRequest(params={'job_id': 'abc'})
+    request = FakeRequest(route_params={'username': 'tester'}, params={'job_id': 'abc'})
     response = gateway.get_job_status(request)
 
     assert response['status_code'] == 200
     assert capture_success['data']['progress']['percentage'] == 50
     assert capture_success['data']['status'] == 'queued'
+
+
+def test_get_repo_bundle_prefers_table(monkeypatch, capture_success):
+    session = {
+        'PartitionKey': 'tester',
+        'RowKey': 'job-1',
+        'status': 'completed',
+        'bundle_fingerprint': 'bundle-fp',
+        'expected_repos': ['repo-one'],
+        'queued_repos': ['repo-one'],
+        'synced_repos': ['repo-one'],
+        'updated_at': '2025-12-01T00:00:00Z',
+    }
+    repo_row = {
+        'PartitionKey': 'tester',
+        'RowKey': 'repo-one',
+        'document': {
+            'name': 'repo-one',
+            'metadata': {'name': 'repo-one'},
+            'fingerprint': 'fp-1',
+            'languages': {'Python': 3},
+            'categorized_types': {'code': 3},
+        },
+        'fingerprint': 'fp-1',
+        'languages': {'Python': 3},
+        'categorized_types': {'code': 3},
+        'has_documentation': True,
+        'readme_excerpt': 'docs',
+        'updated_at': '2025-12-01T00:00:00Z',
+    }
+
+    monkeypatch.setattr(gateway.table_manager, "is_enabled", lambda: True)
+    monkeypatch.setattr(gateway.table_manager, "get_candidate_session", lambda username, job_id: None)
+    monkeypatch.setattr(gateway.table_manager, "list_candidate_sessions", lambda username: [session])
+    monkeypatch.setattr(gateway.table_manager, "query_repo_metadata", lambda username, job_id=None, repo_names=None: [repo_row])
+    monkeypatch.setattr(gateway.cache_manager, "get", lambda key: {'status': 'missing', 'data': None})
+
+    request = FakeRequest(route_params={'username': 'tester'})
+    response = gateway.get_repo_bundle(request)
+
+    assert response['status_code'] == 200
+    payload = capture_success['data']
+    assert payload['fingerprint'] == 'bundle-fp'
+    assert payload['data'][0]['name'] == 'repo-one'
