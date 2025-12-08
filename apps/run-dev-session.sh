@@ -142,7 +142,6 @@ ensure_dependencies() {
     require_command func
     require_command curl
     require_command jq
-    require_command lsof
 }
 
 wait_for_worker_ready() {
