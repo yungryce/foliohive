@@ -535,21 +535,27 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         return _create_error_response("Failed to analyze repositories", 500)
 
     stale_repos = freshness['stale_repos']
+    cached_repos = freshness['cached_bundle']
+    
+    # Normal flow: only sync stale repos. Forced refresh: sync all repos.
     if not stale_repos and not force_refresh:
         logger.info("No stale repos for %s; returning cached bundle status", username)
         return _create_success_response({
             "status": "cached",
-            "repos_count": len(freshness['cached_bundle']),
+            "repos_count": len(cached_repos),
+        })
+
+    # When force_refresh=true, queue both stale AND valid cached repos
+    repos_to_queue = stale_repos if not force_refresh else (stale_repos + cached_repos)
+    
+    if not repos_to_queue:
+        return _create_success_response({
+            "status": "cached",
+            "repos_count": 0,
         })
 
     job_id = str(uuid.uuid4())
-    expected_repo_names = [repo.get('name') for repo in stale_repos if repo.get('name')]
-
-    if not expected_repo_names and not force_refresh:
-        return _create_success_response({
-            "status": "cached",
-            "repos_count": len(freshness['cached_bundle']),
-        })
+    expected_repo_names = [repo.get('name') for repo in repos_to_queue if repo.get('name')]
 
     # Seed job metadata before enqueue so workers never see a missing job record.
     # At this point we only know the *expected* repos; queued set may shrink.
@@ -557,7 +563,7 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
 
     enqueued = 0
     enqueued_names: List[str] = []
-    for repo_metadata in stale_repos:
+    for repo_metadata in repos_to_queue:
         repo_name = repo_metadata.get('name')
         if not repo_name:
             continue

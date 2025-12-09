@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import base64
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 try:
@@ -75,14 +76,24 @@ def _get_repo_manager(username: str) -> GitHubRepoManager:
     api = GitHubAPI(token=token, username=username)
     return GitHubRepoManager(api, username=username)
 
-
 def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     body_bytes = msg.get_body()
-    body_str = body_bytes.decode('utf-8') if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
+    
+    # Azure queue messages are base64-encoded by default
+    try:
+        decoded_bytes = base64.b64decode(body_bytes)
+        body_str = decoded_bytes.decode('utf-8')
+    except Exception:
+        # Fallback: treat as plain UTF-8 if base64 decode fails
+        body_str = body_bytes.decode('utf-8') if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
+    
+    if not body_str or not body_str.strip():
+        logger.error("Received empty message body")
+        raise ValueError("Queue message body is empty")
+    
     payload = json.loads(body_str)
     logger.info("Sync worker received payload: job=%s repo=%s", payload.get('job_id'), payload.get('repo_name'))
     return payload
-
 
 def _fetch_repo_bundle(job_id: str, username: str, repo_metadata: Dict[str, Any], fingerprint: Optional[str]) -> Dict[str, Any]:
     repo_manager = _get_repo_manager(username)

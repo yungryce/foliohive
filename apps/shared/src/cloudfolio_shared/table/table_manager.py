@@ -246,7 +246,8 @@ class TableManager:
         table = self._get_table_client(self.table_names.candidate_sessions)
         if not table:
             return []
-        query = table.list_entities(f"PartitionKey eq '{username}'")
+        # query = table.list_entities(f"PartitionKey eq '{username}'")
+        query = table.list_entities(filter=f"PartitionKey eq '{username}'")
         return [self._deserialize_candidate_session(e) for e in query]
 
     def _deserialize_candidate_session(self, entity: Dict[str, Any]) -> Dict[str, Any]:

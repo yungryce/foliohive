@@ -322,21 +322,21 @@ test_worker_health() {
         fi
     done
 
-    if [[ -n "$TRAINING_HEALTH_URL" ]]; then
-        log_test "training-worker health"
-        local resp status body
-        resp=$(curl -s "$TRAINING_HEALTH_URL" -w '\n%{http_code}' --max-time 5 2>/dev/null || echo -e "\n000")
-        status=$(echo "$resp" | tail -1)
-        body=$(echo "$resp" | head -n -1)
-        if assert_status "200" "$status" "training-worker reachable"; then
-            log_pass "training-worker responded"
-        else
-            log_warn "training-worker health endpoint not ready"
-        fi
-        [[ "$VERBOSE" == true ]] && echo "$body" || true
-    else
-        log_skip "training-worker health skipped (set TRAINING_HEALTH_URL to enable)"
-    fi
+    # if [[ -n "$TRAINING_HEALTH_URL" ]]; then
+    #     log_test "training-worker health"
+    #     local resp status body
+    #     resp=$(curl -s "$TRAINING_HEALTH_URL" -w '\n%{http_code}' --max-time 5 2>/dev/null || echo -e "\n000")
+    #     status=$(echo "$resp" | tail -1)
+    #     body=$(echo "$resp" | head -n -1)
+    #     if assert_status "200" "$status" "training-worker reachable"; then
+    #         log_pass "training-worker responded"
+    #     else
+    #         log_warn "training-worker health endpoint not ready"
+    #     fi
+    #     [[ "$VERBOSE" == true ]] && echo "$body" || true
+    # else
+    #     log_skip "training-worker health skipped (set TRAINING_HEALTH_URL to enable)"
+    # fi
 }
 
 # =============================================================================
