@@ -46,7 +46,7 @@ else:
 # Clean imports from installed cloudfolio-shared package
 from cloudfolio_shared import cache_manager, FingerprintManager, queue_manager, table_manager
 
-logger = logging.getLogger("portfolio.merge")
+logger = logging.getLogger("cloudfolio.merge")
 logger.setLevel(logging.INFO)
 logger.propagate = True
 
@@ -60,10 +60,14 @@ def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     body = msg.get_body()
     decoded = body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else str(body)
     payload = json.loads(decoded)
+    
+    # Log message size
+    message_size = len(decoded.encode('utf-8')) if isinstance(decoded, str) else len(decoded)
     logger.info(
-        "Merge worker received payload: job=%s repos=%s",
+        "Merge worker received payload: job=%s repos=%s message_size=%d bytes",
         payload.get("job_id"),
         payload.get("synced_repos"),
+        message_size
     )
     return payload
 

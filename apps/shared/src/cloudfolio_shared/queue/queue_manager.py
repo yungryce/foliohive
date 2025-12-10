@@ -1,4 +1,3 @@
-import base64
 import json
 import logging
 import os
@@ -115,29 +114,66 @@ class QueueManager:
 
         # client send message payload
         json_str = json.dumps(payload)
-        encoded_message = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
-        client.send_message(encoded_message)
-        logger.info("Sent message to queue %s", queue_alias)
+        json_size = len(json_str.encode('utf-8'))
+        
+        # Log message size (Azure Queue 64KB limit for message)
+        repo_name = payload.get('repo_name', 'unknown')
+        job_id = payload.get('job_id', 'unknown')
+        logger.info(
+            "Enqueued message to %s: json_size=%d bytes, repo_name=%s, job_id=%s",
+            queue_alias,
+            json_size,
+            repo_name,
+            job_id
+        )
+        
+        # Debug: Log message structure for investigation
+        logger.info("[SEND_DEBUG] repo=%s job=%s - Top-level keys: %s", 
+                    repo_name, job_id, sorted(list(payload.keys())))
+        logger.info("[SEND_DEBUG] repo=%s - schema=%s, username=%s, has_metadata=%s", 
+                    repo_name, 
+                    payload.get('schema_version', 'missing'),
+                    payload.get('username', 'missing'),
+                    'metadata' in payload and isinstance(payload['metadata'], dict))
+        
+        if "metadata" in payload and isinstance(payload["metadata"], dict):
+            metadata = payload["metadata"]
+            metadata_json_size = len(json.dumps(metadata).encode('utf-8'))
+            logger.info("[SEND_DEBUG] repo=%s - Metadata has %d keys, size=%d bytes", 
+                       repo_name, len(metadata), metadata_json_size)
+            logger.info("[SEND_DEBUG] repo=%s - Metadata keys: %s", 
+                       repo_name, sorted(list(metadata.keys())))
+        
+        client.send_message(json_str)
+        logger.info("[SEND_DEBUG] repo=%s job=%s - Message sent successfully", repo_name, job_id)
         return True
 
-    def enqueue_sync_job(self, job_id: str, username: str, repo_metadata: Dict, fingerprint: Optional[str] = None) -> bool:
-        repo_name = repo_metadata.get('name') if isinstance(repo_metadata, dict) else None
-        resolved_fingerprint = fingerprint or (repo_metadata.get('fingerprint') if isinstance(repo_metadata, dict) else None)
+    def enqueue_sync_job(self, job_id: str, username: str, repo_name: str, fingerprint: Optional[str] = None) -> bool:
+        """Enqueue a sync job with minimal message payload.
+        
+        Args:
+            job_id: Unique job identifier
+            username: GitHub username
+            repo_name: Repository name
+            fingerprint: Optional metadata fingerprint for cache validation
+            
+        Returns:
+            bool: True if message was enqueued successfully
+        """
+        if not repo_name:
+            logger.warning("Cannot enqueue sync job without repo_name")
+            return False
+        
+        # Construct minimal message with only essential identifiers
         message = {
             "schema_version": "2025-12-01",
             "job_id": job_id,
             "username": username,
             "repo_name": repo_name,
-            "metadata": repo_metadata,
-            "fingerprint": resolved_fingerprint,
-            "bundle_cache_key": _bundle_cache_key(username),
-            "blob_batch": {"status": "pending", "items": []},
+            "fingerprint": fingerprint,
             "queued_at": datetime.now(timezone.utc).isoformat(),
-            "repo": {
-                "name": repo_name,
-                "fingerprint": resolved_fingerprint,
-            },
         }
+        
         return self.send_message(SYNC_QUEUE, message)
 
     def enqueue_merge_job(self, job_id: str, username: str, synced_repos: List[str]) -> bool:

@@ -180,7 +180,7 @@ class TestFingerprintMismatch:
         monkeypatch.setattr(
             gateway.queue_manager,
             "enqueue_sync_job",
-            lambda job_id, username, repo_metadata, fingerprint: enqueued.append(repo_metadata['name']) or True
+            lambda job_id, username, repo_name, fingerprint: enqueued.append(repo_name) or True
         )
         monkeypatch.setattr(gateway.table_manager, "is_enabled", lambda: False)
         monkeypatch.setattr(gateway.cache_manager, "save", lambda *args, **kwargs: True)
@@ -237,7 +237,7 @@ class TestForceRefreshBehavior:
         monkeypatch.setattr(
             gateway.queue_manager,
             "enqueue_sync_job",
-            lambda job_id, username, repo_metadata, fingerprint: enqueued.append(repo_metadata['name']) or True
+            lambda job_id, username, repo_name, fingerprint: enqueued.append(repo_name) or True
         )
         monkeypatch.setattr(gateway.table_manager, "is_enabled", lambda: False)
         monkeypatch.setattr(gateway.cache_manager, "save", lambda *args, **kwargs: True)
@@ -250,6 +250,46 @@ class TestForceRefreshBehavior:
         # If stale_repos empty and force_refresh, should still proceed.
         # Per current code, it returns cached when no stale repos and not force_refresh.
         # Need to verify force_refresh overrides this.
+
+    def test_complete_enqueue_failure_returns_error(self, monkeypatch):
+        """Verify API errors when queue manager rejects every message."""
+        monkeypatch.setattr(gateway, "_queue_mode_enabled", lambda: True)
+        monkeypatch.setattr(
+            gateway,
+            "_identify_repo_freshness",
+            lambda username: {
+                "stale_repos": [{"name": "repo-1", "fingerprint": "fp1"}],
+                "cached_bundle": [],
+                "bundle_status": "missing",
+            },
+        )
+        monkeypatch.setattr(gateway.queue_manager, "enqueue_sync_job", lambda *args, **kwargs: False)
+        monkeypatch.setattr(gateway.table_manager, "is_enabled", lambda: False)
+        monkeypatch.setattr(gateway.cache_manager, "save", lambda *args, **kwargs: True)
+
+        request = FakeRequest(route_params={'username': 'tester'})
+        response = gateway.trigger_bundle_refresh(request)
+        payload = json.loads(response.get_body())
+
+        assert response.status_code == 502
+        assert 'Failed to enqueue sync jobs' in payload.get('error', '')
+
+    def test_force_refresh_with_no_repos_returns_cached(self, monkeypatch):
+        """Force-refresh should short-circuit when no repos exist."""
+        monkeypatch.setattr(gateway, "_queue_mode_enabled", lambda: True)
+        monkeypatch.setattr(
+            gateway,
+            "_identify_repo_freshness",
+            lambda username: {"stale_repos": [], "cached_bundle": [], "bundle_status": "missing"},
+        )
+
+        request = FakeRequest(route_params={'username': 'tester'}, body={'force_refresh': True})
+        response = gateway.trigger_bundle_refresh(request)
+        payload = json.loads(response.get_body())
+
+        assert response.status_code == 200
+        assert payload['status'] == 'cached'
+        assert payload['repos_count'] == 0
 
 
 class TestConcurrentJobHandling:

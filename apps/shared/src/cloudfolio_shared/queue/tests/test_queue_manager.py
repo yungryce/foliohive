@@ -1,4 +1,3 @@
-import base64
 import json
 from datetime import datetime
 
@@ -40,8 +39,7 @@ class StubQueueServiceClient:
 
 
 def _decode_message(raw: str) -> dict:
-    decoded = base64.b64decode(raw.encode("utf-8")).decode("utf-8")
-    return json.loads(decoded)
+    return json.loads(raw)
 
 
 def test_queue_manager_initializes_queues() -> None:
@@ -65,23 +63,31 @@ def test_enqueue_sync_job_serializes_message(monkeypatch) -> None:
     service = StubQueueServiceClient()
     manager = QueueManager(service_client=service)
 
-    repo_metadata = {"name": "repo-one", "fingerprint": "fp1"}
+    repo_name = "repo-one"
+    fingerprint = "fp1"
     job_id = "job-123"
     username = "tester"
     before = datetime.now().timestamp()
 
-    success = manager.enqueue_sync_job(job_id, username, repo_metadata)
+    success = manager.enqueue_sync_job(job_id, username, repo_name, fingerprint)
     assert success is True
 
     raw = service.clients[SYNC_QUEUE].messages.pop()
     payload = _decode_message(raw)
 
+    # Validate minimal message structure
     assert payload["job_id"] == job_id
     assert payload["username"] == username
-    assert payload["repo_name"] == "repo-one"
-    assert payload["fingerprint"] == "fp1"
-    assert payload["bundle_cache_key"].endswith(username)
-    assert payload["repo"]["name"] == "repo-one"
+    assert payload["repo_name"] == repo_name
+    assert payload["fingerprint"] == fingerprint
+    assert payload["schema_version"] == "2025-12-01"
+    
+    # Verify redundant fields are removed
+    assert "metadata" not in payload
+    assert "bundle_cache_key" not in payload
+    assert "blob_batch" not in payload
+    assert "repo" not in payload
+    
     queued_at = datetime.fromisoformat(payload["queued_at"].replace("Z", "+00:00"))
     tolerance = max(abs(before) * 1e-3, 1e-3)
     assert queued_at.timestamp() >= before - tolerance

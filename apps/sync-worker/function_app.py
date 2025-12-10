@@ -4,13 +4,11 @@ Consumes messages from the ``github-sync`` queue, fetches repository context
 using shared managers, and persists results to the cache. Once all repositories
 for a job are processed the worker enqueues a merge job.
 """
-
 from __future__ import annotations
 
 import json
 import logging
 import os
-import base64
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 try:
@@ -47,23 +45,28 @@ else:
         AzureQueueMessage = Any
 
 # Clean imports from installed cloudfolio-shared package
-from cloudfolio_shared import (
-    cache_manager,
-    FingerprintManager,
-    GitHubAPI,
-    GitHubRepoManager,
-    queue_manager,
-    FileTypeAnalyzer,
-    table_manager,
-)
-from cloudfolio_shared.table import RepoMetadataRow
+try:
+    from cloudfolio_shared import (
+        cache_manager,
+        FingerprintManager,
+        GitHubAPI,
+        GitHubRepoManager,
+        queue_manager,
+        FileTypeAnalyzer,
+        table_manager,
+    )
+    
+    from cloudfolio_shared.table import RepoMetadataRow
+except Exception as import_error:
+    raise
 
-
-logger = logging.getLogger('portfolio.api')
+logger = logging.getLogger("cloudfolio.sync_worker")
 logger.setLevel(logging.INFO)
 logger.propagate = True
 
+
 app = func.FunctionApp()
+
 
 JOB_METADATA_TTL_SECONDS = 4 * 3600
 READ_ME_EXCERPT_MAX_CHARS = 4096
@@ -78,28 +81,65 @@ def _get_repo_manager(username: str) -> GitHubRepoManager:
 
 def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     body_bytes = msg.get_body()
+
+    # Log incoming message size
+    if isinstance(body_bytes, (bytes, bytearray)):
+        incoming_size = len(body_bytes)
+    else:
+        incoming_size = len(str(body_bytes).encode('utf-8'))
     
-    # Azure queue messages are base64-encoded by default
-    try:
-        decoded_bytes = base64.b64decode(body_bytes)
-        body_str = decoded_bytes.decode('utf-8')
-    except Exception:
-        # Fallback: treat as plain UTF-8 if base64 decode fails
-        body_str = body_bytes.decode('utf-8') if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
+    logger.info("[DESERIALIZE] Incoming message size: %d bytes", incoming_size)
+    
+    # Parse JSON directly (no base64 decoding)
+    body_str = body_bytes.decode('utf-8') if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
     
     if not body_str or not body_str.strip():
         logger.error("Received empty message body")
         raise ValueError("Queue message body is empty")
     
     payload = json.loads(body_str)
-    logger.info("Sync worker received payload: job=%s repo=%s", payload.get('job_id'), payload.get('repo_name'))
+    
+    # Log minimal message structure
+    repo_name = payload.get('repo_name', 'unknown')
+    job_id = payload.get('job_id', 'unknown')
+    fingerprint = payload.get('fingerprint', 'none')
+    
+    logger.info(
+        "[DESERIALIZE] Minimal message: json_size=%d bytes, job=%s, repo=%s, fingerprint=%s",
+        incoming_size,
+        job_id,
+        repo_name,
+        fingerprint
+    )
+    
+    # Debug: Log message structure
+    logger.info("[RECV_DEBUG] repo=%s job=%s - Top-level keys: %s", 
+                repo_name, job_id, sorted(list(payload.keys())))
+    
     return payload
 
-def _fetch_repo_bundle(job_id: str, username: str, repo_metadata: Dict[str, Any], fingerprint: Optional[str]) -> Dict[str, Any]:
+def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: Optional[str]) -> Dict[str, Any]:
+    """Fetch repository bundle by fetching all data from GitHub.
+    
+    Args:
+        job_id: Unique job identifier
+        username: GitHub username
+        repo_name: Repository name
+        fingerprint: Optional metadata fingerprint from queue for validation
+        
+    Returns:
+        Dict containing complete repo bundle with metadata, readme, file_types, etc.
+    """
     repo_manager = _get_repo_manager(username)
-    repo_name = repo_metadata.get('name')
     if not repo_name:
         raise ValueError("Repository name missing in message")
+
+    # Fetch fresh metadata from GitHub (not from queue message)
+    try:
+        repo_metadata = repo_manager.get_repo_metadata(username=username, repo=repo_name, include_languages=True)
+    except Exception as exc:
+        logger.error("Failed to fetch metadata for %s/%s: %s", username, repo_name, exc)
+        raise
 
     resolved_fingerprint = fingerprint or FingerprintManager.generate_metadata_fingerprint(repo_metadata)
 
@@ -241,18 +281,25 @@ def _update_job_progress(job_id: str, username: str, repo_name: str) -> None:
 def process_sync_job(msg: func.QueueMessage) -> None:
     """Process a single repository sync message."""
     logger.info("Sync worker processing message from github-sync queue")
+
     try:
         payload = _deserialize_message(msg)
         username = payload.get('username')
         job_id = payload.get('job_id')
-        repo_metadata = payload.get('metadata') or {}
-        repo_name = repo_metadata.get('name')
+        repo_name = payload.get('repo_name')
+        fingerprint = payload.get('fingerprint')
 
         if not username or not job_id or not repo_name:
-            raise ValueError("username, job_id, and repo metadata are required")
+            raise ValueError(f"Missing required fields: username={username}, job_id={job_id}, repo_name={repo_name}")
 
-        _fetch_repo_bundle(job_id, username, repo_metadata, payload.get('fingerprint'))
+        logger.info("[SYNC] Starting sync for job=%s repo=%s user=%s", job_id, repo_name, username)
+        _fetch_repo_bundle(job_id, username, repo_name, fingerprint)
+        logger.info("[SYNC] Completed sync for job=%s repo=%s", job_id, repo_name)
         _update_job_progress(job_id, username, repo_name)
-    except Exception as exc:
-        logger.error("Sync worker failure: %s", exc, exc_info=True)
+    except ValueError as ve:
+        logger.error("[SYNC_ERROR] Validation error: %s", ve, exc_info=True)
         raise
+    except Exception as exc:
+        logger.error("[SYNC_ERROR] Unexpected sync worker failure: %s", exc, exc_info=True)
+        raise
+    

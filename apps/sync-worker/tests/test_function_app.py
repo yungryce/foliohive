@@ -22,9 +22,13 @@ def test_deserialize_message_handles_bytes():
 
 
 def test_fetch_repo_bundle_caches_and_returns_expected(monkeypatch):
+    repo_name = "demo"
     repo_metadata = {"name": "demo", "id": 123, "languages": {"Python": 100}}
 
     class FakeRepoManager:
+        def get_repo_metadata(self, username, repo, include_languages=False):
+            return repo_metadata
+        
         def get_file_content(self, username, repo, path):
             mapping = {
                 ".repo-context.json": json.dumps({"context": "data"}),
@@ -74,7 +78,7 @@ def test_fetch_repo_bundle_caches_and_returns_expected(monkeypatch):
     monkeypatch.setattr(sync_app.cache_manager, "generate_cache_key", lambda **kwargs: "repo:demo")
     monkeypatch.setattr(sync_app.cache_manager, "save", fake_save)
 
-    result = sync_app._fetch_repo_bundle("job-1", "tester", repo_metadata, None)
+    result = sync_app._fetch_repo_bundle("job-1", "tester", repo_name, None)
 
     assert result["name"] == "demo"
     assert result["fingerprint"] == "fingerprint-value"
@@ -145,7 +149,7 @@ def test_process_sync_job_invokes_handlers(monkeypatch):
     payload = {
         "job_id": "job-456",
         "username": "tester",
-        "metadata": {"name": "demo"},
+        "repo_name": "demo",
         "fingerprint": "abc",
     }
     message = FakeMessage(json.dumps(payload).encode("utf-8"))
@@ -154,8 +158,8 @@ def test_process_sync_job_invokes_handlers(monkeypatch):
     monkeypatch.setattr(
         sync_app,
         "_fetch_repo_bundle",
-        lambda job_id, username, repo_metadata, fingerprint: calls.setdefault(
-            "fetch", (job_id, username, repo_metadata.copy(), fingerprint)
+        lambda job_id, username, repo_name, fingerprint: calls.setdefault(
+            "fetch", (job_id, username, repo_name, fingerprint)
         ),
     )
     monkeypatch.setattr(
@@ -166,5 +170,5 @@ def test_process_sync_job_invokes_handlers(monkeypatch):
 
     sync_app.process_sync_job(message)
 
-    assert calls["fetch"] == ("job-456", "tester", {"name": "demo"}, "abc")
+    assert calls["fetch"] == ("job-456", "tester", "demo", "abc")
     assert calls["progress"] == ("job-456", "tester", "demo")

@@ -47,13 +47,12 @@ def mock_queue_manager(mock_queue_messages):
     manager = MagicMock()
     manager.is_enabled.return_value = True
 
-    def enqueue_sync_job(job_id, username, repo_metadata, fingerprint=None):
+    def enqueue_sync_job(job_id, username, repo_name, fingerprint=None):
         mock_queue_messages['github-sync'].append({
             'job_id': job_id,
             'username': username,
-            'repo_name': repo_metadata.get('name'),
-            'metadata': repo_metadata,
-            'fingerprint': fingerprint or repo_metadata.get('fingerprint'),
+            'repo_name': repo_name,
+            'fingerprint': fingerprint,
         })
         return True
 
@@ -207,7 +206,7 @@ class TestAPIGatewayIntegration:
         # Simulate enqueuing sync jobs for each repo
         for repo in sample_github_repos:
             mock_queue_manager.enqueue_sync_job(
-                job_id, username, repo, f"fp_{repo['name']}"
+                job_id, username, repo['name'], f"fp_{repo['name']}"
             )
 
         # Check job metadata was saved
@@ -508,7 +507,7 @@ class TestFullPipelineIntegration:
 
         for repo in sample_github_repos:
             mock_queue_manager.enqueue_sync_job(
-                job_id, username, repo, f"fp_{repo['name']}"
+                job_id, username, repo['name'], f"fp_{repo['name']}"
             )
 
         assert len(mock_queue_messages['github-sync']) == 3
@@ -518,7 +517,7 @@ class TestFullPipelineIntegration:
         for sync_msg in mock_queue_messages['github-sync']:
             repo_data = {
                 'name': sync_msg['repo_name'],
-                'metadata': sync_msg['metadata'],
+                'metadata': {'name': sync_msg['repo_name']},  # Simulated metadata from GitHub
                 'fingerprint': sync_msg['fingerprint'],
                 'readme': f"# {sync_msg['repo_name']}\n\nDocumentation",
                 'has_documentation': True,
@@ -593,8 +592,8 @@ class TestFullPipelineIntegration:
         mock_cache_manager.save(bundle_key, existing_bundle, fingerprint='old_bundle_fp')
 
         # Only sync the new repo
-        new_repo = {'name': 'repo-new', 'language': 'Rust'}
-        mock_queue_manager.enqueue_sync_job(job_id, username, new_repo, 'fp_new')
+        new_repo_name = 'repo-new'
+        mock_queue_manager.enqueue_sync_job(job_id, username, new_repo_name, 'fp_new')
 
         # Simulate sync and merge
         new_repo_data = {

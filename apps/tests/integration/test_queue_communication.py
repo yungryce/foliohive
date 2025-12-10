@@ -429,7 +429,7 @@ class TestQueueManagerIntegration:
 
         # Operations should check enabled state
         if manager.is_enabled():
-            manager.enqueue_sync_job("job", "user", {})
+            manager.enqueue_sync_job("job", "user", "repo-name", "fingerprint")
         else:
             result = "skipped"
 

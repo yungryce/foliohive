@@ -39,7 +39,7 @@ except Exception:  # pragma: no cover - falls back in environments without azure
     ResourceNotFoundError = None
 
 
-logger = logging.getLogger('portfolio.api')
+logger = logging.getLogger("cloudfolio.api_gateway")
 logger.setLevel(logging.INFO)
 logger.propagate = True
 
@@ -536,8 +536,8 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
 
     stale_repos = freshness['stale_repos']
     cached_repos = freshness['cached_bundle']
-    
-    # Normal flow: only sync stale repos. Forced refresh: sync all repos.
+
+    # Normal flow: only sync stale repos. Forced refresh: resync all repos (stale + cached).
     if not stale_repos and not force_refresh:
         logger.info("No stale repos for %s; returning cached bundle status", username)
         return _create_success_response({
@@ -545,8 +545,21 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
             "repos_count": len(cached_repos),
         })
 
-    # When force_refresh=true, queue both stale AND valid cached repos
-    repos_to_queue = stale_repos if not force_refresh else (stale_repos + cached_repos)
+    if force_refresh:
+        logger.info(
+            "Force-refresh for %s: queueing %s stale repos + %s cached repos",
+            username,
+            len(stale_repos),
+            len(cached_repos),
+        )
+        repos_to_queue = stale_repos + cached_repos
+    else:
+        logger.info(
+            "Incremental refresh for %s: queueing %s stale repos",
+            username,
+            len(stale_repos),
+        )
+        repos_to_queue = stale_repos
     
     if not repos_to_queue:
         return _create_success_response({
@@ -563,13 +576,28 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
 
     enqueued = 0
     enqueued_names: List[str] = []
-    for repo_metadata in repos_to_queue:
+    for idx, repo_metadata in enumerate(repos_to_queue, 1):
         repo_name = repo_metadata.get('name')
         if not repo_name:
             continue
-        if queue_manager.enqueue_sync_job(job_id, username, repo_metadata, repo_metadata.get('fingerprint')):
+        
+        # Extract only essential identifiers for queue message
+        repo_fingerprint = repo_metadata.get('fingerprint')
+        
+        logger.info(
+            "[TRIGGER] Queue repo %d/%d: name=%s, fingerprint=%s, job_id=%s",
+            idx,
+            len(repos_to_queue),
+            repo_name,
+            repo_fingerprint,
+            job_id
+        )
+        
+        if queue_manager.enqueue_sync_job(job_id, username, repo_name, repo_fingerprint):
             enqueued += 1
             enqueued_names.append(repo_name)
+
+    logger.info("--------------Enqueued %s/%s repos for job %s", enqueued, len(expected_repo_names), job_id)
 
     if enqueued == 0:
         _persist_job_metadata(job_id, username, [], queued_repo_names=[], total_repos=0)

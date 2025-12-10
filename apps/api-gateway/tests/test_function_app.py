@@ -41,7 +41,7 @@ def test_trigger_bundle_refresh_enqueues_jobs(monkeypatch):
     monkeypatch.setattr(
         gateway.queue_manager,
         "enqueue_sync_job",
-        lambda job_id, username, repo_metadata, fingerprint=None: enqueued.append(repo_metadata['name']) or True,
+        lambda job_id, username, repo_name, fingerprint=None: enqueued.append(repo_name) or True,
     )
 
     stored_sessions = {}
