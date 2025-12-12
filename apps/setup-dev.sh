@@ -347,15 +347,44 @@ run_tests() {
         return 1
     fi
     
-    # Ensure Azurite for integration tests
-    if curl -s http://127.0.0.1:10000/ >/dev/null 2>&1; then
-        log_info "Azurite detected on localhost:10000"
-    else
+    # Ensure Azurite for integration tests (blob:10000, queue:10001, table:10002)
+    local az_ports=(10000 10001 10002)
+    local az_ready=true
+
+    for port in "${az_ports[@]}"; do
+        if nc -z 127.0.0.1 "$port" 2>/dev/null || ss -tln 2>/dev/null | grep -q ":${port} "; then
+            log_info "Azurite detected on localhost:${port}"
+        else
+            az_ready=false
+        fi
+    done
+
+    if [[ "$az_ready" == false ]]; then
         if command -v azurite >/dev/null 2>&1; then
             log_warn "Starting Azurite in background..."
             mkdir -p "$REPO_ROOT/.azurite"
             nohup azurite --location "$REPO_ROOT/.azurite" --silent >/dev/null 2>&1 &
-            sleep 3
+            local az_pid=$!
+            # Wait up to 10s for all three ports to open
+            for i in {1..10}; do
+                az_ready=true
+                for port in "${az_ports[@]}"; do
+                    if nc -z 127.0.0.1 "$port" 2>/dev/null || ss -tln 2>/dev/null | grep -q ":${port} "; then
+                        continue
+                    fi
+                    az_ready=false
+                    break
+                done
+                [[ "$az_ready" == true ]] && break
+                sleep 1
+            done
+            if [[ "$az_ready" == true ]]; then
+                log_info "Azurite is ready on ports 10000/10001/10002 (pid $az_pid)"
+            else
+                log_error "Azurite failed to open ports 10000/10001/10002 within 10s"
+                kill "$az_pid" 2>/dev/null || true
+                return 1
+            fi
         else
             log_warn "Azurite not available; integration tests will be skipped"
         fi

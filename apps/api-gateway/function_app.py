@@ -314,6 +314,8 @@ def _try_hydrate_repo(username: str, repo_name: str, expected_fingerprint: Optio
 
 def _queue_mode_enabled() -> bool:
     env_flag = os.getenv('ENABLE_QUEUE_MODE', 'true').lower() == 'true'
+    print(f"Queue mode env flag: {env_flag}")
+    logger.info("Queue mode env flag: %s", env_flag)
     return env_flag and queue_manager.is_enabled()
 
 
