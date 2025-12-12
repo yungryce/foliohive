@@ -134,9 +134,9 @@ Options:
   -f, --force              Force reinstall all packages even if installed
   -s, --shared-only        Only setup the shared package (skip function apps)
   -a, --app NAME           Setup only a specific function app
-  -p, --python-version VER Specify Python version (e.g., 3.11, 3.12)
-                           Default: 3.11 (Azure Functions supported)
-                           Supported: 3.9, 3.10, 3.11, 3.12
+  -p, --python-version VER Specify Python version (e.g., 3.13, 3.12)
+                           Default: 3.13 (Azure Functions supported)
+                           Supported: 3.14, 3.13, 3.12
   --no-dev                 Skip development dependencies
   --run-tests              Run tests after setup completes
   --debug                  Enable debug output
@@ -159,7 +159,7 @@ INSTALL_DEV=true
 FORCE_REINSTALL=false
 DEBUG=false
 RUN_TESTS=false
-REQUESTED_PYTHON_VERSION=""  # User-specified Python version (e.g., "3.11", "3.12")
+REQUESTED_PYTHON_VERSION=""  # User-specified Python version (e.g., "3.14", "3.12")
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -187,7 +187,7 @@ parse_args() {
                 shift 2
                 ;;
             -p|--python-version)
-                [[ -z "${2:-}" ]] && die "Option --python-version requires an argument (e.g., 3.11)"
+                [[ -z "${2:-}" ]] && die "Option --python-version requires an argument (e.g., 3.14)"
                 REQUESTED_PYTHON_VERSION="$2"
                 shift 2
                 ;;
@@ -216,8 +216,8 @@ parse_args() {
 
 check_python() {
     # Supported Python versions for Azure Functions v4
-    local supported_versions=("3.11" "3.12" "3.13" "3.14")
-    local default_version="3.11"
+    local supported_versions=("3.14" "3.13" "3.12")
+    local default_version="3.13"
     local target_version="${REQUESTED_PYTHON_VERSION:-$default_version}"
     
     # Validate requested version
@@ -252,8 +252,8 @@ check_python() {
         die "Python $target_version not found. Install python${target_version} and retry."
     fi
 
-    if [[ -n "$REQUESTED_PYTHON_VERSION" && "$REQUESTED_PYTHON_VERSION" != "3.11" ]]; then
-        log_warn "Using Python $PYTHON_VERSION. Note: Azure Functions officially supports 3.11-3.14."
+    if [[ -n "$REQUESTED_PYTHON_VERSION" && "$REQUESTED_PYTHON_VERSION" != "3.13" ]]; then
+        log_warn "Using Python $PYTHON_VERSION. Note: Azure Functions officially supports 3.12-3.14."
         log_warn "Python 3.12 may work but is not officially supported for production deployments."
     fi
     
