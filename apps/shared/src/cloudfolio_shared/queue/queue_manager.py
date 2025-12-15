@@ -9,6 +9,8 @@ from azure.identity import DefaultAzureCredential
 from azure.storage.queue import QueueClient, QueueServiceClient
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.propagate = True
 
 SYNC_QUEUE = "github-sync"
 MERGE_QUEUE = "merge-results"
@@ -185,8 +187,15 @@ class QueueManager:
         }
         return self.send_message(MERGE_QUEUE, message)
 
-    def enqueue_training_job(self, username: str, repos_bundle: List[Dict], training_params: Optional[Dict] = None) -> bool:
+    def enqueue_training_job(
+        self,
+        username: str,
+        repos_bundle: List[Dict],
+        training_params: Optional[Dict] = None,
+        job_id: Optional[str] = None,
+    ) -> bool:
         message = {
+            "job_id": job_id,
             "username": username,
             "repos_bundle": repos_bundle,
             "training_params": training_params or {}

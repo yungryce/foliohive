@@ -348,6 +348,9 @@ run_tests() {
     fi
     
     # Ensure Azurite for integration tests
+    # Use port check instead of curl for reliable detection
+
+    # Ensure Azurite for integration tests
     if curl -s http://127.0.0.1:10000/ >/dev/null 2>&1; then
         log_info "Azurite detected on localhost:10000"
     else

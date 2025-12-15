@@ -89,6 +89,8 @@ def _parse_json(req: func.HttpRequest) -> Dict[str, Any]:
 
 def _get_github_repo_manager(username: str) -> GitHubRepoManager:
     token = os.getenv('GITHUB_TOKEN')
+    if not token:
+        raise ValueError("GITHUB_TOKEN environment variable is not set")
     if not username:
         raise ValueError("Username is required")
     api = GitHubAPI(token=token, username=username)
@@ -251,10 +253,20 @@ def _merge_session_with_cache(session: Dict[str, Any], cache_payload: Optional[D
 
 
 def _identify_repo_freshness(username: str) -> Dict[str, Any]:
+    """Identify stale repositories by comparing fingerprints.
+    
+    Raises:
+        ValueError: If token is missing, invalid, or rate limit is exceeded.
+    """
     repo_manager = _get_github_repo_manager(username)
     bundle_cache_key = cache_manager.generate_cache_key(kind='bundle', username=username)
     cached_bundle = cache_manager.get(bundle_cache_key)
 
+    logger.info(
+        "[API_GATEWAY_FRESHNESS] user=%s - Fetching all repos metadata with languages (1 + N API calls)",
+        username
+    )
+    
     all_repos = repo_manager.get_all_repos_metadata(username=username, include_languages=True)
     current_fingerprints = {
         repo.get('name'): FingerprintManager.generate_metadata_fingerprint(repo)
@@ -280,7 +292,7 @@ def _identify_repo_freshness(username: str) -> Dict[str, Any]:
 
         stale_repos.append({**repo_metadata, 'fingerprint': current_fingerprint})
 
-    logger.info("Repo freshness for %s: %s stale / %s valid", username, len(stale_repos), len(hydrated_valid_repos))
+    logger.info("Repo freshness for user=%s: stale=%d, valid=%d", username, len(stale_repos), len(hydrated_valid_repos))
     return {
         'stale_repos': stale_repos,
         'cached_bundle': hydrated_valid_repos,
@@ -314,8 +326,6 @@ def _try_hydrate_repo(username: str, repo_name: str, expected_fingerprint: Optio
 
 def _queue_mode_enabled() -> bool:
     env_flag = os.getenv('ENABLE_QUEUE_MODE', 'true').lower() == 'true'
-    print(f"Queue mode env flag: {env_flag}")
-    logger.info("Queue mode env flag: %s", env_flag)
     return env_flag and queue_manager.is_enabled()
 
 
@@ -408,42 +418,6 @@ def _persist_job_metadata(
     )
 
     cache_manager.save(_job_cache_key(job_id), cache_payload, ttl=3600)
-
-
-def _validate_blob_path(blob_path: str) -> None:
-    if not blob_path:
-        raise ValueError("Missing 'path'")
-    if '..' in blob_path or blob_path.startswith('/') or '\\' in blob_path or len(blob_path) > 200:
-        raise ValueError("Invalid path")
-
-
-def _build_image_response(blob_client, req: func.HttpRequest) -> func.HttpResponse:
-    downloader = blob_client.download_blob()
-    props = downloader.properties
-    etag = (props.etag or '').strip('"') if props and props.etag else ''
-
-    inm = (req.headers.get('If-None-Match') or '').strip('"')
-    if inm and etag and inm == etag:
-        return func.HttpResponse(status_code=304)
-
-    content = downloader.readall()
-    ctype = (
-        props.content_settings.content_type
-        if props and props.content_settings and props.content_settings.content_type
-        else (mimetypes.guess_type(blob_client.blob_name)[0] or 'application/octet-stream')
-    )
-    if not ctype.startswith('image/'):
-        raise ValueError("Requested blob is not an image")
-
-    resp = func.HttpResponse(body=content, mimetype=ctype, status_code=200)
-    resp.headers['Cache-Control'] = 'public, max-age=600'
-    if etag:
-        resp.headers['ETag'] = f'"{etag}"'
-    if props and props.last_modified:
-        resp.headers['Last-Modified'] = props.last_modified.strftime('%a, %d %b %Y %H:%M:%S GMT')
-    if props and props.size:
-        resp.headers['Content-Length'] = str(props.size)
-    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -541,26 +515,14 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
 
     # Normal flow: only sync stale repos. Forced refresh: resync all repos (stale + cached).
     if not stale_repos and not force_refresh:
-        logger.info("No stale repos for %s; returning cached bundle status", username)
         return _create_success_response({
             "status": "cached",
             "repos_count": len(cached_repos),
         })
 
     if force_refresh:
-        logger.info(
-            "Force-refresh for %s: queueing %s stale repos + %s cached repos",
-            username,
-            len(stale_repos),
-            len(cached_repos),
-        )
         repos_to_queue = stale_repos + cached_repos
     else:
-        logger.info(
-            "Incremental refresh for %s: queueing %s stale repos",
-            username,
-            len(stale_repos),
-        )
         repos_to_queue = stale_repos
     
     if not repos_to_queue:
@@ -585,15 +547,6 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         
         # Extract only essential identifiers for queue message
         repo_fingerprint = repo_metadata.get('fingerprint')
-        
-        logger.info(
-            "[TRIGGER] Queue repo %d/%d: name=%s, fingerprint=%s, job_id=%s",
-            idx,
-            len(repos_to_queue),
-            repo_name,
-            repo_fingerprint,
-            job_id
-        )
         
         if queue_manager.enqueue_sync_job(job_id, username, repo_name, repo_fingerprint):
             enqueued += 1

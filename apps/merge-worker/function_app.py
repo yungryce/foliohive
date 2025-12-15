@@ -52,25 +52,45 @@ logger.propagate = True
 
 app = func.FunctionApp()
 
+
 BUNDLE_TTL_SECONDS = 3600
 TRAINING_PARAMS = {"batch_size": 8, "epochs": 2}
 
-
 def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
-    body = msg.get_body()
-    decoded = body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else str(body)
-    payload = json.loads(decoded)
-    
-    # Log message size
-    message_size = len(decoded.encode('utf-8')) if isinstance(decoded, str) else len(decoded)
-    logger.info(
-        "Merge worker received payload: job=%s repos=%s message_size=%d bytes",
-        payload.get("job_id"),
-        payload.get("synced_repos"),
-        message_size
-    )
-    return payload
+    body_bytes = msg.get_body()
 
+
+    # Log incoming message size
+    if isinstance(body_bytes, (bytes, bytearray)):
+        incoming_size = len(body_bytes)
+    else:
+        incoming_size = len(str(body_bytes).encode('utf-8'))
+
+    logger.info("[DESERIALIZE] Incoming message size: %d bytes", incoming_size)
+
+    # Parse JSON directly (no base64 decoding)
+    body_str = body_bytes.decode('utf-8') if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
+    if not body_str or not body_str.strip():
+        logger.error("Received empty message body")
+        raise ValueError("Queue message body is empty")
+
+    payload = json.loads(body_str)
+    
+    # Log minimal message structure
+    job_id = payload.get('job_id', 'unknown')
+    fingerprint = payload.get('synced_repos', 'none')
+    
+    logger.info(
+        "[DESERIALIZE] Minimal message: json_size=%d bytes, job=%s, synced_repos=%s",
+        incoming_size,
+        job_id,
+    )
+    
+    # Debug: Log message structure
+    logger.info("[RECV_DEBUG] repo=%s job=%s - Top-level keys: %s", 
+                 job_id, sorted(list(payload.keys())))
+    
+    return payload
 
 def _extract_repo_name(repo: Dict[str, Any]) -> Optional[str]:
     metadata = repo.get("metadata")
@@ -154,18 +174,18 @@ def _update_job_status(job_id: str, username: str, synced_repo_names: List[str],
     cache_manager.save(job_key, payload, ttl=BUNDLE_TTL_SECONDS)
 
 
-def _enqueue_training_job(username: str, bundle: List[Dict[str, Any]]) -> None:
+def _enqueue_training_job(username: str, job_id: str, bundle: List[Dict[str, Any]]) -> None:
     if not bundle:
-        logger.info("Skip training enqueue for %s (empty bundle)", username)
+        logger.info("Skip training enqueue for %s job=%s (empty bundle)", username, job_id)
         return
     if not queue_manager.is_enabled():
-        logger.warning("Queue manager disabled; training job skipped for %s", username)
+        logger.warning("Queue manager disabled; training job skipped for %s job=%s", username, job_id)
         return
-    queued = queue_manager.enqueue_training_job(username, bundle, training_params=TRAINING_PARAMS)
+    queued = queue_manager.enqueue_training_job(username, bundle, training_params=TRAINING_PARAMS, job_id=job_id)
     if queued:
-        logger.info("Training job enqueued for %s", username)
+        logger.info("Training job enqueued for %s job=%s", username, job_id)
     else:
-        logger.warning("Failed to enqueue training job for %s", username)
+        logger.warning("Failed to enqueue training job for %s job=%s", username, job_id)
 
 
 def _resolve_fresh_repos(payload: Dict[str, Any], username: str, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -200,12 +220,15 @@ def _process_merge_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     _save_bundle(username, merged_bundle, fingerprint)
     synced_repo_names = [name for name in (_extract_repo_name(repo) for repo in merged_bundle) if name]
     _update_job_status(job_id, username, synced_repo_names, fingerprint)
-    _enqueue_training_job(username, merged_bundle)
+    _enqueue_training_job(username, job_id, merged_bundle)
     return merged_bundle
 
 
 @app.queue_trigger(arg_name="msg", queue_name="merge-results", connection="AzureWebJobsStorage")
 def process_merge_job(msg: func.QueueMessage) -> None:
+
+    print("==============*******************-====================")
+    logger.info("Processing merge job message")
     try:
         payload = _deserialize_message(msg)
         _process_merge_payload(payload)
@@ -214,10 +237,29 @@ def process_merge_job(msg: func.QueueMessage) -> None:
         raise
 
 
+@app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def health_check(req: func.HttpRequest) -> func.HttpResponse:
+    """Simple health check endpoint for merge worker."""
+    status = {
+        "status": "ok",
+        "worker": "merge",
+        "queue_enabled": queue_manager.is_enabled(),
+        "cache_enabled": cache_manager is not None,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    return func.HttpResponse(
+        json.dumps(status, indent=2),
+        status_code=200,
+        mimetype="application/json",
+        headers={"Content-Type": "application/json; charset=utf-8"},
+    )
+
+
 __all__ = [
     "_process_merge_payload",
     "_merge_repos",
     "_resolve_fresh_repos",
     "_resolve_cached_bundle",
     "process_merge_job",
+    "health_check",
 ]

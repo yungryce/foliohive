@@ -41,7 +41,7 @@ def test_process_merge_payload_merges_cached_and_fresh(monkeypatch):
     monkeypatch.setattr(
         merge_app.queue_manager,
         "enqueue_training_job",
-        lambda username, bundle, training_params=None: enqueued.append((username, bundle, training_params)) or True,
+        lambda username, bundle, training_params=None, job_id=None: enqueued.append((username, bundle, training_params, job_id)) or True,
     )
 
     merged = merge_app._process_merge_payload(payload)

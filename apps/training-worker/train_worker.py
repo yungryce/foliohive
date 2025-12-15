@@ -166,7 +166,9 @@ class TrainingWorker:
             try:
                 payload = json.loads(message.content)
                 logger.info(
-                    "Processing training job for %s", payload.get("username", "unknown")
+                    "Processing training job for %s job=%s",
+                    payload.get("username", "unknown"),
+                    payload.get("job_id", "unknown"),
                 )
                 success = self.process_training_job(payload)
                 if success:

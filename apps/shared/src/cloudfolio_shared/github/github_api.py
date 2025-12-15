@@ -27,6 +27,14 @@ class GitHubAPI:
         self.base_url = base_url.rstrip('/')
         self.headers = {'Authorization': f'token {self.token}'} if self.token else {}
         self.session = self._build_session()
+        
+        # Log token availability for debugging
+        token_status = 'present' if self.token else 'MISSING'
+        token_preview = f"{self.token[:12]}..." if self.token and len(self.token) > 12 else 'N/A'
+        logger.info(
+            "[GITHUB_API_INIT] username=%s token_status=%s token_preview=%s base_url=%s",
+            self.username, token_status, token_preview, self.base_url
+        )
 
     def _build_session(self) -> requests.Session:
         """Create a shared session with retries and connection pooling to reduce SNAT usage."""
@@ -62,6 +70,13 @@ class GitHubAPI:
         if accept_raw:
             request_headers['Accept'] = 'application/vnd.github.v3.raw'
 
+        # Log outgoing API call (before making request)
+        has_auth = 'Authorization' in request_headers
+        logger.info(
+            "[GITHUB_API_CALL] %s %s auth=%s params=%s",
+            method, endpoint, has_auth, params or {}
+        )
+
         try:
             response = self.session.request(
                 method=method,
@@ -72,13 +87,26 @@ class GitHubAPI:
                 timeout=timeout,
             )
         except requests.RequestException as exc:
-            logger.warning("GitHub request failed: %s %s (%s)", method, full_url, exc)
+            logger.warning("[GITHUB_API_ERROR] Request failed: %s %s (%s)", method, full_url, exc)
             return None
+
+        # Log rate limit headers for every response
+        rate_limit = response.headers.get("X-RateLimit-Limit", "unknown")
+        rate_remaining = response.headers.get("X-RateLimit-Remaining", "unknown")
+        rate_reset = response.headers.get("X-RateLimit-Reset", "unknown")
+        
+        logger.info(
+            "[GITHUB_API_RESPONSE] %s status=%d rate_limit=%s/%s reset=%s",
+            endpoint, response.status_code, rate_remaining, rate_limit, rate_reset
+        )
 
         # Respect GitHub rate limits: if we're limited, log and return None so caller can decide.
         if response.status_code == 403 and response.headers.get("X-RateLimit-Remaining") == "0":
             reset = response.headers.get("X-RateLimit-Reset")
-            logger.warning("GitHub rate limit hit for %s; reset=%s", full_url, reset)
+            logger.error(
+                "[GITHUB_RATE_LIMIT] Rate limit exceeded for %s; remaining=0/%s reset=%s",
+                full_url, rate_limit, reset
+            )
             return None
 
         if response.status_code == 404:

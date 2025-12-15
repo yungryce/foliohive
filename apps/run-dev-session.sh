@@ -29,8 +29,12 @@ declare -a WORKER_PIDS=()
 declare -a WORKER_NAMES=()
 declare -a WORKER_LOGS=()
 
+declare -a TAIL_PIDS=()
+
 SKIP_E2E=false
 QUIET=false
+TAIL_LOGS=false
+FUNC_VERBOSE=false
 VENV_ACTIVE=false
 
 usage() {
@@ -41,6 +45,8 @@ Options:
   -h, --help          Show this help message
   --skip-e2e          Skip ./tests/e2e_curl_tests.sh
   --quiet             Reduce log chatter once workers are running
+    --tail-logs          Tail worker logs in real time (prefixed)
+    --func-verbose       Start workers with 'func start --verbose'
 
 Additional options are forwarded to ./setup-dev.sh, e.g.:
     ./run-dev-session.sh -- --clean --python-version 3.12
@@ -59,6 +65,11 @@ log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 
 cleanup() {
     local exit_code=$?
+
+    for pid in "${TAIL_PIDS[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+
     # Kill any remaining func processes on our ports
     for port in 7071 7072 7073; do
         lsof -ti:$port | xargs kill -9 2>/dev/null || true
@@ -85,6 +96,16 @@ parse_args() {
                 ;;
             --quiet)
                 QUIET=true
+                shift
+                continue
+                ;;
+            --tail-logs)
+                TAIL_LOGS=true
+                shift
+                continue
+                ;;
+            --func-verbose)
+                FUNC_VERBOSE=true
                 shift
                 continue
                 ;;
@@ -151,6 +172,7 @@ wait_for_worker_ready() {
             exit 1
         fi
         if grep -qE 'Host lock lease acquired|Job host started|Host started' "$log_file"; then
+            ready=true
             break
         fi
         sleep 1
@@ -161,6 +183,30 @@ wait_for_worker_ready() {
     else
         log_warn "$name has not reported readiness after 60s; monitor $log_file"
     fi
+}
+
+start_log_tailers() {
+    if [[ "$TAIL_LOGS" != true ]]; then
+        return 0
+    fi
+
+    log_step "Tailing worker logs (Ctrl+C to stop session)"
+    local use_stdbuf=false
+    if command -v stdbuf >/dev/null 2>&1; then
+        use_stdbuf=true
+    fi
+
+    for i in "${!WORKER_LOGS[@]}"; do
+        local name="${WORKER_NAMES[$i]}"
+        local log_file="${WORKER_LOGS[$i]}"
+
+        if [[ "$use_stdbuf" == true ]]; then
+            ( tail -n 0 -F "$log_file" | stdbuf -oL sed -u "s/^/[$name] /" ) &
+        else
+            ( tail -n 0 -F "$log_file" | sed -u "s/^/[$name] /" ) &
+        fi
+        TAIL_PIDS+=("$!")
+    done
 }
 
 start_worker() {
@@ -176,10 +222,16 @@ start_worker() {
 
     log_step "Starting $name on port $port"
     : > "$log_file"
+
+    local -a func_args
+    func_args=(start --python --port "$port")
+    if [[ "$FUNC_VERBOSE" == true ]]; then
+        func_args+=(--verbose)
+    fi
+
     (
         cd "$app_dir"
-        PYTHON_ISOLATE_WORKER_DEPENDENCIES=0 \
-        func start --python --port "$port" >"$log_file" 2>&1
+        PYTHON_ISOLATE_WORKER_DEPENDENCIES=0 func "${func_args[@]}" >"$log_file" 2>&1
     ) &
     local pid=$!
 
@@ -191,48 +243,10 @@ start_worker() {
     wait_for_worker_ready "$name" "$log_file" "$pid"
 }
 
-run_worker_live_tests() {
-    log_step "Running live worker curl suites"
-    
-    # Sync worker tests
-    log_info "Testing sync-worker (port 7072)"
-    if [[ -f "$APPS_DIR/sync-worker/tests/live_curl_tests.sh" ]]; then
-        if ! "$APPS_DIR/sync-worker/tests/live_curl_tests.sh" --port 7072; then
-            log_error "Sync worker live tests failed"
-            exit 1
-        fi
-    else
-        log_warn "Sync worker live tests not found"
-    fi
-
-    # Merge worker tests
-    log_info "Testing merge-worker (port 7073)"
-    if [[ -f "$APPS_DIR/merge-worker/tests/live_curl_tests.sh" ]]; then
-        if ! "$APPS_DIR/merge-worker/tests/live_curl_tests.sh" --port 7073; then
-            log_error "Merge worker live tests failed"
-            exit 1
-        fi
-    else
-        log_warn "Merge worker live tests not found"
-    fi
-
-    # Training worker tests (optional, skip if no health URL)
-    if [[ -n "${TRAINING_HEALTH_URL:-}" ]]; then
-        log_info "Testing training-worker health endpoint"
-        if [[ -f "$APPS_DIR/training-worker/tests/live_curl_tests.sh" ]]; then
-            if ! "$APPS_DIR/training-worker/tests/live_curl_tests.sh" --health-url "$TRAINING_HEALTH_URL"; then
-                log_warn "Training worker live tests failed (non-fatal)"
-            fi
-        fi
-    else
-        log_info "Skipping training-worker tests (TRAINING_HEALTH_URL not set)"
-    fi
-}
-
 run_e2e_tests() {
     if [[ "$SKIP_E2E" == true ]]; then
         log_warn "Skipping e2e curl tests as requested"
-        return
+        return 0
     fi
     log_step "Running end-to-end curl suite"
     (cd "$APPS_DIR" && ./tests/e2e_curl_tests.sh)
@@ -271,12 +285,15 @@ main() {
         start_worker "$worker" "${WORKER_PORTS[$worker]}"
     done
 
-    # run_worker_live_tests
+    start_log_tailers
 
-    run_e2e_tests
-
-    log_info "Workflow complete. Logs available in $LOG_DIR"
-    monitor_workers
+    if run_e2e_tests; then
+        log_info "Workflow complete. Logs available in $LOG_DIR"
+        monitor_workers
+    else
+        log_error "E2E tests failed. Check logs and fix issues before monitoring."
+        exit 1
+    fi
 }
 
 main "$@"

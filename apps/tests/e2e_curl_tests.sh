@@ -559,6 +559,12 @@ test_pipeline() {
     
     log_info "Testing complete refresh → sync → merge → bundle for $TEST_USERNAME"
     
+    # Check API Gateway health before starting
+    if ! check_service "${API_BASE}/health" "API Gateway"; then
+        log_error "API Gateway not responding - cannot proceed with pipeline test"
+        return 1
+    fi
+    
     # Step 1: Trigger refresh
     log_test "Step 1: Trigger refresh"
     response=$(curl_request "POST" "/bundles/${TEST_USERNAME}/refresh" '{"force_refresh": true}')
@@ -567,6 +573,7 @@ test_pipeline() {
     
     if [[ "$status" != "202" && "$status" != "200" ]]; then
         log_fail "Refresh failed with status $status"
+        [[ "$VERBOSE" == true ]] && echo "Response body: $body" || true
         return 1
     fi
     
@@ -579,30 +586,44 @@ test_pipeline() {
         
         # Step 2: Poll for completion (max 60 seconds)
         log_test "Step 2: Poll job status"
-        local max_attempts=12
+        local max_attempts=10
         local attempt=0
         local job_status="queued"
         
-        while [[ "$attempt" -lt "$max_attempts" && "$job_status" != "completed" ]]; do
+        while [[ "$attempt" -lt "$max_attempts" && "$job_status" != "completed" && "$job_status" != "failed" ]]; do
             sleep 5
-            ((attempt++))
+            attempt=$((attempt + 1))
             
             response=$(curl_request "GET" "/bundles/${TEST_USERNAME}/status?job_id=${job_id}")
             status=$(echo "$response" | tail -1)
             body=$(echo "$response" | head -n -1)
             
             if [[ "$status" == "200" ]]; then
-                job_status=$(echo "$body" | jq -r '.status' 2>/dev/null)
-                local progress
-                progress=$(echo "$body" | jq -r '.progress.percentage' 2>/dev/null)
-                log_info "Attempt $attempt: $job_status ($progress%)"
+                # Safe JSON parsing with fallbacks
+                if job_status=$(echo "$body" | jq -r '.status' 2>/dev/null) && \
+                   progress=$(echo "$body" | jq -r '.progress.percentage' 2>/dev/null); then
+                    log_info "Attempt $attempt: $job_status (${progress:-0}%)"
+                else
+                    log_warn "Failed to parse JSON response (attempt $attempt)"
+                    if [[ "$VERBOSE" == true ]]; then
+                        echo "Response body: $body"
+                    fi
+                    continue
+                fi
             else
-                log_warn "Status check failed (HTTP $status)"
+                log_warn "Status check failed (HTTP $status, attempt $attempt)"
+                if [[ "$VERBOSE" == true ]]; then
+                    echo "Response body: $body"
+                fi
+                continue  # Don't exit, keep polling
             fi
         done
         
         if [[ "$job_status" == "completed" ]]; then
             log_pass "Job completed successfully"
+        elif [[ "$job_status" == "failed" ]]; then
+            log_fail "Job failed during processing"
+            return 1
         else
             log_warn "Job did not complete within timeout (status: $job_status)"
         fi
@@ -616,7 +637,7 @@ test_pipeline() {
     
     if assert_status "200" "$status" "Bundle retrieved"; then
         local repo_count
-        repo_count=$(echo "$body" | jq '.data | length' 2>/dev/null)
+        repo_count=$(echo "$body" | jq '.data | length' 2>/dev/null || echo "unknown")
         log_pass "Bundle contains $repo_count repositories"
     fi
     

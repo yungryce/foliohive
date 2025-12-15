@@ -60,11 +60,7 @@ def test_fetch_repo_bundle_caches_and_returns_expected(monkeypatch):
         "generate_metadata_fingerprint",
         staticmethod(lambda metadata: "fingerprint-value"),
     )
-    monkeypatch.setattr(
-        sync_app.FileTypeAnalyzer,
-        "analyze_repository_files",
-        lambda self, file_types: {"detected": list(file_types.keys())},
-    )
+    # FileTypeAnalyzer no longer used - removed expensive tree walk
 
     captured = {}
 

@@ -65,8 +65,9 @@ def mock_queue_manager(mock_queue_messages):
         })
         return True
 
-    def enqueue_training_job(username, repos_bundle, training_params=None):
+    def enqueue_training_job(username, repos_bundle, training_params=None, job_id=None):
         mock_queue_messages['model-training'].append({
+            'job_id': job_id,
             'username': username,
             'repos_bundle': repos_bundle,
             'training_params': training_params or {},

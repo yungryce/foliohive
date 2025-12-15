@@ -102,11 +102,11 @@ class ModelMetadataRow:
 
 _JSON_LIST_FIELDS = {"expected_repos", "queued_repos", "synced_repos"}
 _JSON_FIELDS_REPO = {"document", "metadata", "languages", "categorized_types"}
-_JSON_FIELDS_MODEL = {"metadata", "training_params", "repo_names"}
+_JSON_F IELDS_MODEL = {"metadata", "training_params", "repo_names"}
 _AZURE_META_FIELDS = {"etag", "odata.etag", "odata.metadata"}
 
 
-def _utcnow_iso() -> str:
+def _utcnow_iso() -> str: 
     return datetime.now(timezone.utc).isoformat()
 
 
