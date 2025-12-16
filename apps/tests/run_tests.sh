@@ -7,6 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APPS_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$APPS_DIR")"
+readonly AZURITE_HELPER="$APPS_DIR/ensure-azurite.sh"
 VENV_DIR="$APPS_DIR/.venv"
 
 RED='\033[0;31m'
@@ -110,24 +111,8 @@ if ! python -c "import pytest" >/dev/null 2>&1; then
     pip install -r "$SCRIPT_DIR/requirements.txt"
 fi
 
-ensure_azurite() {
-    if curl -s http://127.0.0.1:10000/ >/dev/null 2>&1; then
-        echo -e "${GREEN}✅ Azurite detected on localhost:10000${NC}"
-        return
-    fi
-    if ! command -v azurite >/dev/null 2>&1; then
-        echo -e "${RED}❌ Azurite is required. Install via 'npm install -g azurite'.${NC}"
-        exit 1
-    fi
-    mkdir -p "$REPO_ROOT/.azurite"
-    echo -e "${YELLOW}Starting Azurite in background...${NC}"
-    nohup azurite --location "$REPO_ROOT/.azurite" --silent >/dev/null 2>&1 &
-    sleep 3
-    echo -e "${GREEN}✅ Azurite started${NC}"
-}
-
 if [[ -z "$MARKER_VALUE" || "$MARKER_VALUE" == *"integration"* ]]; then
-    ensure_azurite
+    bash "$AZURITE_HELPER"
 fi
 
 PYTEST_ARGS=("-c" "tests/pytest.ini")

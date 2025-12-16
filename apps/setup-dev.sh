@@ -11,6 +11,7 @@ VENV_DIR="$APPS_DIR/.venv"
 REPO_ROOT="$(dirname "$APPS_DIR")"
 PYTHON_BIN=""
 PYTHON_VERSION=""
+readonly AZURITE_HELPER="$APPS_DIR/ensure-azurite.sh"
 
 # Colors for output
 readonly RED='\033[0;31m'
@@ -347,21 +348,8 @@ run_tests() {
         return 1
     fi
     
-    # Ensure Azurite for integration tests
-    # Use port check instead of curl for reliable detection
-
-    # Ensure Azurite for integration tests
-    if curl -s http://127.0.0.1:10000/ >/dev/null 2>&1; then
-        log_info "Azurite detected on localhost:10000"
-    else
-        if command -v azurite >/dev/null 2>&1; then
-            log_warn "Starting Azurite in background..."
-            mkdir -p "$REPO_ROOT/.azurite"
-            nohup azurite --location "$REPO_ROOT/.azurite" --silent >/dev/null 2>&1 &
-            sleep 3
-        else
-            log_warn "Azurite not available; integration tests will be skipped"
-        fi
+    if [[ -z "${SKIP_AZURITE_HELPER:-}" ]]; then
+        bash "$AZURITE_HELPER"
     fi
     
     # Run pytest from apps/ to preserve expected import paths
@@ -421,7 +409,7 @@ main() {
 
     if [[ "$RUN_TESTS" == true ]]; then
         setup_tests
-        run_tests || {
+        SKIP_AZURITE_HELPER=true run_tests || {
             deactivate 2>/dev/null || true
             exit 1
         }

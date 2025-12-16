@@ -92,9 +92,6 @@ def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     # Log minimal message structure
     repo_name = payload.get('repo_name', 'unknown')
     job_id = payload.get('job_id', 'unknown')
-    fingerprint = payload.get('fingerprint', 'none')
-    
-    # Debug: Log message structure
     logger.info("[RECV_DEBUG] repo=%s job=%s - Top-level keys: %s", 
                 repo_name, job_id, sorted(list(payload.keys())))
     
@@ -168,13 +165,10 @@ def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: 
 
 
 def _load_job_snapshot(job_id: str, username: str) -> Dict[str, Any]:
-    snapshot: Dict[str, Any] = {}
     if table_manager.is_enabled():
         table_row = table_manager.get_candidate_session(username, job_id)
         if table_row:
-            snapshot = dict(table_row)
-    if snapshot:
-        return snapshot
+            return dict(table_row)
 
     job_key = f"job:{job_id}"
     job_entry = cache_manager.get(job_key)
@@ -308,12 +302,41 @@ def _update_job_progress(job_id: str, username: str, repo_name: str, sync_failed
             job_id, len(synced_list), len(failed_list)
         )
 
+    # Update table as single source of truth
+    # Table persists indefinitely and is authoritative for job state
     if table_manager.is_enabled():
-        table_manager.update_candidate_session(username, job_id, updates)
+        try:
+            table_manager.update_candidate_session(username, job_id, updates)
+            logger.debug(
+                "[JOB_PERSISTED] job=%s to table: synced=%d failed=%d completed=%d/%d",
+                job_id, len(synced_list), len(failed_list),
+                updates.get('completed_repos'), updates.get('total_repos')
+            )
+        except Exception as exc:
+            logger.error(
+                "[JOB_UPDATE_ERROR] job=%s failed to persist to table: %s. "
+                "Job state may be inconsistent.",
+                job_id, exc
+            )
+            raise
+    else:
+        logger.warning(
+            "[JOB_NOT_PERSISTED] job=%s - table manager disabled. "
+            "Job state will not be persisted beyond cache TTL.",
+            job_id
+        )
 
-    job_info.update(updates)
-    cache_manager.save(f"job:{job_id}", job_info, ttl=JOB_METADATA_TTL_SECONDS)
-    logger.info("Job %s progress: %s/%s", job_id, job_info['completed_repos'], job_info['total_repos'])
+    # Note: No cache update here. Cache should be read-through on next _load_job_snapshot,
+    # eliminating dual-update coordination issues and stale data risks.
+    # Previous approach of updating both table and cache created race conditions:
+    # - Table update could fail while cache succeeds (stale cache)
+    # - Cache expiry (4 hours) vs table persistence created inconsistencies
+    
+    logger.info(
+        "Job %s progress: %s/%s (status=%s)",
+        job_id, updates.get('completed_repos'), updates.get('total_repos'),
+        updates.get('status', 'processing')
+    )
 
     if should_merge:
         if queue_manager.is_enabled():
@@ -327,7 +350,6 @@ def _update_job_progress(job_id: str, username: str, repo_name: str, sync_failed
 @app.queue_trigger(arg_name="msg", queue_name="github-sync", connection="AzureWebJobsStorage")
 def process_sync_job(msg: func.QueueMessage) -> None:
     """Process a single repository sync message."""
-    logger.info("-----------------------------------***********")
 
     payload = None
     username = None
@@ -351,7 +373,15 @@ def process_sync_job(msg: func.QueueMessage) -> None:
     except ValueError as ve:
         logger.error("[SYNC_ERROR] Validation error for repo=%s: %s", repo_name or 'unknown', ve)
         if job_id and username and repo_name:
-            _update_job_progress(job_id, username, repo_name, sync_failed=True)
+            try:
+                _update_job_progress(job_id, username, repo_name, sync_failed=True)
+            except Exception as update_exc:
+                logger.error(
+                    "[SYNC_ERROR] Failed to mark repo=%s as failed in job=%s: %s",
+                    repo_name, job_id, update_exc,
+                    exc_info=True
+                )
+                # Don't re-raise here - the original error is more important
         raise
     except Exception as exc:
         logger.error(
@@ -360,7 +390,15 @@ def process_sync_job(msg: func.QueueMessage) -> None:
             exc_info=True
         )
         if job_id and username and repo_name:
-            _update_job_progress(job_id, username, repo_name, sync_failed=True)
+            try:
+                _update_job_progress(job_id, username, repo_name, sync_failed=True)
+            except Exception as update_exc:
+                logger.error(
+                    "[SYNC_ERROR] Failed to mark repo=%s as failed in job=%s: %s",
+                    repo_name, job_id, update_exc,
+                    exc_info=True
+                )
+                # Don't re-raise here - the original error is more important
         raise
     
 @app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)

@@ -11,6 +11,7 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 APPS_DIR="$SCRIPT_DIR"
 VENV_DIR="$APPS_DIR/.venv"
 LOG_DIR="$APPS_DIR/logs"
+readonly AZURITE_HELPER="$APPS_DIR/ensure-azurite.sh"
 
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
@@ -280,6 +281,7 @@ main() {
     validate_env
     clean_logs
     prepare_logs
+    bash "$AZURITE_HELPER"
 
     for worker in "${WORKER_SEQUENCE[@]}"; do
         start_worker "$worker" "${WORKER_PORTS[$worker]}"

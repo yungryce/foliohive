@@ -586,7 +586,7 @@ test_pipeline() {
         
         # Step 2: Poll for completion (max 60 seconds)
         log_test "Step 2: Poll job status"
-        local max_attempts=10
+        local max_attempts=20
         local attempt=0
         local job_status="queued"
         

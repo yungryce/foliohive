@@ -46,6 +46,7 @@ class CandidateSessionRow:
     expected_repos: List[str] = field(default_factory=list)
     queued_repos: List[str] = field(default_factory=list)
     synced_repos: List[str] = field(default_factory=list)
+    failed_repos: List[str] = field(default_factory=list)
     bundle_fingerprint: Optional[str] = None
     force_refresh: bool = False
     model_status: Optional[str] = None
@@ -100,9 +101,9 @@ class ModelMetadataRow:
             raise ValueError("fingerprint or model_fingerprint must be provided")
 
 
-_JSON_LIST_FIELDS = {"expected_repos", "queued_repos", "synced_repos"}
+_JSON_LIST_FIELDS = {"expected_repos", "queued_repos", "synced_repos", "failed_repos"}
 _JSON_FIELDS_REPO = {"document", "metadata", "languages", "categorized_types"}
-_JSON_F IELDS_MODEL = {"metadata", "training_params", "repo_names"}
+_JSON_FIELDS_MODEL = {"metadata", "training_params", "repo_names"}
 _AZURE_META_FIELDS = {"etag", "odata.etag", "odata.metadata"}
 
 
