@@ -98,6 +98,7 @@ def test_update_job_progress_tracks_completion(monkeypatch):
                 "status": "queued",
             }
             self.last_update = None
+            self.repo_status: dict[str, dict] = {}
 
         def is_enabled(self):
             return True
@@ -109,17 +110,19 @@ def test_update_job_progress_tracks_completion(monkeypatch):
             self.last_update = updates
             self.session.update(updates)
 
+        def upsert_repo_status(self, row):
+            self.repo_status[row.repo_name] = {
+                "repo_name": row.repo_name,
+                "status": row.status,
+                "message_uuid": row.message_uuid,
+            }
+
+        def list_repo_statuses(self, job_id):
+            return list(self.repo_status.values())
+
     table_stub = StubTableManager()
     monkeypatch.setattr(sync_app, "table_manager", table_stub)
     monkeypatch.setattr(sync_app.cache_manager, "get", lambda key: {"status": "missing", "data": None})
-
-    saves = []
-
-    def fake_save(cache_key, data, ttl=None, fingerprint=None):
-        saves.append((cache_key, data.copy()))
-        return True
-
-    monkeypatch.setattr(sync_app.cache_manager, "save", fake_save)
     monkeypatch.setattr(sync_app.queue_manager, "is_enabled", lambda: True)
 
     merge_jobs = []
@@ -133,11 +136,11 @@ def test_update_job_progress_tracks_completion(monkeypatch):
 
     assert table_stub.last_update == {
         "synced_repos": ["demo"],
+        "failed_repos": [],
         "completed_repos": 1,
         "total_repos": 1,
         "status": "synced",
     }
-    assert saves and saves[0][1]["synced_repos"] == ["demo"]
     assert merge_jobs == [("job-123", "tester", ["demo"])]
 
 
@@ -161,10 +164,15 @@ def test_process_sync_job_invokes_handlers(monkeypatch):
     monkeypatch.setattr(
         sync_app,
         "_update_job_progress",
-        lambda job_id, username, repo_name: calls.setdefault("progress", (job_id, username, repo_name)),
+        lambda job_id, username, repo_name, **kwargs: calls.setdefault("progress", (job_id, username, repo_name, kwargs)),
     )
 
     sync_app.process_sync_job(message)
 
     assert calls["fetch"] == ("job-456", "tester", "demo", "abc")
-    assert calls["progress"] == ("job-456", "tester", "demo")
+    assert calls["progress"] == (
+        "job-456",
+        "tester",
+        "demo",
+        {"sync_failed": False, "message_uuid": None},
+    )

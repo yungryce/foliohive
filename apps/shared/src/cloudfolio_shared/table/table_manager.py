@@ -18,6 +18,7 @@ __all__ = [
     "TableNames",
     "CandidateSessionRow",
     "RepoMetadataRow",
+    "RepoSyncStatusRow",
     "ModelMetadataRow",
     "table_manager",
 ]
@@ -32,6 +33,7 @@ class TableNames:
     candidate_sessions: str = "CandidateSessions"
     repo_metadata: str = "RepoMetadata"
     model_metadata: str = "ModelMetadata"
+    repo_sync_status: str = "RepoSyncStatus"
 
 
 @dataclass
@@ -76,6 +78,19 @@ class RepoMetadataRow:
 
 
 @dataclass
+class RepoSyncStatusRow:
+    """Per-repository sync status for a given job."""
+
+    job_id: str
+    repo_name: str
+    username: str
+    status: str  # synced | failed | pending
+    message_uuid: Optional[str] = None
+    error: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+@dataclass
 class ModelMetadataRow:
     """Metadata describing trained semantic models."""
 
@@ -105,6 +120,7 @@ _JSON_LIST_FIELDS = {"expected_repos", "queued_repos", "synced_repos", "failed_r
 _JSON_FIELDS_REPO = {"document", "metadata", "languages", "categorized_types"}
 _JSON_FIELDS_MODEL = {"metadata", "training_params", "repo_names"}
 _AZURE_META_FIELDS = {"etag", "odata.etag", "odata.metadata"}
+_REPO_STATUS_ALLOWED = {"synced", "failed", "pending"}
 
 
 def _utcnow_iso() -> str: 
@@ -174,6 +190,7 @@ class TableManager:
             self.table_names.candidate_sessions,
             self.table_names.repo_metadata,
             self.table_names.model_metadata,
+            self.table_names.repo_sync_status,
         ):
             try:
                 client = self._service_client.get_table_client(name)
@@ -348,6 +365,59 @@ class TableManager:
         payload["repo_name"] = payload.get("RowKey")
         payload["username"] = payload.get("PartitionKey")
         payload["created_at"] = payload.get("created_at") or None
+        return payload
+
+    # ------------------------------------------------------------------
+    # Repo sync status (per job, per repo)
+    # ------------------------------------------------------------------
+    def upsert_repo_status(self, row: RepoSyncStatusRow) -> None:
+        table = self._get_table_client(self.table_names.repo_sync_status)
+        if not table:
+            return
+        status = (row.status or "").strip().lower()
+        if status not in _REPO_STATUS_ALLOWED:
+            raise ValueError(f"Invalid repo sync status: {status}")
+
+        now = _utcnow_iso()
+        entity: Dict[str, Any] = {
+            "PartitionKey": row.job_id,
+            "RowKey": row.repo_name,
+            "username": row.username,
+            "status": status,
+            "message_uuid": row.message_uuid or "",
+            "error": row.error or "",
+            "updated_at": row.updated_at or now,
+        }
+        table.upsert_entity(entity, mode=UpdateMode.MERGE)
+
+    def get_repo_status(self, job_id: str, repo_name: str) -> Optional[Dict[str, Any]]:
+        table = self._get_table_client(self.table_names.repo_sync_status)
+        if not table:
+            return None
+        try:
+            entity = table.get_entity(partition_key=job_id, row_key=repo_name)
+        except ResourceNotFoundError:
+            return None
+        return self._deserialize_repo_status(entity)
+
+    def list_repo_statuses(self, job_id: str) -> List[Dict[str, Any]]:
+        table = self._get_table_client(self.table_names.repo_sync_status)
+        if not table:
+            return []
+        query = table.list_entities(filter=f"PartitionKey eq '{job_id}'")
+        return [self._deserialize_repo_status(e) for e in query]
+
+    def _deserialize_repo_status(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(entity)
+        for meta_key in _AZURE_META_FIELDS:
+            payload.pop(meta_key, None)
+        payload["job_id"] = payload.get("PartitionKey")
+        payload["repo_name"] = payload.get("RowKey")
+        payload["username"] = payload.get("username") or None
+        payload["status"] = (payload.get("status") or "").lower() or None
+        payload["message_uuid"] = payload.get("message_uuid") or None
+        payload["error"] = payload.get("error") or None
+        payload["updated_at"] = payload.get("updated_at") or None
         return payload
 
     # ------------------------------------------------------------------

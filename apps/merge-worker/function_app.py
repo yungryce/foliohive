@@ -200,15 +200,12 @@ def _process_merge_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     _save_bundle(username, merged_bundle, fingerprint)
     synced_repo_names = [name for name in (_extract_repo_name(repo) for repo in merged_bundle) if name]
     _update_job_status(job_id, username, synced_repo_names, fingerprint)
-    _enqueue_training_job(username, job_id, merged_bundle)
+    # _enqueue_training_job(username, job_id, merged_bundle)
     return merged_bundle
 
 
 @app.queue_trigger(arg_name="msg", queue_name="merge-results", connection="AzureWebJobsStorage")
 def process_merge_job(msg: func.QueueMessage) -> None:
-
-    print("==============*******************-====================")
-    logger.info("Processing merge job message")
     try:
         payload = _deserialize_message(msg)
         _process_merge_payload(payload)

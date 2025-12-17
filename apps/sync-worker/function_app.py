@@ -56,7 +56,7 @@ try:
         table_manager,
     )
     
-    from cloudfolio_shared.table import RepoMetadataRow
+    from cloudfolio_shared.table import RepoMetadataRow, RepoSyncStatusRow
 except Exception as import_error:
     raise
 
@@ -156,45 +156,25 @@ def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: 
         "languages": repo_metadata.get("languages", {}),
         "has_documentation": bool(readme_content),
     }
-
+    logger.info(
+        "[SYNC_FETCH_COMPLETE] repo=%s job=%s - Fetch complete: languages=%d file_types=%d",
+        repo_name, job_id, len(languages_data), len(file_types)
+    )
     cache_key = cache_manager.generate_cache_key(kind='repo', username=username, repo=repo_name)
     cache_manager.save(cache_key, result, ttl=None, fingerprint=resolved_fingerprint)
+    logger.info("[SYNC_CACHE] repo=%s job=%s - Cached repo data under key=%s", repo_name, job_id, cache_key)
     _persist_repo_metadata(job_id, username, result, cache_key)
-    logger.info("Cached repo %s/%s fingerprint=%s", username, repo_name, resolved_fingerprint)
+    logger.info("***Cached repo %s/%s fingerprint=%s", username, repo_name, resolved_fingerprint)
     return result
-
-
-def _load_job_snapshot(job_id: str, username: str) -> Dict[str, Any]:
-    if table_manager.is_enabled():
-        table_row = table_manager.get_candidate_session(username, job_id)
-        if table_row:
-            return dict(table_row)
-
-    job_key = f"job:{job_id}"
-    job_entry = cache_manager.get(job_key)
-    if job_entry.get('status') == 'valid' and isinstance(job_entry.get('data'), dict):
-        return dict(job_entry['data'])
-
-    logger.warning("Job metadata missing for %s; initializing defaults", job_id)
-    return {
-        'job_id': job_id,
-        'username': username,
-        'synced_repos': [],
-        'failed_repos': [],  # Track repos that failed to sync
-        'expected_repos': [],
-        'queued_repos': [],
-        'completed_repos': 0,
-        'total_repos': 0,
-        'status': 'queued',
-    }
-
 
 def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, Any], content_blob: str) -> None:
     if not table_manager.is_enabled():
+        logger.warning("Table manager disabled; skipping repo metadata persistence for %s/%s", username, repo_payload.get('name'))
         return
 
     repo_name = repo_payload.get('name')
     if not repo_name:
+        logger.warning("Cannot persist repo metadata without repo_name")
         return
 
     document = {
@@ -222,8 +202,31 @@ def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, A
     )
     table_manager.upsert_repo_metadata(row)
 
+def _load_job_snapshot(job_id: str, username: str) -> Dict[str, Any]:
+    if table_manager.is_enabled():
+        table_row = table_manager.get_candidate_session(username, job_id)
+        if table_row:
+            return dict(table_row)
 
-def _update_job_progress(job_id: str, username: str, repo_name: str, sync_failed: bool = False) -> None:
+    job_key = f"job:{job_id}"
+    job_entry = cache_manager.get(job_key)
+    if job_entry.get('status') == 'valid' and isinstance(job_entry.get('data'), dict):
+        return dict(job_entry['data'])
+
+    logger.warning("Job metadata missing for %s; initializing defaults", job_id)
+    return {
+        'job_id': job_id,
+        'username': username,
+        'synced_repos': [],
+        'failed_repos': [],  # Track repos that failed to sync
+        'expected_repos': [],
+        'queued_repos': [],
+        'completed_repos': 0,
+        'total_repos': 0,
+        'status': 'queued',
+    }
+
+def _update_job_progress(job_id: str, username: str, repo_name: str, sync_failed: bool = False, *, message_uuid: Optional[str] = None) -> None:
     """Update job progress and trigger merge when appropriate.
     
     Args:
@@ -233,23 +236,34 @@ def _update_job_progress(job_id: str, username: str, repo_name: str, sync_failed
         sync_failed: True if sync failed for this repo
     """
     job_info = _load_job_snapshot(job_id, username)
-    synced = set(job_info.get('synced_repos', []))
-    logger.info("Current synced repos for job %s: %s: %s", job_id, synced, "*************111*****************")
-    failed = set(job_info.get('failed_repos', []))
-    logger.info("Current failed repos for job %s: %s: %s", job_id, failed, "****************222**************")
-    
-    if repo_name:
-        if sync_failed:
-            failed.add(repo_name)
-            synced.discard(repo_name)  # Remove from synced if it was there
-        else:
-            synced.add(repo_name)
-            failed.discard(repo_name)  # Remove from failed if it was there
-
-    logger.info("Updated synced repos for job %s: %s: %s: %s", job_id, synced, failed, "******************333**********")
-
     queued_repos = job_info.get('queued_repos') or []
     expected_repos = job_info.get('expected_repos') or []
+
+    if table_manager.is_enabled():
+        status_value = 'failed' if sync_failed else 'synced'
+        status_row = RepoSyncStatusRow(
+            job_id=job_id,
+            repo_name=repo_name,
+            username=username,
+            status=status_value,
+            message_uuid=message_uuid,
+            error=None,
+        )
+        table_manager.upsert_repo_status(status_row)
+        status_rows = table_manager.list_repo_statuses(job_id)
+        synced = {row['repo_name'] for row in status_rows if row.get('status') == 'synced'}
+        failed = {row['repo_name'] for row in status_rows if row.get('status') == 'failed'}
+    else:
+        synced = set(job_info.get('synced_repos', []))
+        failed = set(job_info.get('failed_repos', []))
+        if repo_name:
+            if sync_failed:
+                failed.add(repo_name)
+                synced.discard(repo_name)  # Remove from synced if it was there
+            else:
+                synced.add(repo_name)
+                failed.discard(repo_name)  # Remove from failed if it was there
+
     synced_list = sorted(synced)
     failed_list = sorted(failed)
     completed = len(synced_list)
@@ -266,7 +280,7 @@ def _update_job_progress(job_id: str, username: str, repo_name: str, sync_failed
     queued_set = set(queued_repos)
     processed = synced | failed  # All repos that have been attempted
     pending = queued_set - processed if queued_set else set()
-    
+
     # Progressive merge logic: Enqueue merge when we have synced repos and no pending repos
     # This allows partial merges even if some repos failed
     has_synced_repos = len(synced_list) > 0
@@ -366,6 +380,7 @@ def process_sync_job(msg: func.QueueMessage) -> None:
         job_id = payload.get('job_id')
         repo_name = payload.get('repo_name')
         fingerprint = payload.get('fingerprint')
+        message_uuid = payload.get('message_uuid')
 
         if not username or not job_id or not repo_name:
             raise ValueError(f"Missing required fields: username={username}, job_id={job_id}, repo_name={repo_name}")
@@ -373,12 +388,12 @@ def process_sync_job(msg: func.QueueMessage) -> None:
         logger.info("[SYNC] Starting sync for job=%s repo=%s user=%s", job_id, repo_name, username)
         _fetch_repo_bundle(job_id, username, repo_name, fingerprint)
         logger.info("[SYNC] Completed sync for job=%s repo=%s", job_id, repo_name)
-        _update_job_progress(job_id, username, repo_name, sync_failed=False)
+        _update_job_progress(job_id, username, repo_name, sync_failed=False, message_uuid=message_uuid)
     except ValueError as ve:
         logger.error("[SYNC_ERROR] Validation error for repo=%s: %s", repo_name or 'unknown', ve)
         if job_id and username and repo_name:
             try:
-                _update_job_progress(job_id, username, repo_name, sync_failed=True)
+                _update_job_progress(job_id, username, repo_name, sync_failed=True, message_uuid=message_uuid)
             except Exception as update_exc:
                 logger.error(
                     "[SYNC_ERROR] Failed to mark repo=%s as failed in job=%s: %s",
@@ -395,7 +410,7 @@ def process_sync_job(msg: func.QueueMessage) -> None:
         )
         if job_id and username and repo_name:
             try:
-                _update_job_progress(job_id, username, repo_name, sync_failed=True)
+                _update_job_progress(job_id, username, repo_name, sync_failed=True, message_uuid=message_uuid)
             except Exception as update_exc:
                 logger.error(
                     "[SYNC_ERROR] Failed to mark repo=%s as failed in job=%s: %s",

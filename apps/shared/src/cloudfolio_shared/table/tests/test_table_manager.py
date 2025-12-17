@@ -8,6 +8,7 @@ from cloudfolio_shared.table import (  # type: ignore
     CandidateSessionRow,
     ModelMetadataRow,
     RepoMetadataRow,
+    RepoSyncStatusRow,
     TableManager,
     TableNames,
 )
@@ -99,6 +100,7 @@ def table_manager() -> TableManager:
         candidate_sessions="CandidateSessions",
         repo_metadata="RepoMetadata",
         model_metadata="ModelMetadata",
+        repo_sync_status="RepoSyncStatus",
     )
     return TableManager(table_service_client=service, table_names=names)
 
@@ -175,3 +177,26 @@ def test_model_metadata(table_manager: TableManager) -> None:
     all_rows = table_manager.list_model_metadata("alice")
     assert len(all_rows) == 1
     assert all_rows[0]["fingerprint"] == "fp-123"
+
+
+def test_repo_sync_status_roundtrip(table_manager: TableManager) -> None:
+    row = RepoSyncStatusRow(
+        job_id="job-1",
+        repo_name="api",
+        username="alice",
+        status="synced",
+        message_uuid="m-1",
+        error=None,
+    )
+
+    table_manager.upsert_repo_status(row)
+
+    fetched = table_manager.get_repo_status("job-1", "api")
+    assert fetched is not None
+    assert fetched["status"] == "synced"
+    assert fetched["message_uuid"] == "m-1"
+    assert fetched["username"] == "alice"
+
+    listed = table_manager.list_repo_statuses("job-1")
+    assert len(listed) == 1
+    assert listed[0]["repo_name"] == "api"

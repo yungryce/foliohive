@@ -540,7 +540,7 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
 
     enqueued = 0
     enqueued_names: List[str] = []
-    for idx, repo_metadata in enumerate(repos_to_queue, 1):
+    for repo_metadata in repos_to_queue:
         repo_name = repo_metadata.get('name')
         if not repo_name:
             continue
