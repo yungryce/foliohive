@@ -234,7 +234,9 @@ def _update_job_progress(job_id: str, username: str, repo_name: str, sync_failed
     """
     job_info = _load_job_snapshot(job_id, username)
     synced = set(job_info.get('synced_repos', []))
+    logger.info("Current synced repos for job %s: %s: %s", job_id, synced, "*************111*****************")
     failed = set(job_info.get('failed_repos', []))
+    logger.info("Current failed repos for job %s: %s: %s", job_id, failed, "****************222**************")
     
     if repo_name:
         if sync_failed:
@@ -243,6 +245,8 @@ def _update_job_progress(job_id: str, username: str, repo_name: str, sync_failed
         else:
             synced.add(repo_name)
             failed.discard(repo_name)  # Remove from failed if it was there
+
+    logger.info("Updated synced repos for job %s: %s: %s: %s", job_id, synced, failed, "******************333**********")
 
     queued_repos = job_info.get('queued_repos') or []
     expected_repos = job_info.get('expected_repos') or []

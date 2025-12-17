@@ -58,16 +58,6 @@ TRAINING_PARAMS = {"batch_size": 8, "epochs": 2}
 
 def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     body_bytes = msg.get_body()
-
-
-    # Log incoming message size
-    if isinstance(body_bytes, (bytes, bytearray)):
-        incoming_size = len(body_bytes)
-    else:
-        incoming_size = len(str(body_bytes).encode('utf-8'))
-
-    logger.info("[DESERIALIZE] Incoming message size: %d bytes", incoming_size)
-
     # Parse JSON directly (no base64 decoding)
     body_str = body_bytes.decode('utf-8') if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
     if not body_str or not body_str.strip():
@@ -78,17 +68,7 @@ def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     
     # Log minimal message structure
     job_id = payload.get('job_id', 'unknown')
-    fingerprint = payload.get('synced_repos', 'none')
-    
-    logger.info(
-        "[DESERIALIZE] Minimal message: json_size=%d bytes, job=%s, synced_repos=%s",
-        incoming_size,
-        job_id,
-    )
-    
-    # Debug: Log message structure
-    logger.info("[RECV_DEBUG] repo=%s job=%s - Top-level keys: %s", 
-                 job_id, sorted(list(payload.keys())))
+    logger.info("[RECV_DEBUG] job=%s", job_id)
     
     return payload
 

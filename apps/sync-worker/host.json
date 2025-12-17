@@ -11,6 +11,20 @@
         "isEnabled": true,
         "excludedTypes": "Request"
       }
+    },
+    "logLevel": {
+      "default": "Warning",
+      "Host": "Error",
+      "Function": "Information",
+      "Host.Aggregator": "Error",
+      "Host.Executor": "Error",
+      "Host.Results": "Error",
+      "System": "Error",
+      "Worker": "Error",
+      "Azure": "Error",
+      "Azure.Storage": "Error",
+      "Azure.Core": "Error",
+      "Azure.Identity": "Error"
     }
   },
   "extensionBundle": {

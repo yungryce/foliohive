@@ -10,7 +10,7 @@ readonly AZURITE_PORTS=(10000 10001 10002)
 readonly AZURITE_LOCATION="$REPO_ROOT/.azurite"
 readonly AZURITE_LOG_DIR="$APPS_DIR/logs"
 readonly AZURITE_LOG_FILE="$AZURITE_LOG_DIR/azurite.log"
-readonly AZURITE_STARTUP_TIMEOUT=15
+readonly AZURITE_STARTUP_TIMEOUT=30
 readonly AZURITE_PORT_LIST="10000,10001,10002"
 
 log_info()  { echo "[INFO]  $1"; }
