@@ -1,0 +1,35 @@
+/* Navbar palette stays fixed */
+.navbar {
+  border-bottom: 1px solid var(--color-github-border, rgba(255,255,255,0.12));
+  background-color: var(--color-github-dark, #0b1020);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.navbar a {
+  color: var(--color-github-gray, #aab4cf);
+  text-decoration: none;
+  transition: color 0.3s ease;
+}
+
+.navbar a:hover,
+.navbar a.active { color: var(--color-github-light, #e8edff); }
+
+.navbar a.active { font-weight: 500; }
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 9999px;
+  color: var(--color-github-light, #eef2ff);
+  border: 1px solid var(--color-github-border, rgba(255,255,255,0.15));
+  background: transparent;
+  cursor: pointer;
+}
+.theme-toggle:hover { background-color: rgba(255, 255, 255, 0.08); color: #ffffff; }
+.theme-toggle:focus-visible { outline: 2px solid var(--color-github-light, #eef2ff); outline-offset: 2px; }
+.theme-toggle .fa-solid { font-size: 18px; line-height: 1; }

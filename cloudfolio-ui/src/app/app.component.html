@@ -1,0 +1,24 @@
+<header class="navbar">
+  <div class="container flex justify-between items-center py-4">
+    <a [routerLink]="['']" class="text-xl font-bold">Cloudfolio</a>
+    <nav class="flex items-center gap-4">
+      <ul class="flex gap-6">
+        <li><a [routerLink]="['']" routerLinkActive="active" [routerLinkActiveOptions]="{exact: true}">Home</a></li>
+        <li><a [routerLink]="['/projects']" routerLinkActive="active">Projects</a></li>
+        <li><a [routerLink]="['/ai']" routerLinkActive="active">AI</a></li>
+      </ul>
+      <button
+        type="button"
+        class="theme-toggle"
+        (click)="toggleTheme()"
+        [attr.aria-pressed]="theme === 'dark'"
+        [attr.aria-label]="theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'">
+        <i [class]="theme === 'dark' ? 'fa-solid fa-moon' : 'fa-solid fa-sun'"></i>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<div class="container bg-[var(--bg)] text-[var(--fg)]">
+  <router-outlet></router-outlet>
+</div>

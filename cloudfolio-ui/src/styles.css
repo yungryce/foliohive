@@ -1,0 +1,286 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Your theme extensions */
+  --color-github-radical: #ff3366;
+  --color-github-dark: #0d1117;
+  --color-github-light: #f6f8fa;
+  --color-github-gray: #c9d1d9;
+  --color-github-border: #30363d;
+  
+  /* Optional: Extend default theme */
+  --font-family-sans: "Inter", sans-serif;
+  --font-size-base: 1rem;
+}
+
+/* Global theme tokens */
+:root {
+  /* Surfaces */
+  --bg: #f4f3f3;           /* light base */
+  --bg-soft: #E0EBDC;      /* soft background banding */
+  --card: #ffffff;         /* cards/surfaces */
+  --border: #dfdfdf;
+
+  /* Text */
+  --fg: #1A1A43;           /* primary text */
+  --muted: #a2a8d3;        /* secondary text */
+  --heading: #38598b;      /* headings */
+
+  /* Accents */
+  --primary: #CA5C36;        /* buttons/primary accent (sparingly) */
+  --primary-foreground: #fff6f6;
+  --accent: #096B72;         /* secondary accent */
+  --accent-foreground: #fff6f6;
+
+  /* Chips, rings */
+  --chip-bg: #e7eaf6;
+  --chip-fg: #080829;
+  --ring: #A4B0F5;
+}
+
+:root.dark {
+  --bg: #0a0b10;        /* darker, more neutral */
+  --bg-soft: #12131a;   /* subtle elevation */
+  --card: #151622;      /* neutral card surface */
+  --border: #26293a;    /* neutral border */
+
+  --fg: #E0EBDC;
+  --muted: #a2a8d3;
+  --heading: #A4B0F5;
+
+  --primary: #CA5C36;
+  --primary-foreground: #080829;
+  --accent: #297373;
+  --accent-foreground: #fff6f6;
+
+  --chip-bg: #323262;
+  --chip-fg: #E0EBDC;
+  --ring: #A4B0F5;
+}
+
+/* Global primitives */
+html, body {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', sans-serif;
+}
+
+/* Replace the base layer to use global tokens (remove forced dark html bg) */
+@layer base {
+  html {
+    background-color: var(--bg);
+    color: var(--fg);
+  }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    color: var(--heading);
+    margin-bottom: 0.5rem;
+  }
+
+  h3 {
+    font-size: 1.5rem;
+    font-weight: 600;
+  }
+
+  hr {
+    border-color: var(--border);
+    margin: 1.5rem 0;
+  }
+
+  p { margin-bottom: 1rem; }
+  em { color: var(--accent); font-style: italic; }
+}
+
+/* Utility helpers for buttons (optional) */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: .5rem .75rem;
+  border-radius: .5rem;
+  border: 1px solid var(--border);
+}
+.btn-primary {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.btn-ghost {
+  background: var(--bg);
+  color: var(--fg);
+}
+.btn-card {
+  background: var(--card);
+  color: var(--fg);
+}
+
+/* Card and soft sections */
+.section-soft {
+  background: var(--bg-soft);
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@layer components {
+  .container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 1.5rem;
+  }
+
+  .profile-header {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+
+  @media (min-width: 768px) {
+    .profile-header {
+      flex-direction: row;
+      align-items: flex-start;
+    }
+  }
+
+  .profile-image-container {
+    flex-shrink: 0;
+  }
+
+  .profile-image {
+    border-radius: 0.5rem;
+    max-width: 400px;
+    height: auto;
+  }
+
+  .profile-content {
+    flex-grow: 1;
+  }
+
+  .profile-intro {
+    margin-bottom: 1.5rem;
+  }
+
+  a {
+    color: var(--color-github-radical);
+    text-decoration: none;
+    transition: color 0.3s ease;
+  }
+
+  a:hover {
+    text-decoration: underline;
+    opacity: 0.9;
+  }
+
+  /* Badge styling */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.25;
+    margin-right: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  /* GitHub stats cards */
+  .stats-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+
+  .stats-card {
+    border-radius: 0.5rem;
+    overflow: hidden;
+    flex-grow: 1;
+    min-width: 250px;
+    transition: transform 0.3s ease;
+  }
+  
+  .stats-card:hover {
+    transform: translateY(-5px);
+  }
+
+  /* Tables for skills */
+  .skills-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    margin: 1.5rem 0;
+  }
+
+  .skills-table th {
+    text-align: left;
+    padding: 0.75rem 1rem;
+    font-weight: 600;
+    color: var(--color-github-light);
+    background-color: rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid var(--color-github-border);
+  }
+
+  .skills-table td {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--color-github-border);
+    vertical-align: middle;
+  }
+  
+  .skills-table td a {
+    display: inline-block;
+    margin-right: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  /* Trophy display */
+  .trophy-container {
+    margin: 1.5rem 0;
+    overflow-x: auto;
+    border-radius: 0.5rem;
+    background-color: rgba(255, 255, 255, 0.02);
+    padding: 1rem;
+  }
+}
+
+@layer utilities {
+  .bg-github-radical {
+    background-color: var(--color-github-radical);
+  }
+
+  .text-github-radical {
+    color: var(--color-github-radical);
+  }
+
+  .text-github-light {
+    color: var(--color-github-light);
+  }
+
+  .text-github-dark {
+    color: var(--color-github-dark);
+  }
+  
+  .border-github {
+    border: 1px solid var(--color-github-border);
+  }
+}
+
+/* Navbar palette (intentionally not theme-toggled) */
+:root {
+  --color-github-dark: #0b0d14;   /* navbar bg */
+  --color-github-border: #26293a; /* navbar border */
+  --color-github-light: #E0EBDC;  /* active/hover link + focus ring */
+  --color-github-gray: #c3c8e6;   /* default link/icon in navbar */
+}

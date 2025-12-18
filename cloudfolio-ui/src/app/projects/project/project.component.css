@@ -1,0 +1,21 @@
+.lang-bar { height: 8px; border-radius: 6px; overflow: hidden; }
+.lang-chunk { height: 100%; display: inline-block; background: var(--chip-bg); }
+.lang-chunk[data-i="0"] { background: #3b82f6; }
+.lang-chunk[data-i="1"] { background: #22c55e; }
+.lang-chunk[data-i="2"] { background: #f59e0b; }
+.lang-chunk[data-i="3"] { background: #ef4444; }
+.lang-chunk[data-i="4"] { background: #a855f7; }
+
+/* Basic typography for rendered README */
+.readme-content h1, .readme-content h2, .readme-content h3,
+.readme-content h4, .readme-content h5, .readme-content h6 {
+  margin-top: 1.25rem; margin-bottom: .5rem; font-weight: 600;
+}
+.readme-content p { margin: .5rem 0; }
+.readme-content pre, .readme-content code {
+  background: var(--soft); border: 1px solid var(--border);
+}
+.readme-content pre { padding: .75rem; border-radius: .5rem; overflow: auto; }
+.readme-content code { padding: .1rem .3rem; border-radius: .25rem; }
+.readme-content a { color: var(--primary); text-decoration: underline; }
+

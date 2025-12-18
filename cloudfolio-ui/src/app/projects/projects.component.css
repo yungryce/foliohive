@@ -1,0 +1,28 @@
+/* Remove component-scoped :root tokens to avoid conflicts; use global tokens from styles.css */
+
+/* Typography and layout polish */
+.container { line-height: 1.6; }
+
+/* Clamp description to align card heights */
+.repo-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Languages bar */
+.lang-bar {
+  height: 8px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+/* Language chunk coloring: cycle accessible hues */
+.lang-chunk { height: 100%; display: inline-block; background: var(--chip-bg); }
+.lang-chunk[data-i="0"] { background: #3b82f6; }  /* blue-500 */
+.lang-chunk[data-i="1"] { background: #22c55e; }  /* green-500 */
+.lang-chunk[data-i="2"] { background: #f59e0b; }  /* amber-500 */
+.lang-chunk[data-i="3"] { background: #ef4444; }  /* red-500 */
+.lang-chunk[data-i="4"] { background: #a855f7; }  /* purple-500 */
+.build-banner { border-left: 4px solid var(--primary); padding-left: .75rem; }

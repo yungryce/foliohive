@@ -1,0 +1,101 @@
+/* Use global tokens; avoid hardcoded colors */
+
+.profile-header { margin-bottom: 2rem; }
+.profile-intro p { margin-bottom: 1rem; }
+.profile-image { border-radius: 8px; box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2); }
+section { margin-top: 2rem; }
+
+:host ::ng-deep hr { border-color: var(--border); }
+
+/* Surveys grid */
+.surveys-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.survey-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: .75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: transform .15s ease, box-shadow .15s ease;
+  cursor: pointer;
+}
+
+.survey-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0,0,0,.12);
+}
+
+.survey-card img {
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  background: var(--bg-soft, transparent);
+}
+
+.caption {
+  margin-top: .5rem;
+  font-size: .875rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.survey-empty {
+  grid-column: 1 / -1;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 1rem;
+  border-radius: 10px;
+  text-align: center;
+}
+
+/* Additional utility classes */
+.fixed { position: fixed; }
+.inset-0 { top: 0; left: 0; right: 0; bottom: 0; }
+.z-50 { z-index: 50; }
+.bg-black\/70 { background: rgba(0,0,0,0.7); }
+.max-w-full { max-width: 100vw; }
+.max-h-\[90vh\] { max-height: 90vh; }
+.absolute { position: absolute; }
+.top-4 { top: 1rem; }
+.right-4 { right: 1rem; }
+.text-2xl { font-size: 1.5rem; }
+.rounded-lg { border-radius: 0.5rem; }
+.shadow-2xl { box-shadow: 0 8px 32px rgba(0,0,0,0.25); }
+.border-4 { border-width: 4px; }
+.border-\[var\(--card\)\] { border-color: var(--card); }
+
+.skills-table th, .skills-table td {
+  color: var(--fg);
+  background: transparent;
+}
+
+.skills-table th {
+  background: var(--bg-soft);
+  color: var(--heading);
+  font-weight: 600;
+}
+
+.skills-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.stats-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.5rem;
+  display: inline-block;
+  transition: box-shadow .15s;
+}
+
+.stats-card:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+}
