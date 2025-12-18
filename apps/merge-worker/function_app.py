@@ -56,7 +56,7 @@ app = func.FunctionApp()
 BUNDLE_TTL_SECONDS = 3600
 TRAINING_PARAMS = {"batch_size": 8, "epochs": 2}
 
-def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
+def _deserialize_message(msg: AzureQueueMessage) -> Dict[str, Any]:
     body_bytes = msg.get_body()
     # Parse JSON directly (no base64 decoding)
     body_str = body_bytes.decode('utf-8') if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
@@ -127,10 +127,11 @@ def _calculate_bundle_fingerprint(bundle: List[Dict[str, Any]]) -> str:
     return FingerprintManager.generate_content_fingerprint(bundle)
 
 
-def _save_bundle(username: str, bundle: List[Dict[str, Any]], fingerprint: str) -> None:
+def _save_bundle(username: str, bundle: List[Dict[str, Any]], fingerprint: str) -> str:
     cache_key = cache_manager.generate_cache_key(kind="bundle", username=username)
     cache_manager.save(cache_key, bundle, ttl=None, fingerprint=fingerprint)
     logger.info("Saved merged bundle for %s (%s repos)", username, len(bundle))
+    return cache_key
 
 
 def _update_job_status(job_id: str, username: str, synced_repo_names: List[str], fingerprint: str) -> None:
@@ -154,14 +155,29 @@ def _update_job_status(job_id: str, username: str, synced_repo_names: List[str],
     cache_manager.save(job_key, payload, ttl=BUNDLE_TTL_SECONDS)
 
 
-def _enqueue_training_job(username: str, job_id: str, bundle: List[Dict[str, Any]]) -> None:
-    if not bundle:
-        logger.info("Skip training enqueue for %s job=%s (empty bundle)", username, job_id)
+def _enqueue_training_job(
+    *,
+    username: str,
+    job_id: str,
+    bundle_cache_key: str,
+    repo_names: List[str],
+    bundle_fingerprint: str,
+) -> None:
+    if not bundle_cache_key:
+        logger.info("Skip training enqueue for %s job=%s (missing bundle cache key)", username, job_id)
         return
     if not queue_manager.is_enabled():
         logger.warning("Queue manager disabled; training job skipped for %s job=%s", username, job_id)
         return
-    queued = queue_manager.enqueue_training_job(username, bundle, training_params=TRAINING_PARAMS, job_id=job_id)
+    queued = queue_manager.enqueue_training_job(
+        username=username,
+        bundle_cache_key=bundle_cache_key,
+        training_params=TRAINING_PARAMS,
+        job_id=job_id,
+        repo_names=repo_names,
+        bundle_fingerprint=bundle_fingerprint,
+        experiment_name=os.getenv("TRAINING_EXPERIMENT", "default"),
+    )
     if queued:
         logger.info("Training job enqueued for %s job=%s", username, job_id)
     else:
@@ -197,15 +213,21 @@ def _process_merge_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     merged_bundle = _merge_repos(fresh_repos, cached_bundle)
     fingerprint = _calculate_bundle_fingerprint(merged_bundle)
-    _save_bundle(username, merged_bundle, fingerprint)
+    bundle_cache_key = _save_bundle(username, merged_bundle, fingerprint)
     synced_repo_names = [name for name in (_extract_repo_name(repo) for repo in merged_bundle) if name]
     _update_job_status(job_id, username, synced_repo_names, fingerprint)
-    # _enqueue_training_job(username, job_id, merged_bundle)
+    _enqueue_training_job(
+        username=username,
+        job_id=job_id,
+        bundle_cache_key=bundle_cache_key,
+        repo_names=synced_repo_names,
+        bundle_fingerprint=fingerprint,
+    )
     return merged_bundle
 
 
 @app.queue_trigger(arg_name="msg", queue_name="merge-results", connection="AzureWebJobsStorage")
-def process_merge_job(msg: func.QueueMessage) -> None:
+def process_merge_job(msg: AzureQueueMessage) -> None:
     try:
         payload = _deserialize_message(msg)
         _process_merge_payload(payload)
@@ -215,7 +237,7 @@ def process_merge_job(msg: func.QueueMessage) -> None:
 
 
 @app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def health_check(req: func.HttpRequest) -> func.HttpResponse:
+def health_check(req: Any) -> Any:
     """Simple health check endpoint for merge worker."""
     status = {
         "status": "ok",

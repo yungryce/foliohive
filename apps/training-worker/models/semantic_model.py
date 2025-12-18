@@ -84,28 +84,31 @@ class SemanticModel:
 
     def _generate_training_pairs(self, repo_bundle: Dict[str, Any]) -> List[Tuple[str, str, float]]:
         pairs: List[Tuple[str, str, float]] = []
-        repo_context = repo_bundle.get("repoContext", {})
-        identity = repo_context.get("project_identity", {})
-        tech_stack = repo_context.get("tech_stack", {})
+        metadata = repo_bundle.get("metadata") if isinstance(repo_bundle.get("metadata"), dict) else {}
+        repo_name = repo_bundle.get("name") or metadata.get("name") or ""
+        description = metadata.get("description") or repo_bundle.get("description") or ""
         readme = repo_bundle.get("readme") or ""
-        skills_index = repo_bundle.get("skills_index") or ""
+        languages = repo_bundle.get("languages") if isinstance(repo_bundle.get("languages"), dict) else {}
+        config_files = repo_bundle.get("config_files") if isinstance(repo_bundle.get("config_files"), dict) else {}
 
-        if identity.get("name"):
-            description = identity.get("description", "")
-            question = f"What is {identity['name']}?"
-            pairs.append((question, description, 1.0))
+        if repo_name and isinstance(description, str) and description.strip():
+            pairs.append((f"What is {repo_name}?", description.strip(), 1.0))
 
-        if tech_stack.get("primary"):
-            techs = ", ".join(tech_stack["primary"])
-            pairs.append(("Which technologies are used?", techs, 0.9))
+        if languages:
+            pairs.append(("Which languages are used?", ", ".join(sorted(languages.keys())), 0.9))
 
         if readme.strip():
             snippet = readme.strip().splitlines()
             snippet_text = "\n".join(snippet[:40])[:1000]
             pairs.append(("Summarize the README", snippet_text, 0.85))
 
-        if skills_index.strip():
-            pairs.append(("Which skills does the developer highlight?", skills_index, 0.8))
+        if config_files:
+            # Keep this generic: do not depend on user-maintained custom docs.
+            for filename, content in sorted(config_files.items()):
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                snippet = "\n".join(content.strip().splitlines()[:60])[:1200]
+                pairs.append((f"What does {filename} specify?", snippet, 0.75))
 
         return pairs
 

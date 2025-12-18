@@ -1,7 +1,7 @@
 # Expand the TECHNICAL_TERMS dictionary for more comprehensive matches
 # including: common file extensions, version patterns, and technical terms.
 import re
-from typing import List
+from typing import List, Sequence
 
 
 # Check for advanced skills keywords
@@ -131,7 +131,7 @@ stop_words = {
     'all', 'any', 'some', 'more', 'most', 'many', 'much', 'new', 'old',
     'good', 'bad', 'big', 'small', 'high', 'low', 'long', 'short', 'way',
     'time', 'work', 'help', 'about', 'over', 'under', 'between', 'through',
-    'into', 'onto', 'upon', 'during', 'before', 'after', 'above', 'below',
+    'into', 'onto', 'upproson', 'during', 'before', 'after', 'above', 'below',
     'then', 'than', 'else', 'only', 'also', 'even', 'still', 'yet', 'just',
     'now', 'here', 'there', 'home', 'back', 'out', 'off', 'down', 'away'
 }
@@ -145,6 +145,122 @@ technical_terms_structured = {
     "domain": frozenset(technical_keywords),  # Use frozenset for O(1) lookups
     "stop_words": frozenset(stop_words),  # Use frozenset for O(1) lookups
 }
+
+
+# ---------------------------------------------------------------------------
+# Standard config file allowlist (bounded, explicit; no tree-walk required)
+# ---------------------------------------------------------------------------
+#
+# These are common ecosystem files that provide strong signals about stack,
+# dependencies, and tooling. The sync worker can attempt to fetch these by
+# explicit path (each fetch is O(1) and bounded by this list).
+#
+# Notes:
+# - Some repos won’t have most of these; 404s are expected.
+# - Keep this list short and generic; avoid user-maintained custom docs.
+
+STANDARD_CONFIG_FILE_CANDIDATES: Sequence[str] = (
+    # Core
+    "README.md",
+    "LICENSE",
+    ".gitignore",
+    ".dockerignore",
+    "Makefile",
+    "Justfile",
+    ".editorconfig",
+
+    # Docker / Compose
+    "Dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+
+    # Python
+    "requirements.txt",
+    "requirements-dev.txt",
+    "pyproject.toml",
+    "poetry.lock",
+    "Pipfile",
+    "Pipfile.lock",
+    "setup.py",
+    "setup.cfg",
+    "tox.ini",
+
+    # Node / JS / TS
+    "package.json",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "tsconfig.json",
+    "jsconfig.json",
+    ".nvmrc",
+
+    # .NET
+    "global.json",
+    "Directory.Build.props",
+    "Directory.Build.targets",
+    "NuGet.config",
+
+    # Java / JVM
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+    "settings.gradle.kts",
+
+    # Go
+    "go.mod",
+    "go.sum",
+
+    # Rust
+    "Cargo.toml",
+    "Cargo.lock",
+
+    # Ruby
+    "Gemfile",
+    "Gemfile.lock",
+
+    # PHP
+    "composer.json",
+    "composer.lock",
+
+    # Terraform
+    "main.tf",
+    "variables.tf",
+    "outputs.tf",
+    "providers.tf",
+    "terraform.tfvars",
+
+    # CI common filenames (no directory listing; try the common ones)
+    ".github/workflows/ci.yml",
+    ".github/workflows/ci.yaml",
+    ".github/workflows/tests.yml",
+    ".github/workflows/tests.yaml",
+    ".github/workflows/build.yml",
+    ".github/workflows/build.yaml",
+)
+
+
+def get_standard_config_file_candidates(*, limit: int = 40) -> List[str]:
+    """Return a deterministic, bounded list of config file paths to try-fetch."""
+    bounded = list(STANDARD_CONFIG_FILE_CANDIDATES)[: max(0, int(limit))]
+    # De-dupe while preserving order
+    seen = set()
+    result: List[str] = []
+    for path in bounded:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        result.append(path)
+    return result
+
+
+# Expose the allowlist in the structured terms dict for downstream reuse.
+technical_terms_structured["standard_config_files"] = frozenset(
+    p.rsplit("/", 1)[-1].lower() for p in STANDARD_CONFIG_FILE_CANDIDATES
+)
+technical_terms_structured["standard_config_paths"] = tuple(STANDARD_CONFIG_FILE_CANDIDATES)
 
 def extract_language_terms(query: str) -> List[str]:
     """Extract programming language terms from a query with improved detection using regex."""

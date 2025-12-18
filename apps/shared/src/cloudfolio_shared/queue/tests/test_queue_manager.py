@@ -97,13 +97,17 @@ def test_enqueue_training_job_defaults_params(monkeypatch) -> None:
     service = StubQueueServiceClient()
     manager = QueueManager(service_client=service)
 
-    success = manager.enqueue_training_job("tester", [{"name": "repo"}])
+    success = manager.enqueue_training_job(
+        username="tester",
+        bundle_cache_key="repos_bundle_context_tester",
+    )
     assert success is True
 
     payload = _decode_message(service.clients[TRAINING_QUEUE].messages.pop())
     assert payload["username"] == "tester"
     assert payload["training_params"] == {}
-    assert payload["repos_bundle"][0]["name"] == "repo"
+    assert payload["bundle_cache_key"] == "repos_bundle_context_tester"
+    assert payload["repo_names"] == []
 
 
 def test_unknown_queue_alias_returns_false(monkeypatch) -> None:

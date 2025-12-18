@@ -2,7 +2,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
 from azure.identity import DefaultAzureCredential
@@ -20,15 +20,6 @@ JOB_STATUS_QUEUE = "job-status-updates"
 
 def _clean_queue_name(name: str) -> str:
     return name.strip().lower()
-
-
-def _bundle_cache_key(username: str) -> str:
-    username_str = str(username or "").strip()
-    if not username_str:
-        return ""
-    return f"repos_bundle_context_{username_str}"
-
-
 class QueueManager:
     """Wrapper around Azure Storage Queues used across workers."""
 
@@ -189,16 +180,30 @@ class QueueManager:
 
     def enqueue_training_job(
         self,
+        *,
         username: str,
-        repos_bundle: List[Dict],
+        bundle_cache_key: str,
         training_params: Optional[Dict] = None,
         job_id: Optional[str] = None,
+        repo_names: Optional[List[str]] = None,
+        bundle_fingerprint: Optional[str] = None,
+        experiment_name: str = "default",
     ) -> bool:
-        message = {
+        """Enqueue a training job without embedding large payloads.
+
+        The training worker fetches the actual repository bundle from blob storage
+        using the provided cache key.
+        """
+        message: Dict[str, Any] = {
+            "schema_version": "2025-12-18",
             "job_id": job_id,
             "username": username,
-            "repos_bundle": repos_bundle,
-            "training_params": training_params or {}
+            "experiment_name": experiment_name,
+            "bundle_cache_key": bundle_cache_key,
+            "bundle_fingerprint": bundle_fingerprint,
+            "repo_names": repo_names or [],
+            "training_params": training_params or {},
+            "queued_at": datetime.now(timezone.utc).isoformat(),
         }
         return self.send_message(TRAINING_QUEUE, message)
 

@@ -41,7 +41,7 @@ def test_process_merge_payload_merges_cached_and_fresh(monkeypatch):
     monkeypatch.setattr(
         merge_app.queue_manager,
         "enqueue_training_job",
-        lambda username, bundle, training_params=None, job_id=None: enqueued.append((username, bundle, training_params, job_id)) or True,
+        lambda username=None, bundle_cache_key=None, training_params=None, job_id=None, repo_names=None, bundle_fingerprint=None, experiment_name="default": enqueued.append((username, bundle_cache_key, repo_names, job_id)) or True,
     )
 
     merged = merge_app._process_merge_payload(payload)
@@ -52,7 +52,8 @@ def test_process_merge_payload_merges_cached_and_fresh(monkeypatch):
     assert saves[1][0] == "job:job-1"
     assert saves[1][1]["synced_repos"] == ["repo-a", "repo-b"]
     assert enqueued and enqueued[0][0] == "tester"
-    assert len(enqueued[0][1]) == 2
+    assert enqueued[0][1] == "bundle:tester"  # bundle_cache_key
+    assert enqueued[0][2] == ["repo-a", "repo-b"]  # repo_names
 
 
 def test_resolve_fresh_repos_prefers_payload(monkeypatch):

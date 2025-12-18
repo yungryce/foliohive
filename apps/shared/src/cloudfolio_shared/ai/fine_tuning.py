@@ -615,43 +615,27 @@ class SemanticModel:
         logger.info("Generating semantic training pairs from repository context.")
         pairs = []
 
-        # Extract relevant fields
-        identity = repo_bundle.get("repoContext", {}).get("project_identity", {})
-        tech_stack = repo_bundle.get("repoContext", {}).get("tech_stack", {})
-        skills = repo_bundle.get("repoContext", {}).get("skill_manifest", {})
-        outcomes = repo_bundle.get("repoContext", {}).get("outcomes", {})
-        readme = repo_bundle.get("readme", "")
-        skills_index = repo_bundle.get("skills_index", "")
-        architecture = repo_bundle.get("architecture", "")
+        # Prefer durable, standard signals; do not require user-maintained custom docs.
+        metadata = repo_bundle.get("metadata") if isinstance(repo_bundle.get("metadata"), dict) else {}
+        repo_name = repo_bundle.get("name") or metadata.get("name")
+        description = metadata.get("description") or repo_bundle.get("description") or ""
+        readme = repo_bundle.get("readme", "") or ""
+        languages = repo_bundle.get("languages") if isinstance(repo_bundle.get("languages"), dict) else {}
+        config_files = repo_bundle.get("config_files") if isinstance(repo_bundle.get("config_files"), dict) else {}
 
-        # Generate pairs based on schema fields
-        if identity.get("name"):
-            pairs.append((f"What is {identity['name']}?", identity.get("description", ""), 1.0))
-        if identity.get("description"):
-            pairs.append(("Summarize this project.", identity["description"], 1.0))
+        if repo_name and isinstance(description, str) and description.strip():
+            pairs.append((f"What is {repo_name}?", description.strip(), 1.0))
 
-        if tech_stack.get("primary"):
-            pairs.append(("Which technologies are used in this project?", ", ".join(tech_stack["primary"]), 1.0))
-        if tech_stack.get("secondary"):
-            pairs.append(("What supporting tools are used?", ", ".join(tech_stack["secondary"]), 0.8))
+        if languages:
+            pairs.append(("Which languages are used in this project?", ", ".join(sorted(languages.keys())), 0.9))
 
-        if skills.get("technical"):
-            pairs.append(("What technical skills are demonstrated?", ", ".join(skills["technical"]), 1.0))
-        if skills.get("domain"):
-            pairs.append(("What domain-specific knowledge areas are covered?", ", ".join(skills["domain"]), 1.0))
+        if readme.strip():
+            pairs.append(("Summarize the README content.", readme, 0.9))
 
-        if outcomes.get("deliverables"):
-            pairs.append(("What are the deliverables of this project?", ", ".join(outcomes["deliverables"]), 1.0))
-        if outcomes.get("skills_acquired"):
-            pairs.append(("What skills were acquired?", ", ".join(outcomes["skills_acquired"]), 1.0))
-
-        # Include README, SKILLS-INDEX, and ARCHITECTURE content
-        if readme:
-            pairs.append(("Summarize the README content.", readme, 1.0))
-        if skills_index:
-            pairs.append(("List the core skills demonstrated in this project.", skills_index, 1.0))
-        if architecture:
-            pairs.append(("Describe the architecture of this project.", architecture, 1.0))
+        for filename, content in sorted(config_files.items()):
+            if not isinstance(content, str) or not content.strip():
+                continue
+            pairs.append((f"What does {filename} specify?", content, 0.75))
 
         logger.info(f"Generated {len(pairs)} training pairs.")
         return pairs

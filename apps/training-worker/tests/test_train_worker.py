@@ -13,8 +13,9 @@ TrainingWorker = train_worker_module.TrainingWorker
 
 
 class FakeBlobClient:
-    def __init__(self):
+    def __init__(self, *, downloads=None):
         self.uploads = []
+        self._downloads = downloads or {}
 
     def upload_blob(self, data, overwrite=False):
         if hasattr(data, "read"):
@@ -23,15 +24,32 @@ class FakeBlobClient:
             payload = data
         self.uploads.append(payload)
 
+    def download_blob(self):
+        class _Downloader:
+            def __init__(self, raw):
+                self._raw = raw
+
+            def readall(self):
+                return self._raw
+
+        raw = self._downloads.get(getattr(self, "_name", ""), b"[]")
+        return _Downloader(raw)
+
 
 class FakeContainer:
     def __init__(self):
         self.last_blob = None
-        self.blob_client = FakeBlobClient()
+        self._downloads = {}
+        self.blob_client = FakeBlobClient(downloads=self._downloads)
 
     def get_blob_client(self, name):
         self.last_blob = name
+        self.blob_client._name = name
         return self.blob_client
+
+    def seed_download(self, name: str, payload):
+        raw = json.dumps(payload).encode("utf-8")
+        self._downloads[name] = raw
 
 
 class FakeBlobService:
@@ -79,13 +97,19 @@ def test_process_training_job_success(monkeypatch):
         storage_connection_string="UseDevelopmentStorage=true",
     )
 
-    payload = {
-        "username": "tester",
-        "repos_bundle": [
+    bundle_key = "repos_bundle_context_tester"
+    blob_service.container.seed_download(
+        bundle_key,
+        [
             {"name": "a", "has_documentation": True},
             {"name": "b", "has_documentation": True},
             {"name": "c", "has_documentation": True},
         ],
+    )
+
+    payload = {
+        "username": "tester",
+        "bundle_cache_key": bundle_key,
         "training_params": {"epochs": 1},
         "experiment_name": "fast",
     }
@@ -108,9 +132,8 @@ def test_process_training_job_requires_documented_repos(monkeypatch):
         storage_connection_string="UseDevelopmentStorage=true",
     )
 
-    payload = {
-        "username": "tester",
-        "repos_bundle": [{"name": "a", "has_documentation": True}],
-    }
+    bundle_key = "repos_bundle_context_tester"
+    worker.blob_service.container.seed_download(bundle_key, [{"name": "a", "has_documentation": True}])
+    payload = {"username": "tester", "bundle_cache_key": bundle_key}
 
     assert worker.process_training_job(payload) is False

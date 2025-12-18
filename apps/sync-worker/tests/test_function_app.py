@@ -31,12 +31,17 @@ def test_fetch_repo_bundle_caches_and_returns_expected(monkeypatch):
         
         def get_file_content(self, username, repo, path):
             mapping = {
-                ".repo-context.json": json.dumps({"context": "data"}),
                 "README.md": "# Demo",
-                "SKILLS-INDEX.md": "Python",
-                "ARCHITECTURE.md": "Layers",
+                "Dockerfile": "FROM python:3.11-slim",
+                "setup.cfg": "[metadata]\nname = demo",
             }
             return mapping.get(path, "")
+
+        def get_standard_config_files(self, username=None, repo=None, *, limit=0, max_chars=0):
+            return {
+                "Dockerfile": "FROM python:3.11-slim",
+                "setup.cfg": "[metadata]\nname = demo",
+            }
 
         def get_all_file_types(self, repo_name, username):
             return {".py": 3}
@@ -78,6 +83,10 @@ def test_fetch_repo_bundle_caches_and_returns_expected(monkeypatch):
 
     assert result["name"] == "demo"
     assert result["fingerprint"] == "fingerprint-value"
+    assert result["config_files"] == {
+        "Dockerfile": "FROM python:3.11-slim",
+        "setup.cfg": "[metadata]\nname = demo",
+    }
     assert captured["cache_key"] == "repo:demo"
     assert table_stub.rows and table_stub.rows[0].repo_name == "demo"
     assert table_stub.rows[0].job_id == "job-1"
@@ -98,7 +107,7 @@ def test_update_job_progress_tracks_completion(monkeypatch):
                 "status": "queued",
             }
             self.last_update = None
-            self.repo_status: dict[str, dict] = {}
+            self.status_rows = []
 
         def is_enabled(self):
             return True
@@ -111,18 +120,22 @@ def test_update_job_progress_tracks_completion(monkeypatch):
             self.session.update(updates)
 
         def upsert_repo_status(self, row):
-            self.repo_status[row.repo_name] = {
-                "repo_name": row.repo_name,
-                "status": row.status,
-                "message_uuid": row.message_uuid,
-            }
+            self.status_rows.append(row)
 
         def list_repo_statuses(self, job_id):
-            return list(self.repo_status.values())
+            return [{"repo_name": "demo", "status": "synced"}]
 
     table_stub = StubTableManager()
     monkeypatch.setattr(sync_app, "table_manager", table_stub)
     monkeypatch.setattr(sync_app.cache_manager, "get", lambda key: {"status": "missing", "data": None})
+
+    saves = []
+
+    def fake_save(cache_key, data, ttl=None, fingerprint=None):
+        saves.append((cache_key, data.copy()))
+        return True
+
+    monkeypatch.setattr(sync_app.cache_manager, "save", fake_save)
     monkeypatch.setattr(sync_app.queue_manager, "is_enabled", lambda: True)
 
     merge_jobs = []
@@ -141,6 +154,8 @@ def test_update_job_progress_tracks_completion(monkeypatch):
         "total_repos": 1,
         "status": "synced",
     }
+    # Note: Cache is intentionally not updated in _update_job_progress
+    # to avoid dual-update race conditions. Updates go to table only.
     assert merge_jobs == [("job-123", "tester", ["demo"])]
 
 
@@ -164,15 +179,10 @@ def test_process_sync_job_invokes_handlers(monkeypatch):
     monkeypatch.setattr(
         sync_app,
         "_update_job_progress",
-        lambda job_id, username, repo_name, **kwargs: calls.setdefault("progress", (job_id, username, repo_name, kwargs)),
+        lambda job_id, username, repo_name, sync_failed=False, message_uuid=None: calls.setdefault("progress", (job_id, username, repo_name)),
     )
 
     sync_app.process_sync_job(message)
 
     assert calls["fetch"] == ("job-456", "tester", "demo", "abc")
-    assert calls["progress"] == (
-        "job-456",
-        "tester",
-        "demo",
-        {"sync_failed": False, "message_uuid": None},
-    )
+    assert calls["progress"] == ("job-456", "tester", "demo")

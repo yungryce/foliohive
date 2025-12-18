@@ -76,26 +76,19 @@ class TestQueueMessageFormats:
         """Verify training job message has all required fields."""
         message = {
             "username": "testuser",
-            "repos_bundle": [
-                {"name": "repo-1", "has_documentation": True, "readme": "content"},
-                {"name": "repo-2", "has_documentation": True, "readme": "content"},
-                {"name": "repo-3", "has_documentation": True, "readme": "content"},
-            ],
+            "bundle_cache_key": "repos_bundle_context_testuser",
+            "repo_names": ["repo-1", "repo-2", "repo-3"],
             "training_params": {"batch_size": 8, "epochs": 2},
         }
 
         # Validate structure
         assert "username" in message
-        assert "repos_bundle" in message
+        assert "bundle_cache_key" in message
+        assert "repo_names" in message
         assert "training_params" in message
 
-        # Validate bundle
-        assert isinstance(message["repos_bundle"], list)
-        assert len(message["repos_bundle"]) >= 3  # Minimum for training
-
-        # All repos should have documentation
-        documented = [r for r in message["repos_bundle"] if r.get("has_documentation")]
-        assert len(documented) == len(message["repos_bundle"])
+        assert isinstance(message["repo_names"], list)
+        assert len(message["repo_names"]) >= 3  # Minimum for training
 
     def test_status_update_message_format(self):
         """Verify status update message has all required fields."""
@@ -189,14 +182,16 @@ class TestQueueRouting:
         """Verify Merge Worker sends to model-training queue."""
         message = {
             "username": "testuser",
-            "repos_bundle": [{"name": f"repo-{i}"} for i in range(3)],
+            "bundle_cache_key": "repos_bundle_context_testuser",
+            "repo_names": [f"repo-{i}" for i in range(3)],
             "training_params": {"batch_size": 8},
         }
         queue_router.send("model-training", message)
 
         training_messages = queue_router.get_messages("model-training")
         assert len(training_messages) == 1
-        assert len(training_messages[0]["repos_bundle"]) == 3
+        assert training_messages[0]["bundle_cache_key"] == "repos_bundle_context_testuser"
+        assert len(training_messages[0]["repo_names"]) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -246,13 +241,8 @@ class TestMessageSerialization:
         """Verify training messages survive JSON serialization."""
         original = {
             "username": "testuser",
-            "repos_bundle": [
-                {
-                    "name": "repo-1",
-                    "readme": "# Title\n\nContent with special chars: <>\"'&",
-                    "has_documentation": True,
-                }
-            ],
+            "bundle_cache_key": "repos_bundle_context_testuser",
+            "repo_names": ["repo-1"],
             "training_params": {"batch_size": 8, "learning_rate": 0.001},
         }
 
@@ -260,26 +250,20 @@ class TestMessageSerialization:
         deserialized = json.loads(serialized)
 
         assert deserialized == original
-        assert "<>" in deserialized["repos_bundle"][0]["readme"]
+        assert deserialized["bundle_cache_key"] == original["bundle_cache_key"]
 
     def test_message_with_unicode_content(self):
         """Verify messages with unicode content serialize correctly."""
         original = {
             "username": "testuser",
-            "repos_bundle": [
-                {
-                    "name": "i18n-repo",
-                    "readme": "# 国际化\n\nПривет мир! 🌍",
-                    "description": "Émojis and spëcial çharacters",
-                }
-            ],
+            "bundle_cache_key": "repos_bundle_context_testuser",
+            "repo_names": ["i18n-repo", "国际化"],
         }
 
         serialized = json.dumps(original, ensure_ascii=False)
         deserialized = json.loads(serialized)
 
-        assert "国际化" in deserialized["repos_bundle"][0]["readme"]
-        assert "🌍" in deserialized["repos_bundle"][0]["readme"]
+        assert "国际化" in deserialized["repo_names"][1]
 
 
 # ---------------------------------------------------------------------------
@@ -358,14 +342,16 @@ class TestInterWorkerCommunication:
         if documented_count >= 3:
             worker_context["queues"]["model-training"].append({
                 "username": username,
-                "repos_bundle": bundle,
+                "bundle_cache_key": bundle_key,
+                "repo_names": [r["name"] for r in bundle],
                 "training_params": {"batch_size": 8},
             })
 
         # Verify training was triggered
         assert len(worker_context["queues"]["model-training"]) == 1
         training_msg = worker_context["queues"]["model-training"][0]
-        assert len(training_msg["repos_bundle"]) == 4
+        assert training_msg["bundle_cache_key"] == bundle_key
+        assert len(training_msg["repo_names"]) == 4
 
     def test_insufficient_docs_skips_training(self, worker_context):
         """Verify training is skipped when fewer than 3 documented repos."""
@@ -382,7 +368,8 @@ class TestInterWorkerCommunication:
         if documented_count >= 3:
             worker_context["queues"]["model-training"].append({
                 "username": username,
-                "repos_bundle": bundle,
+                "bundle_cache_key": f"repos_bundle_context_{username}",
+                "repo_names": [r["name"] for r in bundle],
             })
 
         # Verify training was NOT triggered

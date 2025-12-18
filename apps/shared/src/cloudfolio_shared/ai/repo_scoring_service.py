@@ -87,15 +87,12 @@ class RepoScoringService:
         Returns:
             Dictionary with all score components
         """
-        repo_context = repo_bundle.get("repoContext", {})
         repo_languages = repo_bundle.get("languages", {})
         file_types = repo_bundle.get("file_types", {})
         categorized = repo_bundle.get("categorized_types", {})
         repo_name = repo_bundle.get("name", "Unknown")
 
         # Safety checks
-        if not isinstance(repo_context, dict):
-            repo_context = {}
         if not isinstance(repo_languages, dict):
             repo_languages = {}
         if not isinstance(file_types, dict):
@@ -188,24 +185,18 @@ class RepoScoringService:
         if not skill_tokens:
             return 0.0
 
-        manifest = repo_bundle.get("repoContext", {}).get("skill_manifest", {}) or {}
-        manifest_values: List[str] = []
-        for value in manifest.values():
-            if isinstance(value, list):
-                manifest_values.extend(str(item) for item in value)
-            elif isinstance(value, str):
-                manifest_values.append(value)
+        # Deprecated: repoContext / skills_index / architecture were user-maintained
+        # and not sustainable across all users.
+        config_files = repo_bundle.get("config_files") if isinstance(repo_bundle.get("config_files"), dict) else {}
+        metadata = repo_bundle.get("metadata") if isinstance(repo_bundle.get("metadata"), dict) else {}
+        topics = metadata.get("topics")
+        topics_text = " ".join(t for t in topics if isinstance(t, str)) if isinstance(topics, list) else ""
 
+        config_text = " ".join(
+            str(value) for value in config_files.values() if isinstance(value, str)
+        )
         repo_corpus = " ".join(
-            filter(
-                None,
-                [
-                    repo_bundle.get("readme"),
-                    repo_bundle.get("skills_index"),
-                    repo_bundle.get("architecture"),
-                    " ".join(manifest_values),
-                ],
-            )
+            filter(None, [repo_bundle.get("readme"), metadata.get("description"), topics_text, config_text])
         ).lower()
 
         if not repo_corpus:
@@ -253,32 +244,29 @@ class RepoScoringService:
         """
         lines = []
 
-        # Extract structured fields from repo-context.json
-        identity = repo_bundle.get("repoContext", {}).get("project_identity", {})
-        tech_stack = repo_bundle.get("repoContext", {}).get("tech_stack", {})
-        # skills = repo_bundle.get("repoContext", {}).get("skill_manifest", {})
-        # outcomes = repo_bundle.get("repoContext", {}).get("outcomes", {})
-        # metadata = repo_bundle.get("repoContext", {}).get("metadata", {})
-        # assessment = repo_bundle.get("repoContext", {}).get("assessment", {})
+        metadata = repo_bundle.get("metadata") if isinstance(repo_bundle.get("metadata"), dict) else {}
+        repo_name = repo_bundle.get("name") or metadata.get("name")
+        description = metadata.get("description") or repo_bundle.get("description")
+        topics = metadata.get("topics")
+        languages = repo_bundle.get("languages") if isinstance(repo_bundle.get("languages"), dict) else {}
+        config_files = repo_bundle.get("config_files") if isinstance(repo_bundle.get("config_files"), dict) else {}
 
-        # Build natural language representation
-        if identity.get('name'):
-            lines.append(f"Project Name: {identity['name']}.")
-        if identity.get('description'):
-            lines.append(f"Description: {identity['description']}.")
-        if identity.get('type'):
-            lines.append(f"Type: {identity['type']}.")
-        if identity.get('scope'):
-            lines.append(f"Scope: {identity['scope']}.")
+        if repo_name:
+            lines.append(f"Project Name: {repo_name}.")
+        if isinstance(description, str) and description.strip():
+            lines.append(f"Description: {description.strip()}.")
+        if isinstance(topics, list) and topics:
+            topic_terms = [t for t in topics if isinstance(t, str) and t]
+            if topic_terms:
+                lines.append(f"Topics: {', '.join(topic_terms)}.")
 
-        if tech_stack.get("primary"):
-            lines.append(f"Primary technologies include {', '.join(tech_stack['primary'])}.")
-        if tech_stack.get("secondary"):
-            lines.append(f"Secondary tools include {', '.join(tech_stack['secondary'])}.")
-        if tech_stack.get("key_libraries"):
-            lines.append(f"Key libraries: {', '.join(tech_stack['key_libraries'])}.")
-        if tech_stack.get("development_tools"):
-            lines.append(f"Development tools used: {', '.join(tech_stack['development_tools'])}.")
+        if languages:
+            lines.append(f"Languages: {', '.join(sorted(languages.keys()))}.")
+
+        if config_files:
+            filenames = [name for name in config_files.keys() if isinstance(name, str) and name]
+            if filenames:
+                lines.append(f"Config files: {', '.join(sorted(filenames))}.")
 
         # if skills.get("technical"):
         #     lines.append(f"Technical skills demonstrated include {', '.join(skills['technical'])}.")
@@ -312,5 +300,4 @@ class RepoScoringService:
         #     if content:
         #         lines.append(f"{key.capitalize()}: {content.strip()}")
 
-        flattened_context = "\n".join(lines)
-        return flattened_context
+        return "\n".join(lines)

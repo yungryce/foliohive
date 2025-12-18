@@ -65,11 +65,23 @@ def mock_queue_manager(mock_queue_messages):
         })
         return True
 
-    def enqueue_training_job(username, repos_bundle, training_params=None, job_id=None):
+    def enqueue_training_job(
+        *,
+        username: str,
+        bundle_cache_key: str,
+        training_params=None,
+        job_id=None,
+        repo_names=None,
+        bundle_fingerprint=None,
+        experiment_name: str = "default",
+    ):
         mock_queue_messages['model-training'].append({
             'job_id': job_id,
             'username': username,
-            'repos_bundle': repos_bundle,
+            'bundle_cache_key': bundle_cache_key,
+            'repo_names': repo_names or [],
+            'bundle_fingerprint': bundle_fingerprint,
+            'experiment_name': experiment_name,
             'training_params': training_params or {},
         })
         return True
@@ -388,20 +400,23 @@ class TestMergeWorkerIntegration:
     ):
         """Verify merge worker enqueues training job with correct data."""
         username = 'testuser'
-        bundle = [
-            {'name': 'repo-alpha', 'has_documentation': True, 'readme': 'content'},
-            {'name': 'repo-beta', 'has_documentation': True, 'readme': 'content'},
-            {'name': 'repo-gamma', 'has_documentation': True, 'readme': 'content'},
-        ]
         training_params = {'batch_size': 8, 'epochs': 2}
 
-        mock_queue_manager.enqueue_training_job(username, bundle, training_params)
+        bundle_key = f"repos_bundle_context_{username}"
+
+        mock_queue_manager.enqueue_training_job(
+            username=username,
+            bundle_cache_key=bundle_key,
+            repo_names=['repo-alpha', 'repo-beta', 'repo-gamma'],
+            training_params=training_params,
+        )
 
         # Verify training message
         assert len(mock_queue_messages['model-training']) == 1
         training_msg = mock_queue_messages['model-training'][0]
         assert training_msg['username'] == username
-        assert len(training_msg['repos_bundle']) == 3
+        assert training_msg['bundle_cache_key'] == bundle_key
+        assert len(training_msg['repo_names']) == 3
         assert training_msg['training_params'] == training_params
 
     def test_merge_updates_job_to_completed(self, mock_cache_manager):
@@ -464,18 +479,17 @@ class TestTrainingWorkerIntegration:
     def test_training_message_structure(self, mock_queue_messages, mock_queue_manager):
         """Verify training messages have correct structure."""
         username = 'testuser'
-        bundle = [
-            {'name': f'repo-{i}', 'has_documentation': True, 'readme': f'content-{i}'}
-            for i in range(3)
-        ]
-
+        bundle_key = f"repos_bundle_context_{username}"
         mock_queue_manager.enqueue_training_job(
-            username, bundle, {'batch_size': 8, 'epochs': 2}
+            username=username,
+            bundle_cache_key=bundle_key,
+            repo_names=[f'repo-{i}' for i in range(3)],
+            training_params={'batch_size': 8, 'epochs': 2},
         )
 
         msg = mock_queue_messages['model-training'][0]
         assert 'username' in msg
-        assert 'repos_bundle' in msg
+        assert 'bundle_cache_key' in msg
         assert 'training_params' in msg
         assert msg['training_params']['batch_size'] == 8
 
@@ -562,7 +576,11 @@ class TestFullPipelineIntegration:
 
         # Merge worker enqueues training job
         mock_queue_manager.enqueue_training_job(
-            username, merged_bundle, {'batch_size': 8, 'epochs': 2}
+            username=username,
+            bundle_cache_key=bundle_key,
+            repo_names=[repo.get('name', 'unknown') for repo in merged_bundle],
+            bundle_fingerprint='bundle_fp',
+            training_params={'batch_size': 8, 'epochs': 2},
         )
         assert len(mock_queue_messages['model-training']) == 1
 
@@ -576,7 +594,8 @@ class TestFullPipelineIntegration:
 
         training_msg = mock_queue_messages['model-training'][0]
         assert training_msg['username'] == username
-        assert len(training_msg['repos_bundle']) == 3
+        assert training_msg['bundle_cache_key'] == bundle_key
+        assert len(training_msg['repo_names']) == 3
 
     def test_partial_sync_with_existing_cache(
         self, mock_cache_manager, mock_queue_manager, mock_queue_messages

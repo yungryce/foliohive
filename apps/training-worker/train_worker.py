@@ -62,8 +62,10 @@ class TrainingWorker:
         container_name: str = DEFAULT_CONTAINER_NAME,
         training_mode: Optional[str] = None,
     ) -> None:
-        self.connection_string = storage_connection_string or os.getenv(
-            "AZURE_STORAGE_CONNECTION_STRING"
+        self.connection_string = (
+            storage_connection_string
+            or os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+            or os.getenv("AzureWebJobsStorage")
         )
         self.queue_name = queue_name
         self.container_name = container_name
@@ -96,12 +98,26 @@ class TrainingWorker:
     # ----------------------------------------------------------------------------------
     def process_training_job(self, message: Dict[str, Any]) -> bool:
         username = message.get("username")
-        repos_bundle = message.get("repos_bundle", [])
+        repos_bundle = message.get("repos_bundle")
+        if not isinstance(repos_bundle, list):
+            repos_bundle = None
+        bundle_cache_key = message.get("bundle_cache_key")
         experiment_name = message.get("experiment_name", "default")
         custom_params = message.get("training_params") or {}
 
         if not username:
             raise ValueError("username missing from training job")
+
+        if repos_bundle is None:
+            if not isinstance(bundle_cache_key, str) or not bundle_cache_key.strip():
+                raise ValueError("bundle_cache_key missing from training job")
+            repos_bundle = self._load_bundle_from_blob(bundle_cache_key.strip())
+            logger.info(
+                "Loaded training bundle from blob (%s repos) user=%s job=%s",
+                len(repos_bundle),
+                username,
+                message.get("job_id", "unknown"),
+            )
 
         documented_repos = [repo for repo in repos_bundle if repo.get("has_documentation")]
         if len(documented_repos) < 3:
@@ -270,6 +286,15 @@ class TrainingWorker:
         except (ImportError, AttributeError) as exc:  # pragma: no cover
             raise ImportError("azure-storage-blob must be installed") from exc
         return blob_service_client_cls.from_connection_string(connection_string)
+
+    def _load_bundle_from_blob(self, cache_key: str) -> list[Dict[str, Any]]:
+        container = self.blob_service.get_container_client(self.container_name)
+        blob = container.get_blob_client(cache_key)
+        raw = blob.download_blob().readall()
+        payload = json.loads(raw)
+        if not isinstance(payload, list):
+            raise ValueError(f"Bundle blob did not contain a list: {cache_key}")
+        return [repo for repo in payload if isinstance(repo, dict)]
 
 
 def main() -> None:

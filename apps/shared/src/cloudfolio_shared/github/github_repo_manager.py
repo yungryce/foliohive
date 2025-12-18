@@ -2,6 +2,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Set
 
+from ..ai.data_filter import get_standard_config_file_candidates
 from ..cache.cache_manager import cache_manager
 from .github_api import GitHubAPI
 
@@ -90,6 +91,44 @@ class GitHubRepoManager:
         if isinstance(file_data, dict) and file_data.get('type') == 'file':
             return self.api.decode_file_content(file_data)
         return None
+
+    def get_standard_config_files(
+        self,
+        username: Optional[str],
+        repo: str,
+        *,
+        limit: int = 20,
+        max_chars: int = 4000,
+    ) -> Dict[str, str]:
+        """Return a bounded set of standard config/build files for the repo."""
+        username = username or self.username
+        if not username:
+            raise ValueError(USERNAME_REQUIRED_ERROR)
+
+        try:
+            candidates = get_standard_config_file_candidates(limit=limit)
+        except Exception as exc:
+            logger.warning(
+                "Failed to build config file candidate list for %s/%s: %s",
+                username,
+                repo,
+                exc,
+            )
+            return {}
+
+        result: Dict[str, str] = {}
+        for path in candidates:
+            if path.lower() == "readme.md":
+                continue
+            try:
+                content = self.get_file_content(username=username, repo=repo, path=path)
+            except Exception as exc:  # pragma: no cover - defensive guard
+                logger.debug("Skipping config fetch for %s/%s path=%s: %s", username, repo, path, exc)
+                continue
+            if not content:
+                continue
+            result[path] = content[:max_chars]
+        return result
 
     def get_repository_tree(self, repo_name: str, username: Optional[str] = None, recursive: bool = False) -> List[str]:
         """

@@ -9,6 +9,8 @@ import pytest
 class FakeBlobClient:
     def __init__(self):
         self.uploads = []
+        self._downloads = {}
+        self._name = ""
 
     def upload_blob(self, data, overwrite=False):
         if hasattr(data, "read"):
@@ -16,6 +18,17 @@ class FakeBlobClient:
         else:
             payload = data
         self.uploads.append(payload)
+
+    def download_blob(self):
+        class _Downloader:
+            def __init__(self, raw):
+                self._raw = raw
+
+            def readall(self):
+                return self._raw
+
+        raw = self._downloads.get(self._name, b"[]")
+        return _Downloader(raw)
 
 
 class FakeContainer:
@@ -25,7 +38,12 @@ class FakeContainer:
 
     def get_blob_client(self, name):
         self.last_blob = name
+        self.blob_client._name = name
         return self.blob_client
+
+    def seed_download(self, name: str, payload):
+        raw = json.dumps(payload).encode("utf-8")
+        self.blob_client._downloads[name] = raw
 
 
 class FakeBlobService:
@@ -78,14 +96,17 @@ class TestTrainingWorkerEdgeCases:
             blob_service=FakeBlobService(),
             storage_connection_string="UseDevelopmentStorage=true",
         )
-        
-        payload = {
-            "username": "tester",
-            "repos_bundle": [
+
+        bundle_key = "repos_bundle_context_tester"
+        worker.blob_service.container.seed_download(
+            bundle_key,
+            [
                 {"name": "repo-1", "has_documentation": True},
-                {"name": "repo-2", "has_documentation": False},  # Not documented
+                {"name": "repo-2", "has_documentation": False},
             ],
-        }
+        )
+        
+        payload = {"username": "tester", "bundle_cache_key": bundle_key}
         
         result = worker.process_training_job(payload)
         assert result is False  # Should abort training
@@ -118,15 +139,18 @@ class TestTrainingWorkerEdgeCases:
             blob_service=FakeBlobService(),
             storage_connection_string="UseDevelopmentStorage=true",
         )
-        
-        payload = {
-            "username": "tester",
-            "repos_bundle": [
+
+        bundle_key = "repos_bundle_context_tester"
+        worker.blob_service.container.seed_download(
+            bundle_key,
+            [
                 {"name": "a", "has_documentation": True},
                 {"name": "b", "has_documentation": True},
                 {"name": "c", "has_documentation": True},
             ],
-        }
+        )
+        
+        payload = {"username": "tester", "bundle_cache_key": bundle_key}
         
         result = worker.process_training_job(payload)
         assert result is False
@@ -166,15 +190,18 @@ class TestTrainingWorkerEdgeCases:
             blob_service=FakeBlobService(),
             storage_connection_string="UseDevelopmentStorage=true",
         )
-        
-        payload = {
-            "username": "tester",
-            "repos_bundle": [
+
+        bundle_key = "repos_bundle_context_tester"
+        worker.blob_service.container.seed_download(
+            bundle_key,
+            [
                 {"name": "a", "has_documentation": True},
                 {"name": "b", "has_documentation": True},
                 {"name": "c", "has_documentation": True},
             ],
-        }
+        )
+        
+        payload = {"username": "tester", "bundle_cache_key": bundle_key}
         
         result = worker.process_training_job(payload)
         
@@ -222,14 +249,20 @@ class TestTrainingWorkerEdgeCases:
             blob_service=FakeBlobService(),
             storage_connection_string="UseDevelopmentStorage=true",
         )
-        
-        payload = {
-            "username": "tester",
-            "repos_bundle": [
+
+        bundle_key = "repos_bundle_context_tester"
+        worker.blob_service.container.seed_download(
+            bundle_key,
+            [
                 {"name": "a", "has_documentation": True},
                 {"name": "b", "has_documentation": True},
                 {"name": "c", "has_documentation": True},
             ],
+        )
+        
+        payload = {
+            "username": "tester",
+            "bundle_cache_key": bundle_key,
             "experiment_name": "fast",
             "training_params": {"epochs": 1},
         }
@@ -265,9 +298,7 @@ class TestTrainingWorkerEdgeCases:
         )
         
         payload = {
-            "repos_bundle": [
-                {"name": "a", "has_documentation": True},
-            ],
+            "bundle_cache_key": "repos_bundle_context_tester",
         }
         
         with pytest.raises(ValueError, match="username missing"):
@@ -279,7 +310,6 @@ class TestTrainingWorkerEdgeCases:
         # "blobs are deleted automatically after lifecycle TTL, so the worker must
         # tolerate 404 and request a re-sync via table_manager note if missing."
         # 
-        # Current implementation reads from repos_bundle payload, not blobs directly,
-        # so this test validates the architecture allows blob references.
-        # Future enhancement: parse blob_batch from payload and handle 404s.
+        # Current implementation reads from bundle_cache_key, but does not yet
+        # implement retry + re-sync signalling on missing blobs.
         pass

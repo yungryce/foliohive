@@ -55,7 +55,6 @@ try:
         queue_manager,
         table_manager,
     )
-    
     from cloudfolio_shared.table import RepoMetadataRow, RepoSyncStatusRow
 except Exception as import_error:
     raise
@@ -70,6 +69,8 @@ app = func.FunctionApp()
 
 JOB_METADATA_TTL_SECONDS = 4 * 3600
 READ_ME_EXCERPT_MAX_CHARS = 4096
+STANDARD_CONFIG_FETCH_LIMIT = 20
+STANDARD_CONFIG_MAX_CHARS = 4000
 
 
 def _get_repo_manager(username: str) -> GitHubRepoManager:
@@ -133,6 +134,13 @@ def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: 
         logger.warning("Failed to fetch README for %s/%s: %s", username, repo_name, exc)
         readme_content = ""
 
+    config_files = repo_manager.get_standard_config_files(
+        username=username,
+        repo=repo_name,
+        limit=STANDARD_CONFIG_FETCH_LIMIT,
+        max_chars=STANDARD_CONFIG_MAX_CHARS,
+    )
+
     # Use GitHub's native languages API data instead of expensive tree walk
     # Languages data is already in repo_metadata from include_languages=True call above
     # This eliminates 10-50+ API calls per repo (87% reduction)
@@ -150,6 +158,7 @@ def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: 
         "name": repo_name,
         "metadata": repo_metadata,
         "readme": readme_content,
+        "config_files": config_files,
         "file_types": file_types,
         "categorized_types": categorized_types,
         "fingerprint": resolved_fingerprint,
@@ -157,8 +166,8 @@ def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: 
         "has_documentation": bool(readme_content),
     }
     logger.info(
-        "[SYNC_FETCH_COMPLETE] repo=%s job=%s - Fetch complete: languages=%d file_types=%d",
-        repo_name, job_id, len(languages_data), len(file_types)
+        "[SYNC_FETCH_COMPLETE] repo=%s job=%s - Fetch complete: languages=%d file_types=%d config_files=%d",
+        repo_name, job_id, len(languages_data), len(file_types), len(config_files)
     )
     cache_key = cache_manager.generate_cache_key(kind='repo', username=username, repo=repo_name)
     cache_manager.save(cache_key, result, ttl=None, fingerprint=resolved_fingerprint)
@@ -180,6 +189,7 @@ def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, A
     document = {
         'name': repo_name,
         'metadata': repo_payload.get('metadata'),
+        'config_files': repo_payload.get('config_files', {}),
         'file_types': repo_payload.get('file_types'),
         'categorized_types': repo_payload.get('categorized_types'),
         'fingerprint': repo_payload.get('fingerprint'),
