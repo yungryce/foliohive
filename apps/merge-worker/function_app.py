@@ -20,7 +20,6 @@ except ImportError:  # pragma: no cover - lightweight stubs for unit tests
     class _QueueMessage:
         def __init__(self, body: Any):
             self._body = body
-
         def get_body(self):  # type: ignore[override]
             return self._body
 
@@ -28,20 +27,13 @@ except ImportError:  # pragma: no cover - lightweight stubs for unit tests
         def queue_trigger(self, *_, **__):
             def _decorator(fn):
                 return fn
-
+            return _decorator
+        def route(self, *_, **__):
+            def _decorator(fn):
+                return fn
             return _decorator
 
     func = type("func", (), {"QueueMessage": _QueueMessage, "FunctionApp": _FunctionApp})()  # type: ignore
-
-
-if TYPE_CHECKING:  # pragma: no cover - only for type checkers
-    from azure.functions import QueueMessage as AzureQueueMessage  # type: ignore
-else:
-    # At runtime, use the real type if available, otherwise fall back to Any
-    try:
-        from azure.functions import QueueMessage as AzureQueueMessage  # type: ignore
-    except ImportError:
-        AzureQueueMessage = Any
 
 # Clean imports from installed cloudfolio-shared package
 from cloudfolio_shared import cache_manager, FingerprintManager, queue_manager, table_manager
@@ -227,7 +219,7 @@ def _process_merge_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 @app.queue_trigger(arg_name="msg", queue_name="merge-results", connection="AzureWebJobsStorage")
-def process_merge_job(msg: AzureQueueMessage) -> None:
+def process_merge_job(msg: func.QueueMessage) -> None:
     try:
         payload = _deserialize_message(msg)
         _process_merge_payload(payload)
@@ -235,9 +227,8 @@ def process_merge_job(msg: AzureQueueMessage) -> None:
         logger.error("Merge worker failure: %s", exc, exc_info=True)
         raise
 
-
 @app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def health_check(req: Any) -> Any:
+def health_check(req: func.HttpRequest) -> func.HttpResponse:
     """Simple health check endpoint for merge worker."""
     status = {
         "status": "ok",

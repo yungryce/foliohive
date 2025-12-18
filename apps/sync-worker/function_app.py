@@ -17,47 +17,34 @@ try:
 except ImportError:  # pragma: no cover - local/unit-test fallback
     class _QueueMessage:
         """Minimal stub mimicking azure.functions.QueueMessage."""
-
         def __init__(self, body: Any):
             self._body = body
-
         def get_body(self):  # type: ignore[override]
             return self._body
 
     class _FunctionApp:
         """No-op decorator provider for local runs/tests."""
-
         def queue_trigger(self, *_, **__):
             def _decorator(fn):
                 return fn
-
+            return _decorator
+        def route(self, *_, **__):
+            def _decorator(fn):
+                return fn
             return _decorator
 
     func = type("func", (), {"QueueMessage": _QueueMessage, "FunctionApp": _FunctionApp})()  # type: ignore
 
-
-if TYPE_CHECKING:  # pragma: no cover - typing helper
-    from azure.functions import QueueMessage as AzureQueueMessage  # type: ignore
-else:
-    # At runtime, use the real type if available, otherwise fall back to Any
-    try:
-        from azure.functions import QueueMessage as AzureQueueMessage  # type: ignore
-    except ImportError:
-        AzureQueueMessage = Any
-
 # Clean imports from installed cloudfolio-shared package
-try:
-    from cloudfolio_shared import (
-        cache_manager,
-        FingerprintManager,
-        GitHubAPI,
-        GitHubRepoManager,
-        queue_manager,
-        table_manager,
-    )
-    from cloudfolio_shared.table import RepoMetadataRow, RepoSyncStatusRow
-except Exception as import_error:
-    raise
+from cloudfolio_shared import (
+    cache_manager,
+    FingerprintManager,
+    GitHubAPI,
+    GitHubRepoManager,
+    queue_manager,
+    table_manager,
+)
+from cloudfolio_shared.table import RepoMetadataRow, RepoSyncStatusRow
 
 logger = logging.getLogger("cloudfolio.sync_worker")
 logger.setLevel(logging.INFO)
