@@ -7,11 +7,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-APPS_DIR="$SCRIPT_DIR"
+REPO_ROOT="$SCRIPT_DIR"
+readonly API_ROOT="$REPO_ROOT/api/v0.2.0"
+APPS_DIR="$API_ROOT"
 VENV_DIR="$APPS_DIR/.venv"
-LOG_DIR="$APPS_DIR/logs"
-readonly AZURITE_HELPER="$APPS_DIR/ensure-azurite.sh"
+LOG_DIR="$REPO_ROOT/logs"
+readonly AZURITE_HELPER="$API_ROOT/ensure-azurite.sh"
+readonly UI_DIR="$REPO_ROOT/ui"
 
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
@@ -23,6 +25,7 @@ declare -A WORKER_PORTS=(
     [api-gateway]=7071
     [sync-worker]=7072
     [merge-worker]=7073
+    [ui]=4200
 )
 declare -a WORKER_SEQUENCE=("api-gateway" "sync-worker" "merge-worker")
 
@@ -32,7 +35,8 @@ declare -a WORKER_LOGS=()
 
 declare -a TAIL_PIDS=()
 
-SKIP_E2E=false
+RUN_UI=true
+RUN_E2E=false
 QUIET=false
 TAIL_LOGS=false
 FUNC_VERBOSE=false
@@ -44,18 +48,18 @@ Usage: ./run-dev-session.sh [options]
 
 Options:
   -h, --help          Show this help message
-  --skip-e2e          Skip ./tests/e2e_curl_tests.sh
+    --run-e2e           Run end-to-end curl tests after workers start (optional)
+    --no-ui             Skip starting the Angular dev server
   --quiet             Reduce log chatter once workers are running
-    --tail-logs          Tail worker logs in real time (prefixed)
-    --func-verbose       Start workers with 'func start --verbose'
+  --tail-logs         Tail worker logs in real time (prefixed)
+  --func-verbose      Start workers with 'func start --verbose'
 
 Additional options are forwarded to ./setup-dev.sh, e.g.:
     ./run-dev-session.sh -- --clean --python-version 3.12
 
-The script always starts api-gateway, sync-worker, and merge-worker using
-Azure Functions Core Tools, writing logs to apps/logs/<worker>.log. All
-commands run from the repository root (../) and the apps/ directory.
-Press Ctrl+C to stop the workers and exit when monitoring is enabled.
+The script starts api-gateway, sync-worker, merge-worker using Azure Functions
+Core Tools (logs in api/v0.2.0/logs/<worker>.log) and the Angular UI on
+port 4200 (log in api/v0.2.0/logs/ui.log). Press Ctrl+C to stop all services.
 EOF
 }
 
@@ -90,8 +94,13 @@ parse_args() {
                 usage
                 exit 0
                 ;;
-            --skip-e2e)
-                SKIP_E2E=true
+            --run-e2e)
+                RUN_E2E=true
+                shift
+                continue
+                ;;
+            --no-ui)
+                RUN_UI=false
                 shift
                 continue
                 ;;
@@ -245,12 +254,60 @@ start_worker() {
 }
 
 run_e2e_tests() {
-    if [[ "$SKIP_E2E" == true ]]; then
-        log_warn "Skipping e2e curl tests as requested"
+    if [[ "$RUN_E2E" == true ]]; then
+        log_step "Running end-to-end curl suite"
+        (cd "$APPS_DIR" && ./tests/e2e_curl_tests.sh)
+    else
         return 0
     fi
-    log_step "Running end-to-end curl suite"
-    (cd "$APPS_DIR" && ./tests/e2e_curl_tests.sh)
+}
+
+start_ui_server() {
+    local name="ui"
+    local port="${WORKER_PORTS[$name]}"
+    local app_dir="$UI_DIR"
+    local log_file="$LOG_DIR/${name}.log"
+
+    if [[ ! -d "$app_dir" ]]; then
+        log_error "UI directory not found: $app_dir"
+        exit 1
+    fi
+
+    log_step "Starting $name on port $port"
+    : > "$log_file"
+
+    (
+        cd "$app_dir"
+        ng serve --port "$port" --poll 2000 >"$log_file" 2>&1
+    ) &
+    local pid=$!
+
+    WORKER_NAMES+=("$name")
+    WORKER_PIDS+=("$pid")
+    WORKER_LOGS+=("$log_file")
+    log_info "$name PID: $pid (log: $log_file)"
+
+    # Wait for Angular app to be ready
+    local attempts=60
+    local ready=false
+    while (( attempts-- > 0 )); do
+        if ! kill -0 "$pid" >/dev/null 2>&1; then
+            log_error "$name exited before signalling readiness. See $log_file"
+            tail -n 40 "$log_file" || true
+            exit 1
+        fi
+        if grep -qE 'Application bundle generation complete|Ready on http' "$log_file"; then
+            ready=true
+            break
+        fi
+        sleep 1
+    done
+
+    if [[ "$ready" == true ]]; then
+        log_info "$name ready at http://localhost:$port (log: $log_file)"
+    else
+        log_warn "$name has not reported readiness after 60s; monitor $log_file"
+    fi
 }
 
 monitor_workers() {
@@ -287,15 +344,25 @@ main() {
         start_worker "$worker" "${WORKER_PORTS[$worker]}"
     done
 
+    if [[ "$RUN_UI" == true ]]; then
+        require_command ng
+        start_ui_server
+    fi
+
     start_log_tailers
 
     if run_e2e_tests; then
-        log_info "Workflow complete. Logs available in $LOG_DIR"
-        monitor_workers
+        log_info "All services ready."
     else
         log_error "E2E tests failed. Check logs and fix issues before monitoring."
         exit 1
     fi
+
+    log_info "Logs available in $LOG_DIR"
+    if [[ "$RUN_UI" == true ]]; then
+        log_info "UI available at http://localhost:${WORKER_PORTS[ui]}"
+    fi
+    monitor_workers
 }
 
 main "$@"
