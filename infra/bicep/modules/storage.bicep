@@ -25,15 +25,16 @@ var tablePeName = '${namePrefix}-pe-table-${uniqueSuffix}'
 resource storage 'Microsoft.Storage/storageAccounts@2024-01-01' = {
   name: storageAccountName
   location: location
-  tags: tags
-  sku: {
-    name: 'Standard_LRS'
-  }
   kind: 'StorageV2'
+  tags: tags
+  sku: { name: 'Standard_LRS' }
   properties: {
+    accessTier: 'Hot'
     publicNetworkAccess: 'Disabled'
     allowBlobPublicAccess: false
+    allowSharedKeyAccess: false
     supportsHttpsTrafficOnly: true
+    dnsEndpointType: 'Standard'
     minimumTlsVersion: 'TLS1_2'
     networkAcls: {
       defaultAction: 'Deny'
@@ -47,17 +48,13 @@ resource peBlob 'Microsoft.Network/privateEndpoints@2024-10-01' = {
   location: location
   tags: tags
   properties: {
-    subnet: {
-      id: privateEndpointsSubnetId
-    }
+    subnet: { id: privateEndpointsSubnetId }
     privateLinkServiceConnections: [
       {
         name: 'storage-blob'
         properties: {
           privateLinkServiceId: storage.id
-          groupIds: [
-            'blob'
-          ]
+          groupIds: [ 'blob' ]
         }
       }
     ]
@@ -84,17 +81,13 @@ resource peQueue 'Microsoft.Network/privateEndpoints@2024-10-01' = {
   location: location
   tags: tags
   properties: {
-    subnet: {
-      id: privateEndpointsSubnetId
-    }
+    subnet: { id: privateEndpointsSubnetId }
     privateLinkServiceConnections: [
       {
         name: 'storage-queue'
         properties: {
           privateLinkServiceId: storage.id
-          groupIds: [
-            'queue'
-          ]
+          groupIds: [ 'queue' ]
         }
       }
     ]
@@ -121,17 +114,13 @@ resource peTable 'Microsoft.Network/privateEndpoints@2024-10-01' = {
   location: location
   tags: tags
   properties: {
-    subnet: {
-      id: privateEndpointsSubnetId
-    }
+    subnet: { id: privateEndpointsSubnetId }
     privateLinkServiceConnections: [
       {
         name: 'storage-table'
         properties: {
           privateLinkServiceId: storage.id
-          groupIds: [
-            'table'
-          ]
+          groupIds: [ 'table' ]
         }
       }
     ]

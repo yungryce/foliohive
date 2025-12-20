@@ -8,6 +8,7 @@ param location string
 param tags Tags
 param namePrefix string
 param uniqueSuffix string
+param deployPrivateEndpoints bool = false  // Matches the param from main.bicep
 
 param functionsSubnetId string
 param privateEndpointsSubnetId string
@@ -50,8 +51,12 @@ var baseAppSettings = [
     value: 'python'
   }
   {
-    name: 'APPINSIGHTS_CONNECTIONSTRING'
+    name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
+  }
+  {
+    name: 'APPLICATIONINSIGHTS_AUTHENTICATION_STRING'
+    value: 'ClientId=${uamiClientId};Authorization=AAD'
   }
   {
     name: 'AzureWebJobsStorage__accountName'
@@ -64,6 +69,26 @@ var baseAppSettings = [
   {
     name: 'AzureWebJobsStorage__clientId'
     value: uamiClientId
+  }
+  {
+    name: 'AZURE_CLIENT_ID'
+    value: uamiClientId
+  }
+  {
+    name: 'AzureWebJobsStorage__blobServiceUri'
+    value: 'https://${storageAccountName}.blob.core.windows.net/'
+  }
+  {
+    name: 'AzureWebJobsStorage__queueServiceUri'
+    value: 'https://${storageAccountName}.queue.core.windows.net/'
+  }
+  {
+    name: 'AzureWebJobsStorage__tableServiceUri'
+    value: 'https://${storageAccountName}.table.core.windows.net/'
+  }
+  {
+    name: 'WEBSITE_VNET_ROUTE_ALL'
+    value: '1'
   }
 ]
 
@@ -84,6 +109,7 @@ resource apiGateway 'Microsoft.Web/sites@2024-04-01' = {
     publicNetworkAccess: 'Disabled'
     virtualNetworkSubnetId: functionsSubnetId
     siteConfig: {
+      minTlsVersion: '1.2'
       linuxFxVersion: 'Python|3.11'
       ftpsState: 'Disabled'
       vnetRouteAllEnabled: true
@@ -109,7 +135,8 @@ resource mergeWorker 'Microsoft.Web/sites@2024-04-01' = {
     publicNetworkAccess: 'Disabled'
     virtualNetworkSubnetId: functionsSubnetId
     siteConfig: {
-      linuxFxVersion: 'Python|3.11'
+      linuxFxVersion: 'Python|3.13'
+      minTlsVersion: '1.2'
       ftpsState: 'Disabled'
       vnetRouteAllEnabled: true
       appSettings: baseAppSettings
@@ -134,7 +161,8 @@ resource syncWorker 'Microsoft.Web/sites@2024-04-01' = {
     publicNetworkAccess: 'Disabled'
     virtualNetworkSubnetId: functionsSubnetId
     siteConfig: {
-      linuxFxVersion: 'Python|3.11'
+      linuxFxVersion: 'Python|3.13'
+      minTlsVersion: '1.2'
       ftpsState: 'Disabled'
       vnetRouteAllEnabled: true
       appSettings: baseAppSettings
@@ -142,7 +170,7 @@ resource syncWorker 'Microsoft.Web/sites@2024-04-01' = {
   }
 }
 
-resource peApiGateway 'Microsoft.Network/privateEndpoints@2024-10-01' = {
+resource peApiGateway 'Microsoft.Network/privateEndpoints@2024-10-01' = if (deployPrivateEndpoints) {
   name: '${appApiGatewayName}-pe'
   location: location
   tags: tags
@@ -164,7 +192,7 @@ resource peApiGateway 'Microsoft.Network/privateEndpoints@2024-10-01' = {
   }
 }
 
-resource peApiGatewayDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-10-01' = {
+resource peApiGatewayDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-10-01' = if (deployPrivateEndpoints) {
   name: 'default'
   parent: peApiGateway
   properties: {
@@ -179,7 +207,7 @@ resource peApiGatewayDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroup
   }
 }
 
-resource peMergeWorker 'Microsoft.Network/privateEndpoints@2024-10-01' = {
+resource peMergeWorker 'Microsoft.Network/privateEndpoints@2024-10-01' = if (deployPrivateEndpoints) {
   name: '${appMergeWorkerName}-pe'
   location: location
   tags: tags
@@ -201,7 +229,7 @@ resource peMergeWorker 'Microsoft.Network/privateEndpoints@2024-10-01' = {
   }
 }
 
-resource peMergeWorkerDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-10-01' = {
+resource peMergeWorkerDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-10-01' = if (deployPrivateEndpoints) {
   name: 'default'
   parent: peMergeWorker
   properties: {
@@ -216,7 +244,7 @@ resource peMergeWorkerDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGrou
   }
 }
 
-resource peSyncWorker 'Microsoft.Network/privateEndpoints@2024-10-01' = {
+resource peSyncWorker 'Microsoft.Network/privateEndpoints@2024-10-01' = if (deployPrivateEndpoints) {
   name: '${appSyncWorkerName}-pe'
   location: location
   tags: tags
@@ -238,7 +266,7 @@ resource peSyncWorker 'Microsoft.Network/privateEndpoints@2024-10-01' = {
   }
 }
 
-resource peSyncWorkerDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-10-01' = {
+resource peSyncWorkerDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-10-01' = if (deployPrivateEndpoints) {
   name: 'default'
   parent: peSyncWorker
   properties: {

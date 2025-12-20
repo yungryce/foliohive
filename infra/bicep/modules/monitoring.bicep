@@ -17,9 +17,7 @@ resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   location: location
   tags: tags
   properties: {
-    sku: {
-      name: 'PerGB2018'
-    }
+    sku: { name: 'PerGB2018' }
     retentionInDays: 30
   }
 }
@@ -32,6 +30,7 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   properties: {
     Application_Type: 'web'
     WorkspaceResourceId: workspace.id
+    DisableLocalAuth: true
   }
 }
 

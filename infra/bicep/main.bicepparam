@@ -4,7 +4,7 @@ param location = 'westus2'
 param namePrefix = 'cloudfolio'
 
 param tags = {
-  Environment: 'v0.0.1-prod'
+  Environment: 'v0.2.0'
   ManagedBy: 'Bicep'
   Purpose: 'AKS-Cluster'
 }

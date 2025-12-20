@@ -7,6 +7,9 @@ type Tags = {
   *: string
 }
 
+@description('Whether to deploy private endpoints for Function Apps')
+param deployFunctionAppPrivateEndpoints bool = false  // Default to false to skip deployment
+
 @description('Tags applied to all resources')
 param tags Tags = {}
 
@@ -78,6 +81,7 @@ module storage './modules/storage.bicep' = {
 }
 
 module functionApps './modules/functionApps.bicep' = {
+  name: 'functionApps'
   params: {
     location: location
     tags: tags
@@ -92,6 +96,7 @@ module functionApps './modules/functionApps.bicep' = {
     uamiClientId: identity.outputs.uamiClientId
 
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
+    deployPrivateEndpoints: deployFunctionAppPrivateEndpoints  // Pass the control param
     privateDnsZoneAzureWebsitesId: privateDns.outputs.privateDnsZoneAzureWebsitesId
   }
 }
