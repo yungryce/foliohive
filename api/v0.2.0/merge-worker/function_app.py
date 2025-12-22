@@ -215,7 +215,7 @@ def _process_merge_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         repo_names=synced_repo_names,
         bundle_fingerprint=fingerprint,
     )
-    return merged_bundle
+    return True
 
 
 @app.queue_trigger(arg_name="msg", queue_name="merge-results", connection="AzureWebJobsStorage")
@@ -227,29 +227,3 @@ def process_merge_job(msg: func.QueueMessage) -> None:
         logger.error("Merge worker failure: %s", exc, exc_info=True)
         raise
 
-@app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def health_check(req: func.HttpRequest) -> func.HttpResponse:
-    """Simple health check endpoint for merge worker."""
-    status = {
-        "status": "ok",
-        "worker": "merge",
-        "queue_enabled": queue_manager.is_enabled(),
-        "cache_enabled": cache_manager is not None,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    return func.HttpResponse(
-        json.dumps(status, indent=2),
-        status_code=200,
-        mimetype="application/json",
-        headers={"Content-Type": "application/json; charset=utf-8"},
-    )
-
-
-__all__ = [
-    "_process_merge_payload",
-    "_merge_repos",
-    "_resolve_fresh_repos",
-    "_resolve_cached_bundle",
-    "process_merge_job",
-    "health_check",
-]

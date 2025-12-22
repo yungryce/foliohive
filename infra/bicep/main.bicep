@@ -25,6 +25,12 @@ param functionsSubnetPrefix string = '10.20.1.0/24'
 @description('Subnet CIDR for Private Endpoints')
 param privateEndpointsSubnetPrefix string = '10.20.2.0/24'
 
+@description('Container image URI for training worker (e.g., myregistry.azurecr.io/training-worker:latest)')
+param trainingWorkerImageUri string = ''
+
+@description('Whether to deploy the training worker container instance')
+param deployTrainingWorker bool = false
+
 var uniqueSuffix = uniqueString(resourceGroup().id, namePrefix)
 
 module identity './modules/identity.bicep' = {
@@ -113,6 +119,29 @@ module staticWebApp './modules/staticWebApp.bicep' = {
   }
 }
 
+module containerInstance './modules/containerInstance.bicep' = if (deployTrainingWorker && !empty(trainingWorkerImageUri)) {
+  params: {
+    location: location
+    tags: tags
+    namePrefix: namePrefix
+    uniqueSuffix: uniqueSuffix
+    uamiPrincipalId: identity.outputs.uamiPrincipalId
+    containerImageUri: trainingWorkerImageUri
+    storageAccountName: storage.outputs.storageAccountName
+    uamiId: identity.outputs.uamiId
+    uamiClientId: identity.outputs.uamiClientId
+    cpuCores: '2.0'
+    memoryGb: '4.0'
+    restartPolicy: 'OnFailure'
+    trainingMode: 'serverless'
+    queueName: 'model-training'
+    blobContainerName: 'github-cache'
+  }
+}
+
 output storageAccountName string = storage.outputs.storageAccountName
+output storageAccountId string = storage.outputs.storageAccountId
 output functionAppNames array = functionApps.outputs.functionAppNames
 output staticWebAppUrl string = staticWebApp.outputs.staticWebAppUrl
+output containerInstanceId string = deployTrainingWorker ? containerInstance.outputs.containerInstanceId : ''
+output containerInstanceName string = deployTrainingWorker ? containerInstance.outputs.containerInstanceName : ''

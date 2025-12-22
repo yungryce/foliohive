@@ -161,7 +161,7 @@ def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: 
     logger.info("[SYNC_CACHE] repo=%s job=%s - Cached repo data under key=%s", repo_name, job_id, cache_key)
     _persist_repo_metadata(job_id, username, result, cache_key)
     logger.info("***Cached repo %s/%s fingerprint=%s", username, repo_name, resolved_fingerprint)
-    return result
+    return True
 
 def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, Any], content_blob: str) -> None:
     if not table_manager.is_enabled():
@@ -417,19 +417,3 @@ def process_sync_job(msg: func.QueueMessage) -> None:
                 # Don't re-raise here - the original error is more important
         raise
     
-@app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def health_check(req: func.HttpRequest) -> func.HttpResponse:
-    """Simple health check endpoint for sync worker."""
-    status = {
-        "status": "ok",
-        "worker": "sync",
-        "queue_enabled": queue_manager.is_enabled(),
-        "cache_enabled": cache_manager is not None,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    return func.HttpResponse(
-        json.dumps(status, indent=2),
-        status_code=200,
-        mimetype="application/json",
-        headers={"Content-Type": "application/json; charset=utf-8"},
-    )

@@ -50,3 +50,5 @@ resource raMetricsPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01'
 }
 
 output appInsightsConnectionString string = appInsights.properties.ConnectionString
+output logAnalyticsWorkspaceId string = workspace.id
+output logAnalyticsWorkspaceKey string = workspace.listKeys().primarySharedKey
