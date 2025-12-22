@@ -1,0 +1,53 @@
+# See .ado/parameters.yml for centralized parameter schema
+# See .ado/params/params-core.yml for core infrastructure parameters
+#
+# Parameters used by this stage template:
+#   - azureServiceConnection, subscriptionId, resourceGroupName, location, namePrefix, tags
+#   - bicepFile, bicepParamFile
+
+parameters:
+  azureServiceConnection: ''
+  subscriptionId: ''
+  resourceGroupName: ''
+  location: 'westus2'
+  namePrefix: 'cloudfolio'
+  tags: '{}'
+  bicepFile: 'infra/bicep/main.bicep'
+  bicepParamFile: 'infra/bicep/main.bicepparam'
+
+stages:
+- stage: Core_Infrastructure
+  displayName: Core Infrastructure (one-time)
+  jobs:
+    - job: Deploy_Core
+      displayName: Deploy core infra
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - task: AzureCLI@2
+          displayName: Build ARM template from Bicep
+          inputs:
+            azureSubscription: '${{ parameters.azureServiceConnection }}'
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              set -euo pipefail
+              az bicep build --file ${{ parameters.bicepFile }} --outfile main.core.json
+
+        - task: AzureResourceManagerTemplateDeployment@3
+          displayName: Deploy core (Incremental)
+          inputs:
+            deploymentScope: Resource Group
+            azureResourceManagerConnection: '${{ parameters.azureServiceConnection }}'
+            subscriptionId: '${{ parameters.subscriptionId }}'
+            action: Create Or Update Resource Group
+            resourceGroupName: '${{ parameters.resourceGroupName }}'
+            location: '${{ parameters.location }}'
+            templateLocation: Linked artifact
+            csmFile: main.core.json
+            csmParametersFile: '${{ parameters.bicepParamFile }}'
+            overrideParameters: |
+              -location ${{ parameters.location }}
+              -namePrefix ${{ parameters.namePrefix }}
+            deploymentMode: Incremental
+            deploymentName: 'core-${{ parameters.namePrefix }}'

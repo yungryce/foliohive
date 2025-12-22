@@ -1,0 +1,279 @@
+# .ado/parameters.yml - Global Parameter Schema for All Deployment Pipelines
+#
+# This file defines ALL possible parameters that can be used across deployment templates.
+# It serves as the authoritative schema and documentation for the pipeline system.
+#
+# USAGE:
+# - Templates reference specific parameters from this file
+# - Component-specific parameters are defined in .ado/params/params-*.yml files
+# - Root orchestrator (azure-pipelines.yml) provides values via variables
+# - Parameters are organized into logical categories below
+#
+# ORGANIZATION:
+# Layer 1: Global Parameters (this file) - Schema and defaults
+# Layer 2: Component Parameters (params/params-*.yml) - Which parameters each component uses
+# Layer 3: Templates (ci-*.yml, cd-*.yml, infra-core.yml) - How parameters are consumed
+# Layer 4: Root Orchestrator (azure-pipelines.yml) - Provides actual values
+
+parameters:
+  # ================================================================================
+  # AZURE SUBSCRIPTION & RESOURCE GROUP (Required for all deployments)
+  # ================================================================================
+  - name: azureServiceConnection
+    displayName: 'Azure Service Connection'
+    type: string
+    default: ''
+
+  - name: subscriptionId
+    displayName: 'Azure Subscription ID'
+    type: string
+    default: ''
+
+  - name: resourceGroupName
+    displayName: 'Resource Group Name'
+    type: string
+    default: ''
+
+  # ================================================================================
+  # DEPLOYMENT LOCATION & NAMING
+  # ================================================================================
+  - name: location
+    displayName: 'Azure Region'
+    type: string
+    default: 'westus2'
+
+  - name: namePrefix
+    displayName: 'Resource Name Prefix'
+    type: string
+    default: 'cloudfolio'
+
+  - name: tags
+    displayName: 'Resource Tags (JSON)'
+    type: string
+    default: '{}'
+
+  # ================================================================================
+  # CORE INFRASTRUCTURE OUTPUTS (Populated by infra-core stage, used by others)
+  # ================================================================================
+  - name: vnetId
+    displayName: 'Virtual Network ID (from core infra)'
+    type: string
+    default: ''
+
+  - name: functionsSubnetId
+    displayName: 'Functions Subnet ID (from core infra)'
+    type: string
+    default: ''
+
+  - name: privateEndpointsSubnetId
+    displayName: 'Private Endpoints Subnet ID (from core infra)'
+    type: string
+    default: ''
+
+  - name: uamiId
+    displayName: 'User-Assigned Managed Identity ID (from core infra)'
+    type: string
+    default: ''
+
+  - name: uamiClientId
+    displayName: 'UAMI Client ID (from core infra)'
+    type: string
+    default: ''
+
+  - name: uamiPrincipalId
+    displayName: 'UAMI Principal ID (from core infra)'
+    type: string
+    default: ''
+
+  - name: storageAccountName
+    displayName: 'Storage Account Name (from core infra)'
+    type: string
+    default: ''
+
+  - name: storageAccountId
+    displayName: 'Storage Account ID (from core infra)'
+    type: string
+    default: ''
+
+  - name: appInsightsConnectionString
+    displayName: 'App Insights Connection String (from core infra)'
+    type: string
+    default: ''
+
+  - name: logAnalyticsWorkspaceId
+    displayName: 'Log Analytics Workspace ID (from core infra)'
+    type: string
+    default: ''
+
+  - name: logAnalyticsWorkspaceKey
+    displayName: 'Log Analytics Workspace Key (from core infra, secure)'
+    type: string
+    default: ''
+
+  - name: privateDnsZoneAzureWebsitesId
+    displayName: 'Private DNS Zone ID (azurewebsites.net, from core infra)'
+    type: string
+    default: ''
+
+  # ================================================================================
+  # FUNCTION APPS DEPLOYMENT OPTIONS & ARTIFACTS
+  # ================================================================================
+  - name: deployFunctionAppPrivateEndpoints
+    displayName: 'Deploy Function Apps with Private Endpoints'
+    type: boolean
+    default: false
+
+  - name: artifactContainerName
+    displayName: 'Storage Container for Function App Artifacts'
+    type: string
+    default: 'function-artifacts'
+
+  - name: pythonVersion
+    displayName: 'Python Version for Function Apps'
+    type: string
+    default: '3.13'
+
+  - name: bicepFunctionAppFile
+    displayName: 'Bicep File: Single Function App'
+    type: string
+    default: 'infra/bicep/main.function.bicep'
+
+  # ================================================================================
+  # FUNCTION APPS OUTPUTS (Populated by functions stage, used by SWA)
+  # ================================================================================
+  - name: apiGatewayId
+    displayName: 'API Gateway Function App ID (from functions deployment)'
+    type: string
+    default: ''
+
+  - name: apiGatewayDefaultHostname
+    displayName: 'API Gateway Function App Hostname (from functions deployment)'
+    type: string
+    default: ''
+
+  # ================================================================================
+  # STATIC WEB APP DEPLOYMENT OPTIONS
+  # ================================================================================
+  - name: enableLinkedBackend
+    displayName: 'Link SWA to Function Backend'
+    type: boolean
+    default: true
+
+  # ================================================================================
+  # CONTAINER IMAGE & DOCKER HUB
+  # ================================================================================
+  - name: dockerHubServiceConnection
+    displayName: 'Docker Hub Service Connection'
+    type: string
+    default: ''
+
+  - name: dockerHubRepository
+    displayName: 'Docker Hub Repository (e.g., username/training-worker)'
+    type: string
+    default: ''
+
+  - name: imageTag
+    displayName: 'Docker Image Tag (e.g., latest, v1.0, or $(Build.BuildId))'
+    type: string
+    default: 'latest'
+
+  # ================================================================================
+  # CONTAINER INSTANCE CONFIGURATION
+  # ================================================================================
+  - name: trainingMode
+    displayName: 'Training Worker Mode (serverless or continuous)'
+    type: string
+    default: 'serverless'
+    values:
+      - serverless
+      - continuous
+
+  - name: queueName
+    displayName: 'Queue Name for Training Jobs'
+    type: string
+    default: 'model-training'
+
+  - name: blobContainerName
+    displayName: 'Blob Container Name for Models'
+    type: string
+    default: 'github-cache'
+
+  - name: containerRestartPolicy
+    displayName: 'Container Restart Policy'
+    type: string
+    default: 'OnFailure'
+    values:
+      - Always
+      - OnFailure
+      - Never
+
+  - name: containerCpuCores
+    displayName: 'Container CPU Cores (0.5-4.0)'
+    type: string
+    default: '2.0'
+
+  - name: containerMemoryGb
+    displayName: 'Container Memory (GB, 1-16)'
+    type: string
+    default: '4.0'
+
+  # ================================================================================
+  # BICEP FILE PATHS
+  # ================================================================================
+  - name: bicepCoreFile
+    displayName: 'Bicep File: Core Infrastructure'
+    type: string
+    default: 'infra/bicep/main.bicep'
+
+  - name: bicepCoreParamFile
+    displayName: 'Bicep Param File: Core Infrastructure'
+    type: string
+    default: 'infra/bicep/main.bicepparam'
+
+  - name: bicepFunctionsFile
+    displayName: 'Bicep File: Function Apps'
+    type: string
+    default: 'infra/bicep/main.functions.bicep'
+
+  - name: bicepSwaFile
+    displayName: 'Bicep File: Static Web App'
+    type: string
+    default: 'infra/bicep/main.staticwebapp.bicep'
+
+  - name: bicepContainerFile
+    displayName: 'Bicep File: Container Instance'
+    type: string
+    default: 'infra/bicep/main.container.bicep'
+
+# ================================================================================
+# NOTES
+# ================================================================================
+#
+# PARAMETER ORGANIZATION STRATEGY:
+#
+# This file (parameters.yml) is a SCHEMA REFERENCE. It documents all possible
+# parameters used across the pipeline, serving as:
+#   - Single source of truth for parameter names and types
+#   - Default values for common parameters
+#   - Documentation for template developers
+#
+# COMPONENT-SPECIFIC USAGE:
+#   Each component defines which parameters it actually uses via files in params/:
+#   - params/params-core.yml        → infra-core.yml
+#   - params/params-api-gateway.yml → ci-function.yml + cd-function.yml
+#   - params/params-sync-worker.yml → ci-function.yml + cd-function.yml
+#   - params/params-merge-worker.yml → ci-function.yml + cd-function.yml
+#   - params/params-swa.yml         → ci-swa.yml + cd-swa.yml
+#   - params/params-container.yml   → ci-container.yml + cd-container.yml
+#
+# PARAMETER FLOW:
+#   1. azure-pipelines.yml provides values via $(variable) references
+#   2. Templates consume parameters from component-specific params files
+#   3. Parameter schemas and defaults come from this file (parameters.yml)
+#   4. Each template parameter section declares which parameters it accepts
+#
+# ADDING NEW PARAMETERS:
+#   1. Add parameter definition here (parameters.yml) with type, displayName, default
+#   2. Add to relevant component file (params/params-*.yml)
+#   3. Reference in template parameter section
+#   4. Provide value in azure-pipelines.yml

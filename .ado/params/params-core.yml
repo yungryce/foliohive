@@ -1,0 +1,24 @@
+# Unified parameters for Core Infrastructure
+# Used by: .ado/infra-core.yml
+# Inherits shared defaults from: .ado/parameters.yml
+
+parameters:
+  # ================================================================================
+  # AZURE SUBSCRIPTION & RESOURCE GROUP
+  # ================================================================================
+  azureServiceConnection: ''
+  subscriptionId: ''
+  resourceGroupName: ''
+
+  # ================================================================================
+  # DEPLOYMENT LOCATION & NAMING
+  # ================================================================================
+  location: 'westus2'
+  namePrefix: 'cloudfolio'
+  tags: '{}'
+
+  # ================================================================================
+  # BICEP TEMPLATES & PARAMETERS
+  # ================================================================================
+  bicepFile: 'infra/bicep/main.bicep'
+  bicepParamFile: 'infra/bicep/main.bicepparam'

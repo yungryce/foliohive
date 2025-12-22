@@ -1,0 +1,140 @@
+# Generic CD template for Function Apps
+# - Deploys infra via main.function.bicep (incremental)
+# - Downloads pre-built artifact from Storage Account
+# - Publishes artifact to Function App
+#
+# Usage: Reference with a separate parameter file per function
+# Example: template: .ado/cd-function.yml
+#          parameters: ${{ variables.cdParams }}
+
+parameters:
+  azureServiceConnection: ''
+  subscriptionId: ''
+  resourceGroupName: ''
+  location: 'westus2'
+  namePrefix: 'cloudfolio'
+  bicepFile: 'infra/bicep/main.function.bicep'
+
+  appServicePlanId: ''
+  functionsSubnetId: ''
+  privateEndpointsSubnetId: ''
+  storageAccountName: ''
+  uamiId: ''
+  uamiClientId: ''
+  appInsightsConnectionString: ''
+  privateDnsZoneAzureWebsitesId: ''
+  deployPrivateEndpoints: false
+
+  functionName: ''
+  functionAppName: ''
+  artifactContainerName: 'function-artifacts'
+  artifactBuildId: '$(Build.BuildId)'
+  pythonVersion: '3.11'
+
+stages:
+- stage: CD_${{ replace(parameters.functionName, '-', '_') }}
+  displayName: 'CD: Deploy ${{ parameters.functionName }}'
+  jobs:
+    - job: Deploy_${{ replace(parameters.functionName, '-', '_') }}
+      displayName: 'Deploy infra + code for ${{ parameters.functionName }}'
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - task: UsePythonVersion@0
+          displayName: Use Python ${{ parameters.pythonVersion }}
+          inputs:
+            versionSpec: '${{ parameters.pythonVersion }}'
+
+        - task: AzureCLI@2
+          displayName: 'Build ARM template: ${{ parameters.functionName }}'
+          inputs:
+            azureSubscription: '${{ parameters.azureServiceConnection }}'
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              set -euo pipefail
+              if [ ! -f "${{ parameters.bicepFile }}" ]; then
+                echo "##vso[task.logissue type=error]Bicep file not found: ${{ parameters.bicepFile }}"
+                exit 1
+              fi
+              az bicep build --file ${{ parameters.bicepFile }} --outfile main.function.${{ parameters.functionName }}.json
+
+        - task: AzureResourceManagerTemplateDeployment@3
+          displayName: 'Deploy ${{ parameters.functionName }} (Incremental)'
+          inputs:
+            deploymentScope: Resource Group
+            azureResourceManagerConnection: '${{ parameters.azureServiceConnection }}'
+            subscriptionId: '${{ parameters.subscriptionId }}'
+            action: Create Or Update Resource Group
+            resourceGroupName: '${{ parameters.resourceGroupName }}'
+            location: '${{ parameters.location }}'
+            templateLocation: Linked artifact
+            csmFile: main.function.${{ parameters.functionName }}.json
+            overrideParameters: |
+              -location ${{ parameters.location }}
+              -functionAppName "${{ coalesce(parameters.functionAppName, format('{0}-{1}', parameters.namePrefix, parameters.functionName)) }}"
+              -appServicePlanId "${{ parameters.appServicePlanId }}"
+              -functionsSubnetId "${{ parameters.functionsSubnetId }}"
+              -privateEndpointsSubnetId "${{ parameters.privateEndpointsSubnetId }}"
+              -storageAccountName "${{ parameters.storageAccountName }}"
+              -uamiId "${{ parameters.uamiId }}"
+              -uamiClientId "${{ parameters.uamiClientId }}"
+              -appInsightsConnectionString "${{ parameters.appInsightsConnectionString }}"
+              -privateDnsZoneAzureWebsitesId "${{ parameters.privateDnsZoneAzureWebsitesId }}"
+              -deployPrivateEndpoint ${{ parameters.deployPrivateEndpoints }}
+            deploymentMode: Incremental
+            deploymentName: '${{ parameters.functionName }}-$(Build.BuildId)'
+
+        - task: AzureCLI@2
+          displayName: 'Resolve function app name from deployment'
+          inputs:
+            azureSubscription: '${{ parameters.azureServiceConnection }}'
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              set -euo pipefail
+              deployment_name="${{ parameters.functionName }}-$(Build.BuildId)"
+              funcName=$(az deployment group show -g "${{ parameters.resourceGroupName }}" -n "$deployment_name" --query "properties.outputs.functionAppName.value" -o tsv)
+              if [ -z "$funcName" ]; then
+                echo "##vso[task.logissue type=error]Failed to read functionAppName from deployment outputs"
+                exit 1
+              fi
+              echo "##vso[task.setvariable variable=functionAppName]$funcName"
+              echo "[CD] Resolved function app: $funcName"
+
+        - task: AzureCLI@2
+          displayName: 'Download artifact from storage'
+          inputs:
+            azureSubscription: '${{ parameters.azureServiceConnection }}'
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              set -euo pipefail
+              key=$(az storage account keys list -g "${{ parameters.resourceGroupName }}" -n "${{ parameters.storageAccountName }}" --query "[0].value" -o tsv)
+              if [ -z "$key" ]; then
+                echo "##vso[task.logissue type=error]No storage key found for ${{ parameters.storageAccountName }}"
+                exit 1
+              fi
+
+              container="${{ parameters.artifactContainerName }}"
+              blob_path="${{ parameters.functionName }}/${{ parameters.artifactBuildId }}.zip"
+              dest="$BUILD_ARTIFACTSTAGINGDIRECTORY/${{ parameters.functionName }}.zip"
+
+              if ! az storage blob exists --account-name "${{ parameters.storageAccountName }}" --account-key "$key" \
+                  --container-name "$container" --name "$blob_path" --auth-mode key --query exists -o tsv | grep -q "true"; then
+                echo "##vso[task.logissue type=error]Artifact not found in storage: $container/$blob_path"
+                exit 1
+              fi
+
+              az storage blob download --account-name "${{ parameters.storageAccountName }}" --account-key "$key" \
+                --container-name "$container" --name "$blob_path" --file "$dest" --overwrite true --auth-mode key
+
+              echo "[CD] Downloaded artifact from: $container/$blob_path"
+
+        - task: AzureFunctionApp@2
+          displayName: 'Publish ${{ parameters.functionName }} code'
+          inputs:
+            connectedServiceNameARM: '${{ parameters.azureServiceConnection }}'
+            appType: functionAppLinux
+            appName: '$(functionAppName)'
+            package: '$(Build.ArtifactStagingDirectory)/${{ parameters.functionName }}.zip'

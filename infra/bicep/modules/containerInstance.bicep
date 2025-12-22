@@ -24,6 +24,13 @@ param uamiId string
 @description('User-Assigned Managed Identity Client ID')
 param uamiClientId string
 
+@description('Log Analytics workspace ID for container logs')
+param logAnalyticsWorkspaceId string
+
+@secure()
+@description('Log Analytics workspace key for container logs')
+param logAnalyticsWorkspaceKey string
+
 @description('CPU cores for container instance (0.5 to 4.0)')
 param cpuCores string = '2.0'
 
@@ -58,6 +65,13 @@ resource containerInstance 'Microsoft.ContainerInstance/containerGroups@2024-05-
     }
   }
   properties: {
+    diagnostics: {
+      logAnalytics: {
+        workspaceId: logAnalyticsWorkspaceId
+        workspaceKey: logAnalyticsWorkspaceKey
+        logType: 'ContainerInstanceLogs'
+      }
+    }
     containers: [
       {
         name: 'training-worker'

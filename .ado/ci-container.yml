@@ -1,0 +1,37 @@
+# Generic CI template for Container (Training Worker)
+# - Builds Docker image
+# - Pushes to Docker Hub
+#
+# Usage: Reference with a unified parameter file
+# Example: template: .ado/ci-container.yml
+#          parameters: ${{ variables.ciContainer }}
+
+parameters:
+  azureServiceConnection: ''
+  dockerHubServiceConnection: ''
+  dockerHubRepository: ''
+  imageTag: '$(Build.BuildId)'
+
+  containerDir: 'api/v0.2.0/training-worker'
+  dockerFile: 'api/v0.2.0/training-worker/Dockerfile'
+
+stages:
+- stage: CI_Container
+  displayName: 'CI: Build Training Worker Container'
+  jobs:
+    - job: Build_Push_Image
+      displayName: 'Build and push training-worker'
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - task: Docker@2
+          displayName: Build and push training-worker to Docker Hub
+          inputs:
+            command: buildAndPush
+            containerRegistry: '${{ parameters.dockerHubServiceConnection }}'
+            repository: '${{ parameters.dockerHubRepository }}'
+            dockerfile: '${{ parameters.dockerFile }}'
+            buildContext: '${{ parameters.containerDir }}'
+            tags: |
+              ${{ parameters.imageTag }}
+              latest

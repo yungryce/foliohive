@@ -1,0 +1,84 @@
+# Generic CD template for Container (Training Worker)
+# - Builds Bicep template for Azure Container Instance
+# - Deploys container infra via ARM
+#
+# Usage: Reference with a unified parameter file
+# Example: template: .ado/cd-container.yml
+#          parameters: ${{ variables.cdContainer }}
+
+parameters:
+  azureServiceConnection: ''
+  subscriptionId: ''
+  resourceGroupName: ''
+  location: 'westus2'
+  namePrefix: 'cloudfolio'
+  bicepFile: 'infra/bicep/main.container.bicep'
+
+  # Core infra outputs
+  uamiPrincipalId: ''
+  uamiId: ''
+  uamiClientId: ''
+  storageAccountName: ''
+  logAnalyticsWorkspaceId: ''
+  logAnalyticsWorkspaceKey: ''
+
+  # Image config
+  dockerHubRepository: ''
+  imageTag: '$(Build.BuildId)'
+
+  # Container behavior
+  trainingMode: 'serverless'
+  queueName: 'model-training'
+  blobContainerName: 'github-cache'
+  restartPolicy: 'OnFailure'
+  cpuCores: '2.0'
+  memoryGb: '4.0'
+
+stages:
+- stage: CD_Container
+  displayName: 'CD: Deploy Training Worker Container'
+  jobs:
+    - job: Deploy_Container
+      displayName: Deploy container instance
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - task: AzureCLI@2
+          displayName: Build ARM template from Bicep (container)
+          inputs:
+            azureSubscription: '${{ parameters.azureServiceConnection }}'
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              set -euo pipefail
+              az bicep build --file ${{ parameters.bicepFile }} --outfile main.container.json
+
+        - task: AzureResourceManagerTemplateDeployment@3
+          displayName: Deploy container instance (Incremental)
+          inputs:
+            deploymentScope: Resource Group
+            azureResourceManagerConnection: '${{ parameters.azureServiceConnection }}'
+            subscriptionId: '${{ parameters.subscriptionId }}'
+            action: Create Or Update Resource Group
+            resourceGroupName: '${{ parameters.resourceGroupName }}'
+            location: '${{ parameters.location }}'
+            templateLocation: Linked artifact
+            csmFile: main.container.json
+            overrideParameters: |
+              -location ${{ parameters.location }}
+              -namePrefix ${{ parameters.namePrefix }}
+              -containerImageUri "${{ parameters.dockerHubRepository }}:${{ parameters.imageTag }}"
+              -uamiPrincipalId "${{ parameters.uamiPrincipalId }}"
+              -uamiId "${{ parameters.uamiId }}"
+              -uamiClientId "${{ parameters.uamiClientId }}"
+              -storageAccountName "${{ parameters.storageAccountName }}"
+              -logAnalyticsWorkspaceId "${{ parameters.logAnalyticsWorkspaceId }}"
+              -logAnalyticsWorkspaceKey "${{ parameters.logAnalyticsWorkspaceKey }}"
+              -trainingMode "${{ parameters.trainingMode }}"
+              -queueName "${{ parameters.queueName }}"
+              -blobContainerName "${{ parameters.blobContainerName }}"
+              -restartPolicy "${{ parameters.restartPolicy }}"
+              -cpuCores "${{ parameters.cpuCores }}"
+              -memoryGb "${{ parameters.memoryGb }}"
+            deploymentMode: Incremental
+            deploymentName: 'container-${{ parameters.namePrefix }}'

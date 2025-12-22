@@ -1,0 +1,48 @@
+# Unified parameters for merge-worker Function App
+# Used by both: .ado/ci-function.yml AND .ado/cd-function.yml
+# Inherits shared defaults from: .ado/parameters.yml
+
+parameters:
+  # ================================================================================
+  # AZURE SUBSCRIPTION & RESOURCE GROUP
+  # ================================================================================
+  azureServiceConnection: ''
+  subscriptionId: ''
+  resourceGroupName: ''
+
+  # ================================================================================
+  # DEPLOYMENT LOCATION & NAMING
+  # ================================================================================
+  location: 'westus2'
+  namePrefix: 'cloudfolio'
+
+  # ================================================================================
+  # CORE INFRASTRUCTURE OUTPUTS (Populated by infra-core stage)
+  # ================================================================================
+  appServicePlanId: ''
+  functionsSubnetId: ''
+  privateEndpointsSubnetId: ''
+  storageAccountName: ''
+  uamiId: ''
+  uamiClientId: ''
+  appInsightsConnectionString: ''
+  privateDnsZoneAzureWebsitesId: ''
+
+  # ================================================================================
+  # CI-SPECIFIC: BUILD & ARTIFACTS
+  # ================================================================================
+  pythonVersion: '3.13'
+  artifactBuildId: '$(Build.BuildId)'
+  artifactContainerName: 'function-artifacts'
+
+  functionName: 'merge-worker'
+  functionDir: 'api/v0.2.0/merge-worker'
+  sharedDir: 'api/v0.2.0/shared'
+
+  # ================================================================================
+  # CD-SPECIFIC: DEPLOYMENT & INFRASTRUCTURE
+  # ================================================================================
+  bicepFile: 'infra/bicep/main.function.bicep'
+  deployPrivateEndpoints: false
+
+  functionAppName: ''  # Computed during deployment

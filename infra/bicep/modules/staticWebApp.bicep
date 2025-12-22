@@ -34,7 +34,7 @@ resource staticWebApp 'Microsoft.Web/staticSites@2023-12-01' = {
     buildProperties: {
       appLocation: 'ui'  // Adjust to your SPA source folder (e.g., 'src', 'dist', 'ui')
       apiLocation: ''  // Not used; API is external (api-gateway)
-      outputLocation: 'dist/browser'  // Angular default build output
+      outputLocation: 'dist/cloudfolio-ui'
       skipGithubActionWorkflowGeneration: true  // Use custom workflow or manual deploy
     }
   }
@@ -50,16 +50,15 @@ resource linkedBackend 'Microsoft.Web/staticSites/linkedBackends@2024-11-01' = i
   }
 }
 
-resource staticWebAppConfig 'Microsoft.Web/staticSites/config@2024-11-01' = {
+resource staticWebAppConfig 'Microsoft.Web/staticSites/config@2024-11-01' = if (!empty(apiGatewayDefaultHostname)) {
   parent: staticWebApp
   name: 'appsettings'
   properties: {
     API_BASE_URL: 'https://${apiGatewayDefaultHostname}/api'
   }
-  dependsOn: [ linkedBackend ]
 }
 
 output staticWebAppUrl string = staticWebApp.properties.defaultHostname
 output staticWebAppId string = staticWebApp.id
-output staticWebAppApiKey string = listSecrets(staticWebApp.id, staticWebApp.apiVersion).properties.apiKey
+output staticWebAppName string = staticWebApp.name
 

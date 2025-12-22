@@ -7,9 +7,6 @@ type Tags = {
   *: string
 }
 
-@description('Whether to deploy private endpoints for Function Apps')
-param deployFunctionAppPrivateEndpoints bool = false  // Default to false to skip deployment
-
 @description('Tags applied to all resources')
 param tags Tags = {}
 
@@ -24,12 +21,6 @@ param functionsSubnetPrefix string = '10.20.1.0/24'
 
 @description('Subnet CIDR for Private Endpoints')
 param privateEndpointsSubnetPrefix string = '10.20.2.0/24'
-
-@description('Container image URI for training worker (e.g., myregistry.azurecr.io/training-worker:latest)')
-param trainingWorkerImageUri string = ''
-
-@description('Whether to deploy the training worker container instance')
-param deployTrainingWorker bool = false
 
 var uniqueSuffix = uniqueString(resourceGroup().id, namePrefix)
 
@@ -87,61 +78,44 @@ module storage './modules/storage.bicep' = {
   }
 }
 
-module functionApps './modules/functionApps.bicep' = {
-  name: 'functionApps'
-  params: {
-    location: location
-    tags: tags
-    namePrefix: namePrefix
-    uniqueSuffix: uniqueSuffix
+// App Service Plan (shared by all Function Apps)
+var appServicePlanName = '${namePrefix}-plan-${uniqueSuffix}'
 
-    functionsSubnetId: network.outputs.functionsSubnetId
-    privateEndpointsSubnetId: network.outputs.privateEndpointsSubnetId
-
-    storageAccountName: storage.outputs.storageAccountName
-    uamiId: identity.outputs.uamiId
-    uamiClientId: identity.outputs.uamiClientId
-
-    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
-    deployPrivateEndpoints: deployFunctionAppPrivateEndpoints  // Pass the control param
-    privateDnsZoneAzureWebsitesId: privateDns.outputs.privateDnsZoneAzureWebsitesId
+resource appServicePlan 'Microsoft.Web/serverfarms@2024-04-01' = {
+  name: appServicePlanName
+  location: location
+  tags: tags
+  kind: 'functionapp'
+  sku: {
+    name: 'EP1'
+    tier: 'ElasticPremium'
+    capacity: 1
+  }
+  properties: {
+    reserved: true
   }
 }
 
-module staticWebApp './modules/staticWebApp.bicep' = {
-  params: {
-    location: location
-    tags: tags
-    namePrefix: namePrefix
-    uniqueSuffix: uniqueSuffix
-    apiGatewayId: functionApps.outputs.apiGatewayId
-    apiGatewayDefaultHostname: functionApps.outputs.apiGatewayDefaultHostname
-  }
-}
+// Core outputs for downstream deployments
+output uamiId string = identity.outputs.uamiId
+output uamiClientId string = identity.outputs.uamiClientId
+output uamiPrincipalId string = identity.outputs.uamiPrincipalId
 
-module containerInstance './modules/containerInstance.bicep' = if (deployTrainingWorker && !empty(trainingWorkerImageUri)) {
-  params: {
-    location: location
-    tags: tags
-    namePrefix: namePrefix
-    uniqueSuffix: uniqueSuffix
-    uamiPrincipalId: identity.outputs.uamiPrincipalId
-    containerImageUri: trainingWorkerImageUri
-    storageAccountName: storage.outputs.storageAccountName
-    uamiId: identity.outputs.uamiId
-    uamiClientId: identity.outputs.uamiClientId
-    cpuCores: '2.0'
-    memoryGb: '4.0'
-    restartPolicy: 'OnFailure'
-    trainingMode: 'serverless'
-    queueName: 'model-training'
-    blobContainerName: 'github-cache'
-  }
-}
+output appInsightsConnectionString string = monitoring.outputs.appInsightsConnectionString
+output logAnalyticsWorkspaceId string = monitoring.outputs.logAnalyticsWorkspaceId
+output logAnalyticsWorkspaceKey string = monitoring.outputs.logAnalyticsWorkspaceKey
+
+output vnetId string = network.outputs.vnetId
+output functionsSubnetId string = network.outputs.functionsSubnetId
+output privateEndpointsSubnetId string = network.outputs.privateEndpointsSubnetId
+
+output privateDnsZoneBlobId string = privateDns.outputs.privateDnsZoneBlobId
+output privateDnsZoneQueueId string = privateDns.outputs.privateDnsZoneQueueId
+output privateDnsZoneTableId string = privateDns.outputs.privateDnsZoneTableId
+output privateDnsZoneAzureWebsitesId string = privateDns.outputs.privateDnsZoneAzureWebsitesId
 
 output storageAccountName string = storage.outputs.storageAccountName
 output storageAccountId string = storage.outputs.storageAccountId
-output functionAppNames array = functionApps.outputs.functionAppNames
-output staticWebAppUrl string = staticWebApp.outputs.staticWebAppUrl
-output containerInstanceId string = deployTrainingWorker ? containerInstance.outputs.containerInstanceId : ''
-output containerInstanceName string = deployTrainingWorker ? containerInstance.outputs.containerInstanceName : ''
+
+output appServicePlanId string = appServicePlan.id
+output appServicePlanName string = appServicePlan.name

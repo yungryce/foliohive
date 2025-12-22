@@ -9,3 +9,5 @@ param tags = {
   Purpose: 'App Services and Function Apps with Private Endpoints'
 }
 
+// CI/CD typically overrides these at deploy time
+

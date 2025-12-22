@@ -1,0 +1,89 @@
+# Generic CI template for Function Apps
+# - Builds function package with shared library
+# - Uploads zip artifact to Storage Account (per-build blob)
+#
+# Usage: Reference with a separate parameter file per function
+# Example: template: .ado/ci-function.yml
+#          parameters: ${{ variables.ciParams }}
+
+parameters:
+  azureServiceConnection: ''
+  subscriptionId: ''
+  resourceGroupName: ''
+  storageAccountName: ''
+  artifactContainerName: 'function-artifacts'
+  pythonVersion: '3.13'
+  artifactBuildId: '$(Build.BuildId)'
+
+  functionName: ''
+  functionDir: ''
+  sharedDir: 'api/v0.2.0/shared'
+
+stages:
+- stage: CI_${{ replace(parameters.functionName, '-', '_') }}
+  displayName: 'CI: Build ${{ parameters.functionName }}'
+  jobs:
+    - job: Build_${{ replace(parameters.functionName, '-', '_') }}
+      displayName: 'Build & upload ${{ parameters.functionName }} artifact'
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - task: UsePythonVersion@0
+          displayName: Use Python ${{ parameters.pythonVersion }}
+          inputs:
+            versionSpec: '${{ parameters.pythonVersion }}'
+
+        - script: |
+            set -euo pipefail
+            dir="${{ parameters.functionDir }}"
+            shared="${{ parameters.sharedDir }}"
+            site_packages="$dir/.python_packages/lib/site-packages"
+
+            if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+              echo "##vso[task.logissue type=error]Function directory not found: $dir"
+              exit 1
+            fi
+
+            echo "[CI] Building ${{ parameters.functionName }} from $dir"
+            python -m pip install --upgrade pip
+            python -m pip install -r "$dir/requirements.txt" --target "$site_packages"
+            python -m pip install "$shared" --target "$site_packages"
+
+            (cd "$dir" && zip -r "$BUILD_ARTIFACTSTAGINGDIRECTORY/${{ parameters.functionName }}.zip" . \
+              -x "**/__pycache__/**" -x "**/*.pyc")
+            
+            if [ ! -f "$BUILD_ARTIFACTSTAGINGDIRECTORY/${{ parameters.functionName }}.zip" ]; then
+              echo "##vso[task.logissue type=error]Failed to create zip artifact"
+              exit 1
+            fi
+          displayName: 'Package ${{ parameters.functionName }}'
+
+        - task: AzureCLI@2
+          displayName: 'Upload artifact to storage'
+          inputs:
+            azureSubscription: '${{ parameters.azureServiceConnection }}'
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              set -euo pipefail
+              key=$(az storage account keys list -g "${{ parameters.resourceGroupName }}" -n "${{ parameters.storageAccountName }}" --query "[0].value" -o tsv)
+              if [ -z "$key" ]; then
+                echo "##vso[task.logissue type=error]No storage key found for ${{ parameters.storageAccountName }}"
+                exit 1
+              fi
+
+              container="${{ parameters.artifactContainerName }}"
+              blob_path="${{ parameters.functionName }}/${{ parameters.artifactBuildId }}.zip"
+              src="$BUILD_ARTIFACTSTAGINGDIRECTORY/${{ parameters.functionName }}.zip"
+
+              if [ ! -f "$src" ]; then
+                echo "##vso[task.logissue type=error]Artifact file not found: $src"
+                exit 1
+              fi
+
+              az storage container create --name "$container" --account-name "${{ parameters.storageAccountName }}" --account-key "$key" --auth-mode key >/dev/null 2>&1 || true
+              az storage blob upload --account-name "${{ parameters.storageAccountName }}" --account-key "$key" \
+                --container-name "$container" --file "$src" --name "$blob_path" --overwrite true --auth-mode key
+
+              echo "##vso[task.setvariable variable=artifactBlobPath;isOutput=true]$blob_path"
+              echo "[CI] Uploaded artifact: $container/$blob_path"

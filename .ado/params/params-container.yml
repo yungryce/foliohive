@@ -1,0 +1,48 @@
+# Unified parameters for Container (Training Worker)
+# Used by both: .ado/ci-container.yml AND .ado/cd-container.yml
+# Inherits shared defaults from: .ado/parameters.yml
+
+parameters:
+  # ================================================================================
+  # AZURE SUBSCRIPTION & RESOURCE GROUP
+  # ================================================================================
+  azureServiceConnection: ''
+  subscriptionId: ''
+  resourceGroupName: ''
+
+  # ================================================================================
+  # DEPLOYMENT LOCATION & NAMING
+  # ================================================================================
+  location: 'westus2'
+  namePrefix: 'cloudfolio'
+
+  # ================================================================================
+  # CI-SPECIFIC: BUILD & PUSH DOCKER IMAGE
+  # ================================================================================
+  dockerHubServiceConnection: ''
+  dockerHubRepository: ''
+  imageTag: '$(Build.BuildId)'
+  
+  containerDir: 'api/v0.2.0/training-worker'
+  dockerFile: 'api/v0.2.0/training-worker/Dockerfile'
+
+  # ================================================================================
+  # CD-SPECIFIC: DEPLOYMENT & INFRASTRUCTURE
+  # ================================================================================
+  bicepFile: 'infra/bicep/main.container.bicep'
+
+  # Core infra outputs (populated by infra-core stage)
+  uamiPrincipalId: ''
+  uamiId: ''
+  uamiClientId: ''
+  storageAccountName: ''
+  logAnalyticsWorkspaceId: ''
+  logAnalyticsWorkspaceKey: ''
+
+  # Container behavior
+  trainingMode: 'serverless'
+  queueName: 'model-training'
+  blobContainerName: 'github-cache'
+  restartPolicy: 'OnFailure'
+  cpuCores: '2.0'
+  memoryGb: '4.0'

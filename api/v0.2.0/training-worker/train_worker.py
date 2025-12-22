@@ -58,6 +58,7 @@ class TrainingWorker:
         queue_client: Optional[Any] = None,
         blob_service: Optional[Any] = None,
         storage_connection_string: Optional[str] = None,
+        storage_account_name: Optional[str] = None,
         queue_name: str = DEFAULT_QUEUE_NAME,
         container_name: str = DEFAULT_CONTAINER_NAME,
         training_mode: Optional[str] = None,
@@ -67,6 +68,11 @@ class TrainingWorker:
             or os.getenv("AZURE_STORAGE_CONNECTION_STRING")
             or os.getenv("AzureWebJobsStorage")
         )
+        self.storage_account_name = (
+            storage_account_name
+            or os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
+            or os.getenv("AzureWebJobsStorage__accountName")
+        )
         self.queue_name = queue_name
         self.container_name = container_name
         self.training_mode = training_mode or os.getenv("TRAINING_MODE", "serverless")
@@ -74,18 +80,12 @@ class TrainingWorker:
         if queue_client is not None:
             self.queue_client = queue_client
         else:
-            if not self.connection_string:
-                raise ValueError("AZURE_STORAGE_CONNECTION_STRING is required")
-            self.queue_client = self._create_queue_client(
-                self.connection_string, self.queue_name
-            )
+            self.queue_client = self._create_queue_client(self.queue_name)
 
         if blob_service is not None:
             self.blob_service = blob_service
         else:
-            if not self.connection_string:
-                raise ValueError("AZURE_STORAGE_CONNECTION_STRING is required")
-            self.blob_service = self._create_blob_service(self.connection_string)
+            self.blob_service = self._create_blob_service()
 
         logger.info(
             "Training worker initialised (queue=%s, mode=%s)",
@@ -268,24 +268,57 @@ class TrainingWorker:
         }
 
     @staticmethod
-    def _create_queue_client(connection_string: str, queue_name: str) -> Any:
+    def _create_default_credential(managed_identity_client_id: Optional[str]) -> Any:
+        try:
+            module = importlib.import_module("azure.identity")
+            credential_cls = getattr(module, "DefaultAzureCredential")
+        except (ImportError, AttributeError) as exc:  # pragma: no cover
+            raise ImportError("azure-identity must be installed") from exc
+
+        kwargs: Dict[str, Any] = {
+            "exclude_interactive_browser_credential": True,
+        }
+        if managed_identity_client_id:
+            kwargs["managed_identity_client_id"] = managed_identity_client_id
+        return credential_cls(**kwargs)
+
+    def _create_queue_client(self, queue_name: str) -> Any:
         try:
             module = importlib.import_module("azure.storage.queue")
             queue_client_cls = getattr(module, "QueueClient")
         except (ImportError, AttributeError) as exc:  # pragma: no cover
             raise ImportError("azure-storage-queue must be installed") from exc
-        return queue_client_cls.from_connection_string(
-            conn_str=connection_string, queue_name=queue_name
-        )
+
+        if self.storage_account_name:
+            credential = self._create_default_credential(os.getenv("AZURE_CLIENT_ID"))
+            account_url = f"https://{self.storage_account_name}.queue.core.windows.net"
+            return queue_client_cls(account_url=account_url, queue_name=queue_name, credential=credential)
+
+        if not self.connection_string:
+            raise ValueError(
+                "Storage auth not configured: set AZURE_STORAGE_ACCOUNT_NAME for Managed Identity or AZURE_STORAGE_CONNECTION_STRING/AzureWebJobsStorage for connection-string auth"
+            )
+
+        return queue_client_cls.from_connection_string(conn_str=self.connection_string, queue_name=queue_name)
 
     @staticmethod
-    def _create_blob_service(connection_string: str) -> Any:
+    def _create_blob_service(self) -> Any:
         try:
             module = importlib.import_module("azure.storage.blob")
             blob_service_client_cls = getattr(module, "BlobServiceClient")
         except (ImportError, AttributeError) as exc:  # pragma: no cover
             raise ImportError("azure-storage-blob must be installed") from exc
-        return blob_service_client_cls.from_connection_string(connection_string)
+
+        if self.storage_account_name:
+            credential = self._create_default_credential(os.getenv("AZURE_CLIENT_ID"))
+            account_url = f"https://{self.storage_account_name}.blob.core.windows.net"
+            return blob_service_client_cls(account_url=account_url, credential=credential)
+
+        if not self.connection_string:
+            raise ValueError(
+                "Storage auth not configured: set AZURE_STORAGE_ACCOUNT_NAME for Managed Identity or AZURE_STORAGE_CONNECTION_STRING/AzureWebJobsStorage for connection-string auth"
+            )
+        return blob_service_client_cls.from_connection_string(self.connection_string)
 
     def _load_bundle_from_blob(self, cache_key: str) -> list[Dict[str, Any]]:
         container = self.blob_service.get_container_client(self.container_name)
