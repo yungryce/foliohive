@@ -76,19 +76,15 @@ var baseAppSettings = [
   }
   {
     name: 'AzureWebJobsStorage__blobServiceUri'
-    value: 'https://${storageAccountName}.blob.core.windows.net/'
+    value: 'https://${storageAccountName}.blob.${environment().suffixes.storage}/'
   }
   {
     name: 'AzureWebJobsStorage__queueServiceUri'
-    value: 'https://${storageAccountName}.queue.core.windows.net/'
+    value: 'https://${storageAccountName}.queue.${environment().suffixes.storage}/'
   }
   {
     name: 'AzureWebJobsStorage__tableServiceUri'
-    value: 'https://${storageAccountName}.table.core.windows.net/'
-  }
-  {
-    name: 'WEBSITE_VNET_ROUTE_ALL'
-    value: '1'
+    value: 'https://${storageAccountName}.table.${environment().suffixes.storage}/'
   }
 ]
 
@@ -110,7 +106,7 @@ resource apiGateway 'Microsoft.Web/sites@2024-04-01' = {
     virtualNetworkSubnetId: functionsSubnetId
     siteConfig: {
       minTlsVersion: '1.2'
-      linuxFxVersion: 'Python|3.11'
+      linuxFxVersion: 'Python|3.13'
       ftpsState: 'Disabled'
       vnetRouteAllEnabled: true
       appSettings: baseAppSettings
@@ -286,3 +282,6 @@ output functionAppNames array = [
   mergeWorker.name
   syncWorker.name
 ]
+
+output apiGatewayId string = apiGateway.id
+output apiGatewayDefaultHostname string = apiGateway.properties.defaultHostName

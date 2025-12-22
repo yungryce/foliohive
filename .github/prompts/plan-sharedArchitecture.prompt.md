@@ -40,7 +40,7 @@
 
 ## 3. Local Setup & Tooling
 1. `apps/setup-dev.sh`
-  - Selects Python 3.11–3.14 (default 3.11), recreates `.venv` when interpreter changes, and logs installed packages for debugging.
+  - Selects Python 3.12–3.14 (default 3.13), recreates `.venv` when interpreter changes, and logs installed packages for debugging.
   - Installs shared package + each Function App's `requirements.txt` into the consolidated venv.
   - Optional `--run-tests` flag triggers `apps/tests/run_tests.sh` (unit + integration) after setup.
 2. `apps/run-dev-session.sh`

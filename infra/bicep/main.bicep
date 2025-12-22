@@ -27,6 +27,15 @@ param privateEndpointsSubnetPrefix string = '10.20.2.0/24'
 
 var uniqueSuffix = uniqueString(resourceGroup().id, namePrefix)
 
+module identity './modules/identity.bicep' = {
+  params: {
+    location: location
+    tags: tags
+    namePrefix: namePrefix
+    uniqueSuffix: uniqueSuffix
+  }
+}
+
 module network './modules/network.bicep' = {
   params: {
     location: location
@@ -48,21 +57,13 @@ module privateDns './modules/privateDns.bicep' = {
   }
 }
 
-module identity './modules/identity.bicep' = {
-  params: {
-    location: location
-    tags: tags
-    namePrefix: namePrefix
-    uniqueSuffix: uniqueSuffix
-  }
-}
-
 module monitoring './modules/monitoring.bicep' = {
   params: {
     location: location
     tags: tags
     namePrefix: namePrefix
     uniqueSuffix: uniqueSuffix
+    uamiPrincipalId: identity.outputs.uamiPrincipalId
   }
 }
 
@@ -101,5 +102,17 @@ module functionApps './modules/functionApps.bicep' = {
   }
 }
 
+module staticWebApp './modules/staticWebApp.bicep' = {
+  params: {
+    location: location
+    tags: tags
+    namePrefix: namePrefix
+    uniqueSuffix: uniqueSuffix
+    apiGatewayId: functionApps.outputs.apiGatewayId
+    apiGatewayDefaultHostname: functionApps.outputs.apiGatewayDefaultHostname
+  }
+}
+
 output storageAccountName string = storage.outputs.storageAccountName
 output functionAppNames array = functionApps.outputs.functionAppNames
+output staticWebAppUrl string = staticWebApp.outputs.staticWebAppUrl

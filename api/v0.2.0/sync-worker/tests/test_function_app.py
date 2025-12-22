@@ -32,14 +32,14 @@ def test_fetch_repo_bundle_caches_and_returns_expected(monkeypatch):
         def get_file_content(self, username, repo, path):
             mapping = {
                 "README.md": "# Demo",
-                "Dockerfile": "FROM python:3.11-slim",
+                "Dockerfile": "FROM python:3.13-slim",
                 "setup.cfg": "[metadata]\nname = demo",
             }
             return mapping.get(path, "")
 
         def get_standard_config_files(self, username=None, repo=None, *, limit=0, max_chars=0):
             return {
-                "Dockerfile": "FROM python:3.11-slim",
+                "Dockerfile": "FROM python:3.13-slim",
                 "setup.cfg": "[metadata]\nname = demo",
             }
 
@@ -84,7 +84,7 @@ def test_fetch_repo_bundle_caches_and_returns_expected(monkeypatch):
     assert result["name"] == "demo"
     assert result["fingerprint"] == "fingerprint-value"
     assert result["config_files"] == {
-        "Dockerfile": "FROM python:3.11-slim",
+        "Dockerfile": "FROM python:3.13-slim",
         "setup.cfg": "[metadata]\nname = demo",
     }
     assert captured["cache_key"] == "repo:demo"

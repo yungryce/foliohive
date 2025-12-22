@@ -9,6 +9,9 @@ param tags Tags
 param namePrefix string
 param uniqueSuffix string
 
+@description('Principal ID of the user-assigned managed identity that should access app insights and log analytics')
+param uamiPrincipalId string
+
 var workspaceName = '${namePrefix}-law-${uniqueSuffix}'
 var appInsightsName = '${namePrefix}-appi-${uniqueSuffix}'
 
@@ -31,6 +34,18 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
     Application_Type: 'web'
     WorkspaceResourceId: workspace.id
     DisableLocalAuth: true
+  }
+}
+
+var metricsPublisher = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '3913510d-42f4-4e42-8a64-420c390055eb')
+
+resource raMetricsPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(workspace.id, appInsights.id, metricsPublisher)
+  scope: workspace
+  properties: {
+    roleDefinitionId: metricsPublisher
+    principalId: uamiPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 

@@ -55,7 +55,7 @@ Failure handling: each worker logs to App Insights/Container Insights with `job_
 ---
 
 ## 5. Local Development Workflow
-1. `./apps/setup-dev.sh --python-version 3.11 --run-tests`
+1. `./apps/setup-dev.sh --python-version 3.13 --run-tests`
    - Ensures `.venv` matches requested interpreter, installs shared + individual app requirements, and executes pytest (unit + integration) when requested.
 2. `./apps/run-dev-session.sh [--skip-e2e]`
    - Activates `.venv`, validates `cloudfolio_shared` import, starts api-gateway/sync-worker/merge-worker via `func start`, captures logs (`apps/logs/*.log`), and optionally runs `tests/e2e_curl_tests.sh`.

@@ -3,7 +3,7 @@
 ########################################
 # Base CPU image
 ########################################
-FROM python:3.11-slim AS base
+FROM python:3.13-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -25,7 +25,7 @@ FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04 AS gpu-base
 WORKDIR /app
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential python3-pip python3.11 && \
+    apt-get install -y --no-install-recommends build-essential python3-pip python3.13 && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

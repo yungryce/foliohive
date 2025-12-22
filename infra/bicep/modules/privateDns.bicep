@@ -13,64 +13,34 @@ param deployPrivateEndpoints bool = false  // Matches the param from main.bicep
 var linkNameSuffix = '${namePrefix}-vnetlink-${uniqueSuffix}'
 var storageDnsSuffix = environment().suffixes.storage
 
-resource privateDnsBlob 'Microsoft.Network/privateDnsZones@2024-06-01' = {
-  name: 'privatelink.blob.${storageDnsSuffix}'
-  location: 'global'
-  tags: tags
-}
+var privateDnsZoneNames = [
+  'privatelink.blob.${storageDnsSuffix}'
+  'privatelink.queue.${storageDnsSuffix}'
+  'privatelink.table.${storageDnsSuffix}'
+]
 
-resource privateDnsQueue 'Microsoft.Network/privateDnsZones@2024-06-01' = {
-  name: 'privatelink.queue.${storageDnsSuffix}'
+resource privateDnsZones 'Microsoft.Network/privateDnsZones@2024-06-01' = [for zoneName in privateDnsZoneNames: {
+  name: zoneName
   location: 'global'
   tags: tags
-}
+}]
 
-resource privateDnsTable 'Microsoft.Network/privateDnsZones@2024-06-01' = {
-  name: 'privatelink.table.${storageDnsSuffix}'
+resource privateDnsZoneLinks 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = [for (zoneName, i) in privateDnsZoneNames: {
+  name: '${zoneName}/${linkNameSuffix}'
   location: 'global'
-  tags: tags
-}
+  properties: {
+    virtualNetwork: { id: vnetId }
+    registrationEnabled: false
+  }
+  dependsOn: [
+    privateDnsZones[i]
+  ]
+}]
 
 resource privateDnsAzureWebsites 'Microsoft.Network/privateDnsZones@2024-06-01' = if (deployPrivateEndpoints) {
   name: 'privatelink.azurewebsites.net'
   location: 'global'
   tags: tags
-}
-
-resource blobLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  name: '${linkNameSuffix}-blob'
-  parent: privateDnsBlob
-  location: 'global'
-  properties: {
-    registrationEnabled: false
-    virtualNetwork: {
-      id: vnetId
-    }
-  }
-}
-
-resource queueLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  name: '${linkNameSuffix}-queue'
-  parent: privateDnsQueue
-  location: 'global'
-  properties: {
-    registrationEnabled: false
-    virtualNetwork: {
-      id: vnetId
-    }
-  }
-}
-
-resource tableLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  name: '${linkNameSuffix}-table'
-  parent: privateDnsTable
-  location: 'global'
-  properties: {
-    registrationEnabled: false
-    virtualNetwork: {
-      id: vnetId
-    }
-  }
 }
 
 resource azureWebsitesLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = if (deployPrivateEndpoints) {
@@ -85,7 +55,7 @@ resource azureWebsitesLink 'Microsoft.Network/privateDnsZones/virtualNetworkLink
   }
 }
 
-output privateDnsZoneBlobId string = privateDnsBlob.id
-output privateDnsZoneQueueId string = privateDnsQueue.id
-output privateDnsZoneTableId string = privateDnsTable.id
+output privateDnsZoneBlobId string = privateDnsZones[0].id
+output privateDnsZoneQueueId string = privateDnsZones[1].id
+output privateDnsZoneTableId string = privateDnsZones[2].id
 output privateDnsZoneAzureWebsitesId string = privateDnsAzureWebsites.id

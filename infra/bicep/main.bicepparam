@@ -1,10 +1,11 @@
 using './main.bicep'
 
 param location = 'westus2'
-param namePrefix = 'cloudfolio'
+param namePrefix = 'cloudfolioASP'
 
 param tags = {
   Environment: 'v0.2.0'
   ManagedBy: 'Bicep'
-  Purpose: 'AKS-Cluster'
+  Purpose: 'App Services and Function Apps with Private Endpoints'
 }
+

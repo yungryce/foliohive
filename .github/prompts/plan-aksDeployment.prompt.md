@@ -432,7 +432,7 @@ kubectl create namespace monitoring
 **2.1 API Gateway Dockerfile**
 ```dockerfile
 # apps/api-gateway/Dockerfile (already exists in Function Apps plan)
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
@@ -458,7 +458,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 **2.2 Sync Worker Dockerfile**
 ```dockerfile
 # apps/sync-worker/Dockerfile
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
@@ -480,7 +480,7 @@ CMD ["python", "worker.py"]
 **2.3 Merge Worker Dockerfile**
 ```dockerfile
 # apps/merge-worker/Dockerfile (similar structure)
-FROM python:3.11-slim
+FROM python:3.13-slim
 WORKDIR /app
 COPY apps/shared /tmp/shared
 RUN pip install -e /tmp/shared

@@ -49,7 +49,7 @@ The app uses an HTTP interceptor to attach `X-Session-Id` to every API call.
 ## 🔧 Technologies
 
 - **Frontend**: Angular 17+, Tailwind CSS, TypeScript
-- **Backend**: Azure Functions, Python 3.11+
+- **Backend**: Azure Functions, Python 3.12+
 - **Libraries**: DOMPurify, Marked.js, RxJS
 - **DevOps**: Azure CLI, GitHub Actions
 
