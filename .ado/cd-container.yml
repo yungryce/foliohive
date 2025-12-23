@@ -6,6 +6,12 @@
 # Example: template: .ado/cd-container.yml
 #          parameters: ${{ variables.cdContainer }}
 
+resources:
+  pipelines:
+  - pipeline: ci-container
+    source: ci-container
+    trigger: true
+
 parameters:
   azureServiceConnection: ''
   subscriptionId: ''
@@ -22,9 +28,9 @@ parameters:
   logAnalyticsWorkspaceId: ''
   logAnalyticsWorkspaceKey: ''
 
-  # Image config
+  # Image config (uses tag pushed by ci-container pipeline)
   dockerHubRepository: ''
-  imageTag: '$(Build.BuildId)'
+  imageTag: '$(resources.pipeline.ci-container.runID)'
 
   # Container behavior
   trainingMode: 'serverless'

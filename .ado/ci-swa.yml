@@ -1,10 +1,21 @@
 # Generic CI template for Static Web App
 # - Builds Angular UI
-# - Uploads artifact to Storage Account
+# - Publishes artifact via PublishPipelineArtifact@1
+# - Triggers on frontend code or config changes
 #
 # Usage: Reference with a unified parameter file
 # Example: template: .ado/ci-swa.yml
 #          parameters: ${{ variables.ciSwA }}
+
+trigger:
+  paths:
+    include:
+      - ui/**
+    exclude:
+      - ui/node_modules/**
+      - ui/dist/**
+      - ui/.angular/cache/**
+      - 'ui/**/*.spec.ts'
 
 parameters:
   azureServiceConnection: ''

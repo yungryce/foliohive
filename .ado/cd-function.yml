@@ -1,11 +1,17 @@
 # Generic CD template for Function Apps
 # - Deploys infra via main.function.bicep (incremental)
-# - Downloads pre-built artifact from Storage Account
-# - Publishes artifact to Function App
+# - Downloads artifact from CI pipeline
+# - Deploys to Function App using AzureFunctionApp@2
 #
 # Usage: Reference with a separate parameter file per function
 # Example: template: .ado/cd-function.yml
 #          parameters: ${{ variables.cdParams }}
+
+resources:
+  pipelines:
+    - pipeline: ci-function
+      source: ci-function # given pipeline name
+      trigger: true
 
 parameters:
   azureServiceConnection: ''
@@ -18,7 +24,6 @@ parameters:
   appServicePlanId: ''
   functionsSubnetId: ''
   privateEndpointsSubnetId: ''
-  storageAccountName: ''
   uamiId: ''
   uamiClientId: ''
   appInsightsConnectionString: ''
@@ -27,9 +32,7 @@ parameters:
 
   functionName: ''
   functionAppName: ''
-  artifactContainerName: 'function-artifacts'
-  artifactBuildId: '$(Build.BuildId)'
-  pythonVersion: '3.11'
+  pythonVersion: '3.13'
 
 stages:
 - stage: CD_${{ replace(parameters.functionName, '-', '_') }}
@@ -44,6 +47,11 @@ stages:
           displayName: Use Python ${{ parameters.pythonVersion }}
           inputs:
             versionSpec: '${{ parameters.pythonVersion }}'
+
+        # Download artifact from CI function pipeline
+        - download: ci-function
+          displayName: 'Download ${{ parameters.functionName }} artifact from CI'
+          artifact: ${{ parameters.functionName }}-$(Build.BuildId)
 
         - task: AzureResourceManagerTemplateDeployment@3
           displayName: 'Deploy ${{ parameters.functionName }} (Incremental)'
@@ -62,7 +70,6 @@ stages:
               -appServicePlanId "${{ parameters.appServicePlanId }}"
               -functionsSubnetId "${{ parameters.functionsSubnetId }}"
               -privateEndpointsSubnetId "${{ parameters.privateEndpointsSubnetId }}"
-              -storageAccountName "${{ parameters.storageAccountName }}"
               -uamiId "${{ parameters.uamiId }}"
               -uamiClientId "${{ parameters.uamiClientId }}"
               -appInsightsConnectionString "${{ parameters.appInsightsConnectionString }}"
@@ -88,39 +95,10 @@ stages:
               echo "##vso[task.setvariable variable=functionAppName]$funcName"
               echo "[CD] Resolved function app: $funcName"
 
-        - task: AzureCLI@2
-          displayName: 'Download artifact from storage'
-          inputs:
-            azureSubscription: '${{ parameters.azureServiceConnection }}'
-            scriptType: bash
-            scriptLocation: inlineScript
-            inlineScript: |
-              set -euo pipefail
-              key=$(az storage account keys list -g "${{ parameters.resourceGroupName }}" -n "${{ parameters.storageAccountName }}" --query "[0].value" -o tsv)
-              if [ -z "$key" ]; then
-                echo "##vso[task.logissue type=error]No storage key found for ${{ parameters.storageAccountName }}"
-                exit 1
-              fi
-
-              container="${{ parameters.artifactContainerName }}"
-              blob_path="${{ parameters.functionName }}/${{ parameters.artifactBuildId }}.zip"
-              dest="$BUILD_ARTIFACTSTAGINGDIRECTORY/${{ parameters.functionName }}.zip"
-
-              if ! az storage blob exists --account-name "${{ parameters.storageAccountName }}" --account-key "$key" \
-                  --container-name "$container" --name "$blob_path" --auth-mode key --query exists -o tsv | grep -q "true"; then
-                echo "##vso[task.logissue type=error]Artifact not found in storage: $container/$blob_path"
-                exit 1
-              fi
-
-              az storage blob download --account-name "${{ parameters.storageAccountName }}" --account-key "$key" \
-                --container-name "$container" --name "$blob_path" --file "$dest" --overwrite true --auth-mode key
-
-              echo "[CD] Downloaded artifact from: $container/$blob_path"
-
         - task: AzureFunctionApp@2
-          displayName: 'Publish ${{ parameters.functionName }} code'
+          displayName: 'Deploy ${{ parameters.functionName }} to Function App'
           inputs:
             connectedServiceNameARM: '${{ parameters.azureServiceConnection }}'
             appType: functionAppLinux
             appName: '$(functionAppName)'
-            package: '$(Build.ArtifactStagingDirectory)/${{ parameters.functionName }}.zip'
+            package: '$(Pipeline.Workspace)/ci-function/${{ parameters.functionName }}-$(Build.BuildId)/${{ parameters.functionName }}.zip'

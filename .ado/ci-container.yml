@@ -1,10 +1,20 @@
 # Generic CI template for Container (Training Worker)
 # - Builds Docker image
 # - Pushes to Docker Hub
+# - Triggers on training-worker Dockerfile or runtime code changes
 #
 # Usage: Reference with a unified parameter file
 # Example: template: .ado/ci-container.yml
 #          parameters: ${{ variables.ciContainer }}
+
+trigger:
+  paths:
+    include:
+      - api/v0.2.0/training-worker/**
+    exclude:
+      - api/v0.2.0/training-worker/tests/**
+      - api/v0.2.0/training-worker/**/__pycache__/**
+      - 'api/v0.2.0/training-worker/**/*.pyc'
 
 parameters:
   azureServiceConnection: ''
