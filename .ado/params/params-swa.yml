@@ -1,6 +1,5 @@
 # Unified parameters for Static Web App (SWA)
 # Used by both: .ado/ci-swa.yml AND .ado/cd-swa.yml
-# Inherits shared defaults from: .ado/parameters.yml
 
 parameters:
   # ================================================================================
@@ -20,9 +19,6 @@ parameters:
   # CI-SPECIFIC: BUILD & ARTIFACTS
   # ================================================================================
   uiDir: 'ui'
-  artifactBuildId: '$(Build.BuildId)'
-  artifactContainerName: 'swa-artifacts'
-  storageAccountName: ''
 
   # ================================================================================
   # CD-SPECIFIC: DEPLOYMENT & INFRASTRUCTURE

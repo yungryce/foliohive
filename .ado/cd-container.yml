@@ -43,27 +43,17 @@ stages:
       pool:
         vmImage: ubuntu-latest
       steps:
-        - task: AzureCLI@2
-          displayName: Build ARM template from Bicep (container)
-          inputs:
-            azureSubscription: '${{ parameters.azureServiceConnection }}'
-            scriptType: bash
-            scriptLocation: inlineScript
-            inlineScript: |
-              set -euo pipefail
-              az bicep build --file ${{ parameters.bicepFile }} --outfile main.container.json
-
         - task: AzureResourceManagerTemplateDeployment@3
           displayName: Deploy container instance (Incremental)
           inputs:
             deploymentScope: Resource Group
             azureResourceManagerConnection: '${{ parameters.azureServiceConnection }}'
             subscriptionId: '${{ parameters.subscriptionId }}'
-            action: Create Or Update Resource Group
+            action: Select Resource Group
             resourceGroupName: '${{ parameters.resourceGroupName }}'
             location: '${{ parameters.location }}'
             templateLocation: Linked artifact
-            csmFile: main.container.json
+            templateFile: ${{ parameters.bicepFile }}
             overrideParameters: |
               -location ${{ parameters.location }}
               -namePrefix ${{ parameters.namePrefix }}

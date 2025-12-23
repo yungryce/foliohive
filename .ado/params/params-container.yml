@@ -1,6 +1,5 @@
 # Unified parameters for Container (Training Worker)
 # Used by both: .ado/ci-container.yml AND .ado/cd-container.yml
-# Inherits shared defaults from: .ado/parameters.yml
 
 parameters:
   # ================================================================================

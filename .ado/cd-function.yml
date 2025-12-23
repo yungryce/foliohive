@@ -45,31 +45,17 @@ stages:
           inputs:
             versionSpec: '${{ parameters.pythonVersion }}'
 
-        - task: AzureCLI@2
-          displayName: 'Build ARM template: ${{ parameters.functionName }}'
-          inputs:
-            azureSubscription: '${{ parameters.azureServiceConnection }}'
-            scriptType: bash
-            scriptLocation: inlineScript
-            inlineScript: |
-              set -euo pipefail
-              if [ ! -f "${{ parameters.bicepFile }}" ]; then
-                echo "##vso[task.logissue type=error]Bicep file not found: ${{ parameters.bicepFile }}"
-                exit 1
-              fi
-              az bicep build --file ${{ parameters.bicepFile }} --outfile main.function.${{ parameters.functionName }}.json
-
         - task: AzureResourceManagerTemplateDeployment@3
           displayName: 'Deploy ${{ parameters.functionName }} (Incremental)'
           inputs:
             deploymentScope: Resource Group
             azureResourceManagerConnection: '${{ parameters.azureServiceConnection }}'
             subscriptionId: '${{ parameters.subscriptionId }}'
-            action: Create Or Update Resource Group
+            action: Select Resource Group
             resourceGroupName: '${{ parameters.resourceGroupName }}'
             location: '${{ parameters.location }}'
             templateLocation: Linked artifact
-            csmFile: main.function.${{ parameters.functionName }}.json
+            templateFile: ${{ parameters.bicepFile }}
             overrideParameters: |
               -location ${{ parameters.location }}
               -functionAppName "${{ coalesce(parameters.functionAppName, format('{0}-{1}', parameters.namePrefix, parameters.functionName)) }}"

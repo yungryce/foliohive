@@ -10,10 +10,6 @@ parameters:
   azureServiceConnection: ''
   subscriptionId: ''
   resourceGroupName: ''
-  storageAccountName: ''
-  artifactContainerName: 'swa-artifacts'
-  artifactBuildId: '$(Build.BuildId)'
-
   uiDir: 'ui'
 
 stages:
@@ -48,43 +44,11 @@ stages:
               echo "##vso[task.logissue type=error]UI build failed: dist/cloudfolio-ui not found"
               exit 1
             fi
+          displayName: 'Build Angular UI'
 
-            cd dist/cloudfolio-ui
-            zip -r "$BUILD_ARTIFACTSTAGINGDIRECTORY/swa.zip" . \
-              -x "**/__pycache__/**" -x "**/*.pyc"
-            
-            if [ ! -f "$BUILD_ARTIFACTSTAGINGDIRECTORY/swa.zip" ]; then
-              echo "##vso[task.logissue type=error]Failed to create SWA artifact zip"
-              exit 1
-            fi
-          displayName: 'Build Angular UI and create artifact'
-
-        - task: AzureCLI@2
-          displayName: 'Upload artifact to storage'
+        - task: PublishPipelineArtifact@1
+          displayName: 'Publish SWA artifact'
           inputs:
-            azureSubscription: '${{ parameters.azureServiceConnection }}'
-            scriptType: bash
-            scriptLocation: inlineScript
-            inlineScript: |
-              set -euo pipefail
-              key=$(az storage account keys list -g "${{ parameters.resourceGroupName }}" -n "${{ parameters.storageAccountName }}" --query "[0].value" -o tsv)
-              if [ -z "$key" ]; then
-                echo "##vso[task.logissue type=error]No storage key found for ${{ parameters.storageAccountName }}"
-                exit 1
-              fi
-
-              container="${{ parameters.artifactContainerName }}"
-              blob_path="swa/${{ parameters.artifactBuildId }}.zip"
-              src="$BUILD_ARTIFACTSTAGINGDIRECTORY/swa.zip"
-
-              if [ ! -f "$src" ]; then
-                echo "##vso[task.logissue type=error]Artifact file not found: $src"
-                exit 1
-              fi
-
-              az storage container create --name "$container" --account-name "${{ parameters.storageAccountName }}" --account-key "$key" --auth-mode key >/dev/null 2>&1 || true
-              az storage blob upload --account-name "${{ parameters.storageAccountName }}" --account-key "$key" \
-                --container-name "$container" --file "$src" --name "$blob_path" --overwrite true --auth-mode key
-
-              echo "##vso[task.setvariable variable=artifactBlobPath;isOutput=true]$blob_path"
-              echo "[CI] Uploaded artifact: $container/$blob_path"
+            targetPath: '${{ parameters.uiDir }}/dist/cloudfolio-ui'
+            artifact: 'swa-artifact'
+            publishLocation: 'pipeline'

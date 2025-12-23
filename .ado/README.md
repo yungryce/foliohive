@@ -150,6 +150,7 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 **Parameters:** See `params/params-core.yml` for unified core infrastructure parameters
 
 **What it deploys:**
+- Resource Group (created automatically if not exists via ARM template task)
 - Virtual Network + subnets (functions, private endpoints)
 - User-Assigned Managed Identity (for function apps and container)
 - Storage Account (blob, queue, table) + Private Endpoints + Lifecycle policies
@@ -163,6 +164,9 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 - `appInsightsConnectionString`
 - `logAnalyticsWorkspaceId`, `logAnalyticsWorkspaceKey`
 - `privateDnsZoneAzureWebsitesId`
+
+**Job Execution Order:**
+1. `Deploy_Core` - Builds Bicep template and deploys all core infrastructure (creates RG if needed)
 
 **How to use:**
 ```yaml

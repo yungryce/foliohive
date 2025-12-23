@@ -1,6 +1,5 @@
 # Unified parameters for api-gateway Function App
 # Used by both: .ado/ci-function.yml AND .ado/cd-function.yml
-# Inherits shared defaults from: .ado/parameters.yml
 
 parameters:
   # ================================================================================

@@ -8,6 +8,13 @@
 # Example: template: .ado/cd-swa.yml
 #          parameters: ${{ variables.cdSwA }}
 
+
+resources:
+  pipelines:
+    - pipeline: ci-swa
+      source: ci-swa # given pipeline name
+      trigger: true
+
 parameters:
   azureServiceConnection: ''
   subscriptionId: ''
@@ -22,9 +29,6 @@ parameters:
 
   # CD-specific
   enableLinkedBackend: false
-  storageAccountName: ''
-  artifactContainerName: 'swa-artifacts'
-  artifactBuildId: '$(Build.BuildId)'
 
 stages:
 - stage: CD_SWA
@@ -35,15 +39,14 @@ stages:
       pool:
         vmImage: ubuntu-latest
       steps:
-        - task: AzureCLI@2
-          displayName: Build ARM template from Bicep (SWA)
-          inputs:
-            azureSubscription: '${{ parameters.azureServiceConnection }}'
-            scriptType: bash
-            scriptLocation: inlineScript
-            inlineScript: |
-              set -euo pipefail
-              az bicep build --file ${{ parameters.bicepFile }} --outfile main.swa.json
+        # Download artifact from CI pipeline
+        - download: ci-swa
+          displayName: 'Download SWA artifact from CI'
+          artifact: swa-artifact
+
+        - script: |
+            echo "##vso[task.setvariable variable=artifactPath;isOutput=true]$(Pipeline.Workspace)/ci-swa/swa-artifact"
+          displayName: 'Output artifact path'
 
         - task: AzureResourceManagerTemplateDeployment@3
           displayName: Deploy SWA (Incremental)
@@ -51,11 +54,11 @@ stages:
             deploymentScope: Resource Group
             azureResourceManagerConnection: '${{ parameters.azureServiceConnection }}'
             subscriptionId: '${{ parameters.subscriptionId }}'
-            action: Create Or Update Resource Group
+            action: Select Resource Group
             resourceGroupName: '${{ parameters.resourceGroupName }}'
             location: '${{ parameters.location }}'
             templateLocation: Linked artifact
-            csmFile: main.swa.json
+            templateFile: ${{ parameters.bicepFile }}
             overrideParameters: |
               -location ${{ parameters.location }}
               -namePrefix ${{ parameters.namePrefix }}
@@ -78,56 +81,16 @@ stages:
               swaUrl=$(az deployment group show -g "${{ parameters.resourceGroupName }}" -n "$dep" --query properties.outputs.staticWebAppUrl.value -o tsv)
               echo "##vso[task.setvariable variable=staticWebAppName]$swaName"
               echo "##vso[task.setvariable variable=staticWebAppUrl]$swaUrl"
-
+              
               swaToken=$(az staticwebapp secrets list -n "$swaName" -g "${{ parameters.resourceGroupName }}" --query properties.apiKey -o tsv)
               echo "##vso[task.setvariable variable=staticWebAppToken;issecret=true]$swaToken"
-
-    - job: Deploy_Content
-      displayName: 'Deploy SWA content'
-      dependsOn: Deploy_Infra
-      variables:
-        staticWebAppName: $[ dependencies.Deploy_Infra.outputs['Deploy_Infra.staticWebAppName'] ]
-        staticWebAppUrl: $[ dependencies.Deploy_Infra.outputs['Deploy_Infra.staticWebAppUrl'] ]
-        staticWebAppToken: $[ dependencies.Deploy_Infra.outputs['Deploy_Infra.staticWebAppToken'] ]
-      pool:
-        vmImage: ubuntu-latest
-      steps:
-        - task: AzureCLI@2
-          displayName: 'Download UI artifact from storage'
-          inputs:
-            azureSubscription: '${{ parameters.azureServiceConnection }}'
-            scriptType: bash
-            scriptLocation: inlineScript
-            inlineScript: |
-              set -euo pipefail
-              key=$(az storage account keys list -g "${{ parameters.resourceGroupName }}" -n "${{ parameters.storageAccountName }}" --query "[0].value" -o tsv)
-              if [ -z "$key" ]; then
-                echo "##vso[task.logissue type=error]No storage key found for ${{ parameters.storageAccountName }}"
-                exit 1
-              fi
-
-              container="${{ parameters.artifactContainerName }}"
-              blob_path="swa/${{ parameters.artifactBuildId }}.zip"
-              dest="$BUILD_ARTIFACTSTAGINGDIRECTORY/swa.zip"
-
-              az storage blob download --account-name "${{ parameters.storageAccountName }}" --account-key "$key" \
-                --container-name "$container" --name "$blob_path" --file "$dest" --auth-mode key
-
-              if [ ! -f "$dest" ]; then
-                echo "##vso[task.logissue type=error]Failed to download SWA artifact: $blob_path"
-                exit 1
-              fi
-
-              mkdir -p "$BUILD_ARTIFACTSTAGINGDIRECTORY/swa-content"
-              unzip -q "$dest" -d "$BUILD_ARTIFACTSTAGINGDIRECTORY/swa-content"
-              echo "[CD] Downloaded and extracted SWA artifact"
 
         - task: AzureStaticWebApp@0
           displayName: Deploy Static Web App content
           inputs:
             azure_static_web_apps_api_token: '$(staticWebAppToken)'
-            workingDirectory: '$(BUILD_ARTIFACTSTAGINGDIRECTORY)'
-            app_location: 'swa-content'
+            workingDirectory: '$(artifactPath)'
+            app_location: '.'
             api_location: ''
             output_location: ''
             skip_app_build: true

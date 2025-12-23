@@ -20,7 +20,7 @@ stages:
   displayName: Core Infrastructure (one-time)
   jobs:
     - job: Deploy_Core
-      displayName: Deploy core infra
+      displayName: Deploy core infra (creates RG if needed)
       pool:
         vmImage: ubuntu-latest
       steps:
@@ -35,19 +35,20 @@ stages:
               az bicep build --file ${{ parameters.bicepFile }} --outfile main.core.json
 
         - task: AzureResourceManagerTemplateDeployment@3
-          displayName: Deploy core (Incremental)
+          displayName: Deploy core (Create RG + Infra)
           inputs:
-            deploymentScope: Resource Group
+            deploymentScope: 'Resource Group'
             azureResourceManagerConnection: '${{ parameters.azureServiceConnection }}'
             subscriptionId: '${{ parameters.subscriptionId }}'
-            action: Create Or Update Resource Group
+            action: 'Create Or Update Resource Group'
             resourceGroupName: '${{ parameters.resourceGroupName }}'
             location: '${{ parameters.location }}'
-            templateLocation: Linked artifact
-            csmFile: main.core.json
+            templateLocation: 'Linked artifact'
+            csmFile: 'main.core.json'
             csmParametersFile: '${{ parameters.bicepParamFile }}'
             overrideParameters: |
               -location ${{ parameters.location }}
               -namePrefix ${{ parameters.namePrefix }}
-            deploymentMode: Incremental
+            deploymentMode: 'Incremental'
             deploymentName: 'core-${{ parameters.namePrefix }}'
+
