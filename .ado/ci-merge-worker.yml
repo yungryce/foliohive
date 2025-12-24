@@ -1,17 +1,15 @@
-# Generic CI template for Function Apps
+# CI pipeline for merge-worker Function App
 # - Builds function package with shared library
 # - Publishes artifact via PublishPipelineArtifact@1
-# - Triggers on api-gateway, sync-worker, merge-worker, or shared library changes
-#
-# Usage: Reference with a separate parameter file per function
-# Example: template: .ado/ci-function.yml
-#          parameters: ${{ variables.ciParams }}
+# - Triggers on merge-worker or shared library changes
+# - Standalone: No Azure dependency, triggered by code changes only
 
 trigger:
+  branches:
+    include:
+      - main
   paths:
     include:
-      - apps/api-gateway/**
-      - apps/sync-worker/**
       - apps/merge-worker/**
       - apps/shared/**
     exclude:
@@ -21,16 +19,18 @@ trigger:
 
 parameters:
   pythonVersion: '3.13'
-  functionName: ''
-  functionDir: ''
+
+variables:
+  functionName: 'merge-worker'
+  functionDir: 'apps/merge-worker'
   sharedDir: 'apps/shared'
 
 stages:
-- stage: CI_${{ replace(parameters.functionName, '-', '_') }}
-  displayName: 'CI: Build ${{ parameters.functionName }}'
+- stage: CI_merge_worker
+  displayName: 'CI: Build merge-worker'
   jobs:
-    - job: Build_${{ replace(parameters.functionName, '-', '_') }}
-      displayName: 'Build & publish ${{ parameters.functionName }} artifact'
+    - job: Build_merge_worker
+      displayName: 'Build & publish merge-worker artifact'
       pool:
         vmImage: ubuntu-latest
       steps:
@@ -42,9 +42,9 @@ stages:
         - script: |
             set -euo pipefail
 
-            dir="${{ parameters.functionDir }}"
-            shared="${{ parameters.sharedDir }}"
-            artifact="$BUILD_ARTIFACTSTAGINGDIRECTORY/${{ parameters.functionName }}.zip"
+            dir="$(functionDir)"
+            shared="$(sharedDir)"
+            artifact="$BUILD_ARTIFACTSTAGINGDIRECTORY/$(functionName).zip"
             site_packages="$dir/.python_packages/lib/site-packages"
 
             if [ ! -d "$dir" ]; then
@@ -52,7 +52,7 @@ stages:
               exit 1
             fi
 
-            echo "[CI] Packaging function: ${{ parameters.functionName }}"
+            echo "[CI] Packaging function: $(functionName)"
 
             rm -rf "$site_packages"
             mkdir -p "$site_packages"
@@ -70,11 +70,11 @@ stages:
               -x "**/.DS_Store")
 
             echo "[CI] Created artifact: $artifact"
-          displayName: 'Package ${{ parameters.functionName }}'
+          displayName: 'Package merge-worker'
 
         - task: PublishPipelineArtifact@1
-          displayName: 'Publish ${{ parameters.functionName }} artifact'
+          displayName: 'Publish merge-worker artifact'
           inputs:
-            targetPath: '$(Build.ArtifactStagingDirectory)/${{ parameters.functionName }}.zip'
-            artifact: '${{ parameters.functionName }}-$(Build.BuildId)'
+            targetPath: '$(Build.ArtifactStagingDirectory)/$(functionName).zip'
+            artifact: '$(functionName)-$(Build.BuildId)'
             publishLocation: 'pipeline'

@@ -1,0 +1,80 @@
+# CI pipeline for sync-worker Function App
+# - Builds function package with shared library
+# - Publishes artifact via PublishPipelineArtifact@1
+# - Triggers on sync-worker or shared library changes
+# - Standalone: No Azure dependency, triggered by code changes only
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - apps/sync-worker/**
+      - apps/shared/**
+    exclude:
+      - apps/**/tests/**
+      - apps/**/__pycache__/**
+      - '**/*.pyc'
+
+parameters:
+  pythonVersion: '3.13'
+
+variables:
+  functionName: 'sync-worker'
+  functionDir: 'apps/sync-worker'
+  sharedDir: 'apps/shared'
+
+stages:
+- stage: CI_sync_worker
+  displayName: 'CI: Build sync-worker'
+  jobs:
+    - job: Build_sync_worker
+      displayName: 'Build & publish sync-worker artifact'
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - task: UsePythonVersion@0
+          displayName: Use Python ${{ parameters.pythonVersion }}
+          inputs:
+            versionSpec: '${{ parameters.pythonVersion }}'
+
+        - script: |
+            set -euo pipefail
+
+            dir="$(functionDir)"
+            shared="$(sharedDir)"
+            artifact="$BUILD_ARTIFACTSTAGINGDIRECTORY/$(functionName).zip"
+            site_packages="$dir/.python_packages/lib/site-packages"
+
+            if [ ! -d "$dir" ]; then
+              echo "##vso[task.logissue type=error]Function directory not found: $dir"
+              exit 1
+            fi
+
+            echo "[CI] Packaging function: $(functionName)"
+
+            rm -rf "$site_packages"
+            mkdir -p "$site_packages"
+
+            python -m pip install --upgrade pip
+            python -m pip install -r "$dir/requirements.txt" --target "$site_packages"
+            python -m pip install "$shared" --target "$site_packages"
+
+            (cd "$dir" && zip -r "$artifact" . \
+              -x "**/__pycache__/**" \
+              -x "**/*.pyc" \
+              -x "**/.venv/**" \
+              -x "**/.pytest_cache/**" \
+              -x "**/.git/**" \
+              -x "**/.DS_Store")
+
+            echo "[CI] Created artifact: $artifact"
+          displayName: 'Package sync-worker'
+
+        - task: PublishPipelineArtifact@1
+          displayName: 'Publish sync-worker artifact'
+          inputs:
+            targetPath: '$(Build.ArtifactStagingDirectory)/$(functionName).zip'
+            artifact: '$(functionName)-$(Build.BuildId)'
+            publishLocation: 'pipeline'

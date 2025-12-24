@@ -1,9 +1,18 @@
-# See .ado/parameters.yml for centralized parameter schema
-# See .ado/params/params-core.yml for core infrastructure parameters
-#
-# Parameters used by this stage template:
-#   - azureServiceConnection, subscriptionId, resourceGroupName, location, namePrefix, tags
-#   - bicepFile, bicepParamFile
+# Core Infrastructure Pipeline
+# - Deploys foundational Azure resources (VNet, storage, identity, etc.)
+# - Triggered by infrastructure code changes
+# - Safe to re-run anytime (idempotent)
+# - Must complete before any CD pipelines run
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infra/bicep/**
+      - .ado/infra-core.yml
+      - .ado/params/params-core.yml
 
 parameters:
   azureServiceConnection: ''
@@ -19,36 +28,13 @@ stages:
 - stage: Core_Infrastructure
   displayName: Core Infrastructure (one-time)
   jobs:
-    - job: Deploy_Core
-      displayName: Deploy core infra (creates RG if needed)
-      pool:
-        vmImage: ubuntu-latest
-      steps:
-        - task: AzureCLI@2
-          displayName: Build ARM template from Bicep
-          inputs:
-            azureSubscription: '${{ parameters.azureServiceConnection }}'
-            scriptType: bash
-            scriptLocation: inlineScript
-            inlineScript: |
-              set -euo pipefail
-              az bicep build --file ${{ parameters.bicepFile }} --outfile main.core.json
-
-        - task: AzureResourceManagerTemplateDeployment@3
-          displayName: Deploy core (Create RG + Infra)
-          inputs:
-            deploymentScope: 'Resource Group'
-            azureResourceManagerConnection: '${{ parameters.azureServiceConnection }}'
-            subscriptionId: '${{ parameters.subscriptionId }}'
-            action: 'Create Or Update Resource Group'
-            resourceGroupName: '${{ parameters.resourceGroupName }}'
-            location: '${{ parameters.location }}'
-            templateLocation: 'Linked artifact'
-            csmFile: 'main.core.json'
-            csmParametersFile: '${{ parameters.bicepParamFile }}'
-            overrideParameters: |
-              -location ${{ parameters.location }}
-              -namePrefix ${{ parameters.namePrefix }}
-            deploymentMode: 'Incremental'
-            deploymentName: 'core-${{ parameters.namePrefix }}'
+    - template: deploy-core-infra.yml
+      parameters:
+        azureServiceConnection: ${{ parameters.azureServiceConnection }}
+        subscriptionId: ${{ parameters.subscriptionId }}
+        resourceGroupName: ${{ parameters.resourceGroupName }}
+        location: ${{ parameters.location }}
+        namePrefix: ${{ parameters.namePrefix }}
+        bicepFile: ${{ parameters.bicepFile }}
+        bicepParamFile: ${{ parameters.bicepParamFile }}
 

@@ -1,12 +1,11 @@
-# Generic CD template for Static Web App
-# - Builds Bicep template for SWA infrastructure
-# - Deploys SWA infra via ARM
-# - Downloads UI artifact from Storage
-# - Publishes UI content to SWA
+# CD pipeline for Static Web App
+# - Triggered by ci-swa pipeline completion
+# - First step: Validates core infrastructure exists (fails fast if not)
+# - Deploys SWA infra via Bicep
+# - Downloads UI artifact from CI pipeline
+# - Publishes content to SWA
 #
-# Usage: Reference with a unified parameter file
-# Example: template: .ado/cd-swa.yml
-#          parameters: ${{ variables.cdSwA }}
+# Usage: Configure via params/params-swa.yml
 
 
 resources:
@@ -31,8 +30,22 @@ parameters:
   enableLinkedBackend: false
 
 stages:
+- stage: Ensure_Core_Infrastructure
+  displayName: 'Ensure Core Infrastructure'
+  jobs:
+    - template: deploy-core-infra.yml
+      parameters:
+        azureServiceConnection: ${{ parameters.azureServiceConnection }}
+        subscriptionId: ${{ parameters.subscriptionId }}
+        resourceGroupName: ${{ parameters.resourceGroupName }}
+        location: ${{ parameters.location }}
+        namePrefix: ${{ parameters.namePrefix }}
+        bicepFile: 'infra/bicep/main.bicep'
+        bicepParamFile: 'infra/bicep/main.bicepparam'
+
 - stage: CD_SWA
   displayName: 'CD: Deploy Static Web App'
+  dependsOn: Ensure_Core_Infrastructure
   jobs:
     - job: Deploy_Infra
       displayName: 'Deploy SWA infrastructure'

@@ -1,0 +1,29 @@
+# Reusable template for deploying core infrastructure
+# - Used by infra-core.yml (standalone deployment)
+# - Used by CD pipelines (ensures infra exists before deploying app)
+# - Idempotent: Safe to run multiple times
+
+jobs:
+  - job: Deploy_Core_Infra
+    displayName: Deploy core infrastructure
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - task: AzureResourceManagerTemplateDeployment@3
+        displayName: Deploy core infrastructure
+        inputs:
+          deploymentScope: 'Resource Group'
+          azureResourceManagerConnection: '${{ parameters.azureServiceConnection }}'
+          subscriptionId: '${{ parameters.subscriptionId }}'
+          action: 'Create Or Update Resource Group'
+          resourceGroupName: '${{ parameters.resourceGroupName }}'
+          location: '${{ parameters.location }}'
+          templateLocation: 'Linked artifact'
+          templateFile: ${{ parameters.bicepFile }}
+          parametersLocation: 'Linked artifact'
+          csmParametersFile: '${{ parameters.bicepParamFile }}'
+          overrideParameters: |
+            -location ${{ parameters.location }}
+            -namePrefix ${{ parameters.namePrefix }}
+          deploymentMode: 'Incremental'
+          deploymentName: 'core-${{ parameters.namePrefix }}'

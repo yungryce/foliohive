@@ -1,10 +1,10 @@
-# Generic CD template for Container (Training Worker)
-# - Builds Bicep template for Azure Container Instance
-# - Deploys container infra via ARM
+# CD pipeline for Container (Training Worker)
+# - Triggered by ci-container pipeline completion
+# - First step: Validates core infrastructure exists (fails fast if not)
+# - Deploys container instance infra via Bicep
+# - Uses container image from Docker Hub (pushed by CI)
 #
-# Usage: Reference with a unified parameter file
-# Example: template: .ado/cd-container.yml
-#          parameters: ${{ variables.cdContainer }}
+# Usage: Configure via params/params-container.yml
 
 resources:
   pipelines:
@@ -41,8 +41,22 @@ parameters:
   memoryGb: '4.0'
 
 stages:
+- stage: Ensure_Core_Infrastructure
+  displayName: 'Ensure Core Infrastructure'
+  jobs:
+    - template: deploy-core-infra.yml
+      parameters:
+        azureServiceConnection: ${{ parameters.azureServiceConnection }}
+        subscriptionId: ${{ parameters.subscriptionId }}
+        resourceGroupName: ${{ parameters.resourceGroupName }}
+        location: ${{ parameters.location }}
+        namePrefix: ${{ parameters.namePrefix }}
+        bicepFile: 'infra/bicep/main.bicep'
+        bicepParamFile: 'infra/bicep/main.bicepparam'
+
 - stage: CD_Container
   displayName: 'CD: Deploy Training Worker Container'
+  dependsOn: Ensure_Core_Infrastructure
   jobs:
     - job: Deploy_Container
       displayName: Deploy container instance

@@ -9,37 +9,36 @@ The `.ado` folder contains reusable Azure Pipelines templates for Cloudfolio's C
 ```
 .ado/
 ├── parameters.yml                    # Global parameter schema (reference for all templates)
-├── infra-core.yml                    # Stage: Deploy core infrastructure (one-time setup)
+├── infra-core.yml                    # Pipeline: Deploy core infrastructure (standalone)
+├── deploy-core-infra.yml             # Template: Reusable core infrastructure deployment
 │
-├── ci-function.yml                   # Template: Generic CI build + upload for function apps
-├── cd-function.yml                   # Template: Generic CD deploy infra + code for function apps
+├── ci-api-gateway.yml                # Pipeline: Build api-gateway Function App
+├── ci-sync-worker.yml                # Pipeline: Build sync-worker Function App
+├── ci-merge-worker.yml               # Pipeline: Build merge-worker Function App
+├── cd-function.yml                   # Template: Deploy any Function App (ensures core infra first)
 │
-├── ci-swa.yml                        # Template: Generic CI build Angular UI
-├── cd-swa.yml                        # Template: Generic CD deploy SWA infra + content
+├── ci-swa.yml                        # Pipeline: Build Angular UI
+├── cd-swa.yml                        # Template: Deploy SWA (ensures core infra first)
 │
-├── ci-container.yml                  # Template: Generic CI build & push Docker image
-├── cd-container.yml                  # Template: Generic CD deploy container infra
-│
-├── swa.yml                           # (DEPRECATED) Old monolithic SWA deployment
-├── container.yml                     # (DEPRECATED) Old monolithic container deployment
+├── ci-container.yml                  # Pipeline: Build & push Docker image
+├── cd-container.yml                  # Template: Deploy container (ensures core infra first)
 │
 ├── params/                           # Subdirectory: Component-specific unified parameters
-│   ├── params-core.yml               # Core infrastructure parameters (for infra-core.yml)
-│   ├── params-api-gateway.yml        # Function app: api-gateway (CI + CD combined)
-│   ├── params-sync-worker.yml        # Function app: sync-worker (CI + CD combined)
-│   ├── params-merge-worker.yml       # Function app: merge-worker (CI + CD combined)
-│   ├── params-swa.yml                # Static Web App (CI + CD combined)
-│   └── params-container.yml          # Container (CI + CD combined)
+│   ├── params-core.yml               # Core infrastructure parameters
+│   ├── params-api-gateway.yml        # Function app: api-gateway
+│   ├── params-sync-worker.yml        # Function app: sync-worker
+│   ├── params-merge-worker.yml       # Function app: merge-worker
+│   ├── params-swa.yml                # Static Web App
+│   └── params-container.yml          # Container
 │
 └── README.md                         # This file
 ```
 
-**Phase 10-11 Changes:** 
-- SWA and container split into CI/CD templates (Phase 10)
-- Unified parameter files organized in `params/` subdirectory (Phase 10)
-- Core infrastructure parameters consolidated into `params-core.yml` (Phase 11)
-- Global `parameters.yml` refactored as schema reference only (Phase 11)
-- All components now follow consistent 4-layer parameter architecture
+**Key Innovation (Phase 13):**
+- Created reusable `deploy-core-infra.yml` template for core infrastructure deployment
+- Used by `infra-core.yml` for standalone deployments
+- Used by ALL CD pipelines as first stage (ensures autonomy)
+- Makes CD pipelines fully autonomous: can run independently and bootstrap infra if needed
 
 ## Parameters Organization
 
@@ -66,7 +65,7 @@ Each file combines CI and CD parameters for its component (single source of trut
 
 ### Layer 3: Generic Templates (`ci-*.yml`, `cd-*.yml`, `infra-core.yml`)
 Reusable template logic that declares parameter requirements. Templates are component-agnostic:
-- CI templates: Build, package, upload artifact
+- CI templates: Build, package, publish artifact
 - CD templates: Deploy infra via Bicep, download artifact, publish code
 - Infrastructure templates: Deploy specific Azure resources
 
@@ -86,8 +85,6 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 - **Component-specific settings** (container config, Docker Hub, training parameters)
 - **Bicep file paths**
 
-````
-
 ### Categories
 
 #### Azure Subscription & Resource Group
@@ -95,8 +92,6 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 - `subscriptionId` - Azure subscription ID
 - `resourceGroupName` - Target resource group
 
-#### Deployment Location & Naming
-- `location` - Azure region (default: `westus2`)
 #### Deployment Location & Naming
 - `location` - Azure region (default: `westus2`)
 - `namePrefix` - Prefix for all resources (default: `cloudfolio`)
@@ -119,27 +114,28 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 
 #### Function Apps
 - `appServicePlanId` - Shared App Service Plan ID (deployed by core infra)
-- `deployFunctionAppPrivateEndpoints` - Enable private endpoints (default: `false`)
-- `artifactContainerName` - Storage container for function artifacts (default: `function-artifacts`)
+- `deployPrivateEndpoints` - Enable private endpoints (default: `false`)
 - `pythonVersion` - Python version for builds (default: `3.13`)
-- `bicepFunctionAppFile` - Bicep template for function apps (default: `infra/bicep/main.function.bicep`)
+- `bicepFile` - Bicep template for function apps (default: `infra/bicep/main.function.bicep`)
 
 #### Static Web App
-- `enableLinkedBackend` - Link SWA to Function backend (default: `true`)
-- `apiGatewayId`, `apiGatewayDefaultHostname` - api-gateway function app outputs (populated by function deployment)
+- `enableLinkedBackend` - Link SWA to Function backend (default: `false`)
+- `apiGatewayId`, `apiGatewayDefaultHostname` - api-gateway function app outputs
 
 #### Container / Docker
 - `dockerHubServiceConnection` - Docker Hub service connection name
-- `dockerHubRepository` - Docker Hub repo path (e.g., `username/training-worker`)
-- `imageTag` - Container image tag (default: `latest`, or use `$(Build.BuildId)`)
+- `dockerHubRepository` - Docker Hub repo path
+- `imageTag` - Container image tag (default: `$(Build.BuildId)`)
 
 #### Container Instance Configuration
-- `trainingMode` - `serverless` (exit after one batch) or `continuous` (poll forever)
+- `trainingMode` - `serverless` or `continuous`
 - `queueName` - Azure Storage Queue name for training jobs
 - `blobContainerName` - Blob container for model artifacts
-- `containerRestartPolicy` - Restart behavior: `Always`, `OnFailure`, `Never`
-- `containerCpuCores` - CPU cores (0.5–4.0, default: `2.0`)
-- `containerMemoryGb` - Memory in GB (1–16, default: `4.0`)
+- `restartPolicy` - `Always`, `OnFailure`, or `Never`
+- `cpuCores` - CPU cores (default: `2.0`)
+- `memoryGb` - Memory in GB (default: `4.0`)
+
+---
 
 ## Stage Templates
 
@@ -150,7 +146,7 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 **Parameters:** See `params/params-core.yml` for unified core infrastructure parameters
 
 **What it deploys:**
-- Resource Group (created automatically if not exists via ARM template task)
+- Resource Group (created automatically via `action: 'Create Or Update Resource Group'`)
 - Virtual Network + subnets (functions, private endpoints)
 - User-Assigned Managed Identity (for function apps and container)
 - Storage Account (blob, queue, table) + Private Endpoints + Lifecycle policies
@@ -166,11 +162,10 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 - `privateDnsZoneAzureWebsitesId`
 
 **Job Execution Order:**
-1. `Deploy_Core` - Builds Bicep template and deploys all core infrastructure (creates RG if needed)
+1. `Deploy_Core` - Deploys core infrastructure via Bicep (creates RG if needed)
 
 **How to use:**
 ```yaml
-
 - template: .ado/infra-core.yml
   parameters:
     azureServiceConnection: $(azureServiceConnection)
@@ -183,71 +178,50 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 
 ---
 
-### 2. CI & CD Templates (Generic, Unified Per-Function Parameters)
+### 2. Function App CI/CD Templates (Split Per-Function)
 
-#### Generic CI Template: `ci-function.yml`
+#### `ci-api-gateway.yml`, `ci-sync-worker.yml`, `ci-merge-worker.yml` - Function CI (Per-Function)
 
-Single reusable CI template for building any Function App. Configure per-function via unified parameter files that combine CI and CD config.
+**Purpose:** Each function has its own CI pipeline with precise path-based triggers.
 
-**Parameters:**
-- `functionName` - Name of the function (api-gateway, sync-worker, merge-worker)
-- `functionDir` - Path to function app code (e.g., `api/v0.2.0/api-gateway`)
-- `sharedDir` - Path to shared library (e.g., `api/v0.2.0/shared`)
-- `pythonVersion` - Python version for build (inherited from `parameters.yml` default)
-- `storageAccountName` - Where to upload artifact zip
-- `artifactContainerName` - Storage container name (inherited from `parameters.yml`)
-- `artifactBuildId` - Build ID for versioning
-- Other Azure subscription/authentication params
+**Triggers:**
+- Branch: `main`
+- Paths: Function-specific directory + `apps/shared/` (rebuilds all functions when shared code changes)
 
-**Unified Parameter Files (CI + CD in one file):**
-- `params-api-gateway.yml` - Configuration for api-gateway (used by both CI and CD)
-- `params-sync-worker.yml` - Configuration for sync-worker (used by both CI and CD)
-- `params-merge-worker.yml` - Configuration for merge-worker (used by both CI and CD)
-
-**What it does:**
-- Installs function app requirements + shared library
+**What each does:**
+- Installs function requirements + shared library
 - Creates function app zip package
-- Uploads artifact to Storage: `${functionName}/${Build.BuildId}.zip`
+- Publishes artifact via `PublishPipelineArtifact@1` (pipeline artifacts, not storage)
 
-**Example usage in root pipeline:**
-```yaml
-- template: .ado/ci-function.yml
-  parameters:
-    azureServiceConnection: $(azureServiceConnection)
-    subscriptionId: $(subscriptionId)
-    resourceGroupName: $(resourceGroupName)
-    storageAccountName: $(storageAccountName)
-    artifactContainerName: $(artifactContainerName)
-    artifactBuildId: $(Build.BuildId)
-    pythonVersion: '3.13'
-    functionName: api-gateway
-    functionDir: api/v0.2.0/api-gateway
-    sharedDir: api/v0.2.0/shared
-```
+**Example: ci-api-gateway.yml**
+- Triggers on: `apps/api-gateway/**` + `apps/shared/**` changes on `main` branch
+- Publishes artifact: `api-gateway-$(Build.BuildId)`
+
+**Key benefit:** Each function's CI only runs when that function (or shared code) changes. No unnecessary builds.
 
 ---
 
-#### Generic CD Template: `cd-function.yml`
+#### `cd-function.yml` - Function CD (Generic Template)
 
-Single reusable CD template for deploying any Function App. Configure per-function via unified parameter files.
+**Deployment order:** After each function's CI completes
+
+**How it works:**
+- Uses `resources.pipelines` to reference the corresponding CI pipeline (e.g., `ci-function`)
+- Downloads CI artifact automatically
+- Deploys Function App infrastructure via Bicep directly (no build step)
+- Resolves deployed function app name
+- Publishes artifact code to Function App
 
 **Parameters:**
-- `functionName` - Name of the function
-- `appServicePlanId`, `functionsSubnetId`, `storageAccountName`, `uamiId`, etc. - Core infra outputs
-- `artifactContainerName`, `artifactBuildId`, `pythonVersion` - Artifact storage and config
-- Other Bicep + Azure deployment params
+- `functionName` - Name of function (api-gateway, sync-worker, merge-worker)
+- `bicepFile` - Path to Bicep template for function infra
+- `appServicePlanId`, `functionsSubnetId`, `uamiId`, etc. - Core infra outputs
+- `pythonVersion` - Python version for runtime
 
-**Unified Parameter Files (CI + CD in one file):**
+**Unified Parameter Files:**
 - `params-api-gateway.yml` - Configuration for api-gateway (used by both CI and CD)
-- `params-sync-worker.yml` - Configuration for sync-worker (used by both CI and CD)
-- `params-merge-worker.yml` - Configuration for merge-worker (used by both CI and CD)
-
-**What it does:**
-- Builds Bicep template to ARM JSON
-- Deploys Function App infra via `main.function.bicep` (incremental)
-- Resolves deployed function app name
-- Downloads artifact from Storage: `${functionName}/${Build.BuildId}.zip`
-- Publishes artifact code to Function App via `AzureFunctionApp@2`
+- `params-sync-worker.yml` - Configuration for sync-worker
+- `params-merge-worker.yml` - Configuration for merge-worker
 
 **Example usage in root pipeline:**
 ```yaml
@@ -262,45 +236,21 @@ Single reusable CD template for deploying any Function App. Configure per-functi
     appServicePlanId: $(appServicePlanId)
     functionsSubnetId: $(functionsSubnetId)
     privateEndpointsSubnetId: $(privateEndpointsSubnetId)
-    storageAccountName: $(storageAccountName)
     uamiId: $(uamiId)
     uamiClientId: $(uamiClientId)
+    uamiPrincipalId: $(uamiPrincipalId)
     appInsightsConnectionString: $(appInsightsConnectionString)
     privateDnsZoneAzureWebsitesId: $(privateDnsZoneAzureWebsitesId)
-    pythonVersion: '3.13'
+    deployPrivateEndpoints: false
     functionName: api-gateway
-    functionAppName: cloudfolio-api-gateway
-    artifactContainerName: function-artifacts
-    artifactBuildId: $(Build.BuildId)
+    pythonVersion: '3.13'
 ```
 
----
-
-#### Separation of Concerns & Parameter Organization
-
-**Parameters are organized into three layers:**
-
-1. **Global Parameters** (`parameters.yml`) - High-level, shared by all CI/CD invocations
-   - Shared CI/CD config: `artifactContainerName`, `pythonVersion`, `bicepFunctionAppFile`, `deployFunctionAppPrivateEndpoints`
-   - Inherited defaults for Bicep paths, container settings, Docker config
-
-2. **Unified Per-Function Parameters** (`params-api-gateway.yml`, `params-sync-worker.yml`, `params-merge-worker.yml`) - Combined CI + CD configuration
-   - CI-specific: `functionName`, `functionDir`, `sharedDir`, `pythonVersion` (can override global)
-   - CD-specific: `appServicePlanId`, `functionsSubnetId`, `storageAccountName`, `uamiId`, `bicepFile`, etc.
-   - Both CI and CD templates reference the same parameter file (single source of truth per function)
-
-3. **Generic Templates** (`ci-function.yml`, `cd-function.yml`) - Reusable CI/CD logic
-   - CI logic: Build, package, upload to storage
-   - CD logic: Deploy infra via Bicep, download artifact, publish code
-
-**Benefits:**
-- **Single source of truth per function** - `params-*.yml` combines CI + CD, no duplication
-- **Centralized shared params** - `parameters.yml` reduces duplication of common settings
-- **Reusable templates** - Update CI/CD logic once, applies to all functions
-
-- Per-function customization without duplicating code
-- Easy to add new functions (create new parameter file, reference generic template)
-- Clear ownership: template owner vs. function owner
+**Key improvements:**
+- Per-function CI pipelines eliminate unnecessary builds
+- CD remains generic and reusable
+- Direct Bicep deployment (no JSON compilation step)
+- Pipeline artifacts handle CI/CD artifact passing
 
 ---
 
@@ -308,28 +258,22 @@ Single reusable CD template for deploying any Function App. Configure per-functi
 
 #### `ci-swa.yml` - Build Static Web App (CI)
 
-**Deployment order:** 3 (requires core infra)
+**Triggers:**
+- Branch: `main`
+- Paths: `ui/**` changes
 
 **What it does:**
 - Builds Angular UI using Node.js
-- Creates zip artifact: `swa.zip`
-- Uploads artifact to Storage: `swa/${Build.BuildId}.zip`
+- Creates dist directory: `ui/dist/cloudfolio-ui`
+- Publishes artifact via `PublishPipelineArtifact@1` (no zipping, direct files)
 
 **Parameters:**
 - `uiDir` - Path to Angular UI source (default: `ui`)
-- `storageAccountName`, `artifactContainerName`, `artifactBuildId` - Artifact storage config
-- Azure subscription/RG credentials
 
-**Example usage in root pipeline:**
+**Example usage:**
 ```yaml
 - template: .ado/ci-swa.yml
   parameters:
-    azureServiceConnection: $(azureServiceConnection)
-    subscriptionId: $(subscriptionId)
-    resourceGroupName: $(resourceGroupName)
-    storageAccountName: $(storageAccountName)
-    artifactContainerName: 'swa-artifacts'
-    artifactBuildId: $(Build.BuildId)
     uiDir: 'ui'
 ```
 
@@ -337,21 +281,22 @@ Single reusable CD template for deploying any Function App. Configure per-functi
 
 #### `cd-swa.yml` - Deploy Static Web App (CD)
 
-**Deployment order:** 6 (requires SWA CI, core infra outputs)
+**Triggers:** Automatically when ci-swa completes (via `resources.pipelines`)
 
 **What it does:**
-- Builds Bicep template for Static Web App
-- Deploys SWA infra via ARM (incremental)
-- Retrieves SWA deployment details
-- Downloads UI artifact from Storage
+- Downloads SWA artifact from CI pipeline directly (no Storage account needed)
+- Deploys SWA infrastructure via Bicep
+- Retrieves SWA deployment details and API token
 - Publishes UI content to SWA via `AzureStaticWebApp@0`
+
+**Two-job structure:**
+- `Deploy_Infra` - Deploys SWA infrastructure, reads outputs, downloads artifact
+- `Deploy_Content` - Publishes UI content to SWA (depends on Deploy_Infra)
 
 **Parameters:**
 - `bicepFile` - Bicep template path (default: `infra/bicep/main.staticwebapp.bicep`)
 - `apiGatewayId`, `apiGatewayDefaultHostname` - Backend function app config (optional)
 - `enableLinkedBackend` - Link SWA to function backend (default: `false`)
-- `storageAccountName`, `artifactContainerName`, `artifactBuildId` - Artifact download config
-- Azure subscription/RG credentials, location, namePrefix
 
 **Example usage:**
 ```yaml
@@ -365,10 +310,13 @@ Single reusable CD template for deploying any Function App. Configure per-functi
     apiGatewayId: $(apiGatewayId)
     apiGatewayDefaultHostname: $(apiGatewayDefaultHostname)
     enableLinkedBackend: false
-    storageAccountName: $(storageAccountName)
-    artifactContainerName: 'swa-artifacts'
-    artifactBuildId: $(Build.BuildId)
 ```
+
+**Key improvements:**
+- Uses pipeline artifacts instead of Azure Storage
+- No zip/unzip steps (direct file deployment)
+- Simpler artifact management
+- Faster deployment
 
 ---
 
@@ -376,39 +324,37 @@ Single reusable CD template for deploying any Function App. Configure per-functi
 
 #### `ci-container.yml` - Build Container Image (CI)
 
-**Deployment order:** 4 (independent)
+**Triggers:**
+- Branch: `main`
+- Paths: `apps/training-worker/**` changes
 
 **What it does:**
 - Builds training-worker Docker image from Dockerfile
-- Pushes image to Docker Hub with tag: `${imageTag}` and `latest`
+- Pushes image to Docker Hub with tag: `$(Build.BuildId)` and `latest`
 
 **Parameters:**
-- `containerDir`, `dockerFile` - Source paths for Docker build
+- `dockerHubServiceConnection` - Docker Hub service connection
+- `dockerHubRepository` - Docker Hub repo path
 - `imageTag` - Image tag (default: `$(Build.BuildId)`)
-- `dockerHubServiceConnection`, `dockerHubRepository` - Docker Hub credentials and repo
-- Azure subscription credentials (for logging)
+- `containerDir` - Path to training-worker code
 
 **Example usage:**
 ```yaml
 - template: .ado/ci-container.yml
   parameters:
-    azureServiceConnection: $(azureServiceConnection)
     dockerHubServiceConnection: $(dockerHubServiceConnection)
     dockerHubRepository: $(dockerHubRepository)
     imageTag: $(Build.BuildId)
-    containerDir: 'api/v0.2.0/training-worker'
-    dockerFile: 'api/v0.2.0/training-worker/Dockerfile'
 ```
 
 ---
 
 #### `cd-container.yml` - Deploy Container Instance (CD)
 
-**Deployment order:** 7 (requires container CI, core infra outputs)
+**Deployment order:** After container CI completes
 
 **What it does:**
-- Builds Bicep template for Azure Container Instance
-- Deploys container infra via ARM (incremental)
+- Deploys Azure Container Instance infrastructure via Bicep
 - Configures container with:
   - Managed identity (UAMI) for Azure access
   - Storage account mount for model artifacts
@@ -419,11 +365,10 @@ Single reusable CD template for deploying any Function App. Configure per-functi
 **Parameters:**
 - `bicepFile` - Bicep template path (default: `infra/bicep/main.container.bicep`)
 - `dockerHubRepository`, `imageTag` - Container image location
-- `uamiPrincipalId`, `uamiId`, `uamiClientId` - Managed identity for container
+- `uamiPrincipalId`, `uamiId`, `uamiClientId` - Managed identity
 - `storageAccountName`, `logAnalyticsWorkspaceId`, `logAnalyticsWorkspaceKey` - Storage and logging
 - `trainingMode`, `queueName`, `blobContainerName` - Training job config
-- `restartPolicy`, `cpuCores`, `memoryGb` - Container behavior and resources
-- Azure subscription/RG credentials, location, namePrefix
+- `restartPolicy`, `cpuCores`, `memoryGb` - Container behavior
 
 **Example usage:**
 ```yaml
@@ -447,179 +392,71 @@ Single reusable CD template for deploying any Function App. Configure per-functi
 
 ---
 
-**Key Architecture (SWA and Container in Phase 10):**
-- **Before Phase 10:** Monolithic `swa.yml` and `container.yml` combined build + deploy in one template
-- **After Phase 10:** Split into `ci-swa.yml` + `cd-swa.yml` and `ci-container.yml` + `cd-container.yml`
-- **Benefit:** Consistent with function app pattern, independent CI/CD stages, artifact storage decoupling
+## Key Design Principles
+
+### 1. Autonomous CD Pipelines (Phase 13 - Critical)
+- **Before:** CD pipelines validated RG existed (failed if infra missing)
+- **After:** CD pipelines deploy core infra themselves as first stage
+- **Benefit:** CD pipelines are fully autonomous - can run independently without manual setup
+- **Implementation:** All CD pipelines use `deploy-core-infra.yml` template as `Ensure_Core_Infrastructure` stage before app deployment
+
+### 2. Reusable Core Infrastructure Deployment
+- **Template:** `deploy-core-infra.yml` - Single source of truth for core infra deployment
+- **Used by:** `infra-core.yml` (standalone deployment) + ALL CD pipelines (bootstrap infra if needed)
+- **Benefit:** Consistent deployment logic, no duplication, ensures idempotency
+
+### 3. CI Pipeline Separation (Phase 12)
+- **Before:** Single `ci-function.yml` for all 3 functions (couldn't detect which function changed)
+- **After:** Three separate CI pipelines (`ci-api-gateway.yml`, `ci-sync-worker.yml`, `ci-merge-worker.yml`)
+- **Benefit:** Each function builds only when its code (or shared code) changes → faster pipelines
+
+### 4. Direct Bicep Deployment (Phase 12)
+- **Before:** CD templates compiled Bicep → JSON, then deployed
+- **After:** CD templates deploy Bicep directly via `templateFile` property
+- **Benefit:** Eliminates redundant build step, faster deployments, cleaner artifacts
+
+### 5. Artifact Handling
+- **Function Apps & Container:** Pipeline artifacts (PublishPipelineArtifact@1 → DownloadPipelineArtifact@2)
+- **SWA:** Pipeline artifacts (no longer uses Azure Storage)
+- **Benefit:** Simpler, built-in Azure DevOps artifact handling, no storage account dependencies
+
+### 6. Parameter Organization (4 Layers)
+1. **Global Schema** (`parameters.yml`) - Authoritative reference
+2. **Component Parameters** (`params/params-*.yml`) - Per-component configuration
+3. **Templates** (`ci-*.yml`, `cd-*.yml`, `deploy-core-infra.yml`) - Reusable logic
+4. **Pipelines** (`infra-core.yml`, triggered CI/CD pipelines) - Runtime execution
 
 ---
 
-### 5. Parameter Organization
+### 7. CI Pipeline Separation (Phase 12)
+- **Before:** Single `ci-function.yml` for all 3 functions (couldn't detect which function changed)
+- **After:** Three separate CI pipelines (`ci-api-gateway.yml`, `ci-sync-worker.yml`, `ci-merge-worker.yml`)
+- **Benefit:** Each function builds only when its code (or shared code) changes → faster pipelines
 
-**All components now follow 3-layer parameter architecture:**
+### 8. Direct Bicep Deployment (Phase 12)
+- **Before:** CD templates compiled Bicep → JSON, then deployed
+- **After:** CD templates deploy Bicep directly via `templateFile` property
+- **Benefit:** Eliminates redundant build step, faster deployments, cleaner artifacts
 
-1. **Global Parameters** (`parameters.yml`)
-   - Azure credentials, location, naming, core infra outputs
-   - Shared CI/CD defaults: `artifactContainerName`, `pythonVersion`, `bicepFunctionAppFile`, `deployFunctionAppPrivateEndpoints`
+### 9. Resource Group Creation (Phase 12)
+- **Before:** Custom jobs in each template to create RG
+- **After:** Only `infra-core.yml` creates RG via `action: 'Create Or Update Resource Group'`; CD templates use `action: 'Select Resource Group'`
+- **Benefit:** Single RG creation point, reduced redundancy, clearer intent
 
-2. **Unified Per-Component Parameters** (`params/params-*.yml`)
-   - Function apps: `params-api-gateway.yml`, `params-sync-worker.yml`, `params-merge-worker.yml`
-   - SWA: `params-swa.yml`
-   - Container: `params-container.yml`
-   - Each file combines CI + CD config (single source of truth per component)
+### 10. Artifact Handling
+- **Function Apps & Container:** Pipeline artifacts (PublishPipelineArtifact@1 → DownloadPipelineArtifact@2)
+- **SWA:** Pipeline artifacts (no longer uses Azure Storage)
+- **Benefit:** Simpler, built-in Azure DevOps artifact handling, no storage account dependencies
 
-3. **Generic Templates** (`ci-*.yml`, `cd-*.yml`)
-   - Reusable CI logic (build, package, upload artifact)
-   - Reusable CD logic (deploy infra, download artifact, publish)
-   - No component-specific knowledge
-
-**Parameter Subdirectory:**
-- `.ado/params/` organizes all parameter files in one place
-- Easy to see all components at a glance
-- Cleaner root `.ado/` directory
-
----
-
-### 4. `swa.yml` - Static Web App (Build + Deploy)
-
-**Deployment order:** 2a (requires core infra)
-
-**What it does:**
-- Builds and packages the api-gateway Python Function App
-- Installs shared library dependencies
-- Deploys via Bicep `main.function.bicep` (reusable single-function template)
-- Publishes function zip to the Function App
-
-**Inputs (from core infra):**
-- App Service Plan ID, subnet IDs, UAMI, storage account, App Insights connection string, private DNS zone ID
-
-**Outputs:** Function App name and hostname
-
-**How to use:**
-```yaml
-- template: .ado/api-gateway.yml
-  parameters:
-    azureServiceConnection: $(azureServiceConnection)
-    subscriptionId: $(subscriptionId)
-    resourceGroupName: $(resourceGroupName)
-    location: $(location)
-    namePrefix: $(namePrefix)
-    bicepFile: infra/bicep/main.function.bicep
-    appServicePlanId: $(appServicePlanId)
-    functionsSubnetId: $(functionsSubnetId)
-    privateEndpointsSubnetId: $(privateEndpointsSubnetId)
-    storageAccountName: $(storageAccountName)
-    uamiId: $(uamiId)
-    uamiClientId: $(uamiClientId)
-    appInsightsConnectionString: $(appInsightsConnectionString)
-    privateDnsZoneAzureWebsitesId: $(privateDnsZoneAzureWebsitesId)
-    deployPrivateEndpoints: false
-```
+### 11. Parameter Organization (4 Layers)
+1. **Global Schema** (`parameters.yml`) - Authoritative reference
+2. **Component Parameters** (`params/params-*.yml`) - Per-component configuration
+3. **Generic Templates** (`ci-*.yml`, `cd-*.yml`) - Reusable logic
+4. **Root Orchestrator** (`azure-pipelines.yml`) - Variable injection
 
 ---
 
-### 2b. `sync-worker.yml` - Sync Worker Function App (Deploy)
 
-**Deployment order:** 2b (requires core infra, parallel with api-gateway)
-
-**What it does:**
-- Builds and packages the sync-worker Python Function App
-- Installs shared library dependencies
-- Deploys via Bicep `main.function.bicep` (same reusable template)
-- Publishes function zip to the Function App
-
-**Inputs (from core infra):** Same as api-gateway
-
-**Outputs:** Function App name and hostname
-
-**How to use:** Same pattern as api-gateway, with `functionName: sync-worker` and `functionDir: apps/sync-worker`
-
----
-
-### 2c. `merge-worker.yml` - Merge Worker Function App (Deploy)
-
-**Deployment order:** 2c (requires core infra, parallel with api-gateway and sync-worker)
-
-**What it does:**
-- Builds and packages the merge-worker Python Function App
-- Installs shared library dependencies
-- Deploys via Bicep `main.function.bicep` (same reusable template)
-- Publishes function zip to the Function App
-
-**Inputs (from core infra):** Same as api-gateway
-
-**Outputs:** Function App name and hostname
-
-**How to use:** Same pattern as api-gateway, with `functionName: merge-worker` and `functionDir: apps/merge-worker`
-
----
-
-**Key Difference (Modular Approach):**
-- **Before:** Single `functions.yml` deployed all 3 function apps in one Bicep file
-- **Now:** Separate pipeline files (api-gateway, sync-worker, merge-worker) each deploy a single function app using a reusable `main.function.bicep` template
-- **Benefit:** Independent updates, faster CI/CD, cleaner separation of concerns
-
----
-
-### 5. `container.yml` - Container Instance (Build + Deploy)
-
-**Deployment order:** 4th (optional, independent if needed)
-
-**What it does:**
-- Builds training-worker Docker image
-- Pushes image to Docker Hub
-- Deploys Bicep `main.container.bicep` (Azure Container Instance)
-- Configures container with storage, logging, and training parameters
-
-**Inputs (from core infra):**
-- UAMI, storage account, Log Analytics workspace
-
-**Outputs:** Container instance ID and name
-
-**How to use:**
-```yaml
-- template: .ado/container.yml
-  parameters:
-    azureServiceConnection: $(azureServiceConnection)
-    subscriptionId: $(subscriptionId)
-    resourceGroupName: $(resourceGroupName)
-    location: $(location)
-    namePrefix: $(namePrefix)
-    dockerHubServiceConnection: $(dockerHubServiceConnection)
-    dockerHubRepository: $(dockerHubRepository)
-    imageTag: $(Build.BuildId)
-    uamiPrincipalId: $(uamiPrincipalId)
-    uamiId: $(uamiId)
-    uamiClientId: $(uamiClientId)
-    storageAccountName: $(storageAccountName)
-    logAnalyticsWorkspaceId: $(logAnalyticsWorkspaceId)
-    logAnalyticsWorkspaceKey: $(logAnalyticsWorkspaceKey)
-    trainingMode: serverless
-```
-
----
-
-## Root Orchestrator: `azure-pipelines.yml`
-
-The root `azure-pipelines.yml` file orchestrates the stage templates in sequence:
-
-```yaml
-variables:
-  azureServiceConnection: ''
-  subscriptionId: ''
-  resourceGroupName: ''
-  location: 'westus2'
-  # ... more variables
-```
-
-**Typical execution flow:**
-1. **infra-core** → Creates core infrastructure (VNet, identity, storage, App Service Plan), outputs IDs/names
-2. **CI (ci-function.yml × 3)** → Builds each Function App individually, zips, uploads to Storage `${functionName}/${Build.BuildId}.zip`
-3. **CD (cd-function.yml × 3)** → Deploys Function App infra + downloads/publishes matching artifact from Storage
-4. **swa** → Deploys Static Web App (optional)
-5. **container** → Builds/deploys training worker container (independent)
-
----
 
 ## Setup Checklist
 

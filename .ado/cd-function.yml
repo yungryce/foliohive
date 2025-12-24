@@ -1,11 +1,11 @@
-# Generic CD template for Function Apps
-# - Deploys infra via main.function.bicep (incremental)
+# CD pipeline for Function Apps
+# - Triggered by corresponding CI pipeline completion
+# - First step: Validates core infrastructure exists (fails fast if not)
+# - Deploys function infra via Bicep
 # - Downloads artifact from CI pipeline
-# - Deploys to Function App using AzureFunctionApp@2
+# - Deploys code to Function App
 #
-# Usage: Reference with a separate parameter file per function
-# Example: template: .ado/cd-function.yml
-#          parameters: ${{ variables.cdParams }}
+# Usage: Configure via params/params-{functionName}.yml
 
 resources:
   pipelines:
@@ -35,8 +35,22 @@ parameters:
   pythonVersion: '3.13'
 
 stages:
+- stage: Ensure_Core_Infrastructure
+  displayName: 'Ensure Core Infrastructure'
+  jobs:
+    - template: deploy-core-infra.yml
+      parameters:
+        azureServiceConnection: ${{ parameters.azureServiceConnection }}
+        subscriptionId: ${{ parameters.subscriptionId }}
+        resourceGroupName: ${{ parameters.resourceGroupName }}
+        location: ${{ parameters.location }}
+        namePrefix: ${{ parameters.namePrefix }}
+        bicepFile: 'infra/bicep/main.bicep'
+        bicepParamFile: 'infra/bicep/main.bicepparam'
+
 - stage: CD_${{ replace(parameters.functionName, '-', '_') }}
   displayName: 'CD: Deploy ${{ parameters.functionName }}'
+  dependsOn: Ensure_Core_Infrastructure
   jobs:
     - job: Deploy_${{ replace(parameters.functionName, '-', '_') }}
       displayName: 'Deploy infra + code for ${{ parameters.functionName }}'

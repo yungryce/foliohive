@@ -1,13 +1,13 @@
-# Generic CI template for Container (Training Worker)
+# CI pipeline for Container (Training Worker)
 # - Builds Docker image
 # - Pushes to Docker Hub
-# - Triggers on training-worker Dockerfile or runtime code changes
-#
-# Usage: Reference with a unified parameter file
-# Example: template: .ado/ci-container.yml
-#          parameters: ${{ variables.ciContainer }}
+# - Triggers on training-worker code changes
+# - Requires: Docker Hub service connection for image push
 
 trigger:
+  branches:
+    include:
+      - main
   paths:
     include:
       - api/v0.2.0/training-worker/**

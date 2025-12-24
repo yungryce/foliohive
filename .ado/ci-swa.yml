@@ -1,13 +1,13 @@
-# Generic CI template for Static Web App
+# CI pipeline for Static Web App
 # - Builds Angular UI
 # - Publishes artifact via PublishPipelineArtifact@1
-# - Triggers on frontend code or config changes
-#
-# Usage: Reference with a unified parameter file
-# Example: template: .ado/ci-swa.yml
-#          parameters: ${{ variables.ciSwA }}
+# - Triggers on frontend code changes
+# - Standalone: No Azure dependency, triggered by code changes only
 
 trigger:
+  branches:
+    include:
+      - main
   paths:
     include:
       - ui/**
@@ -18,9 +18,6 @@ trigger:
       - 'ui/**/*.spec.ts'
 
 parameters:
-  azureServiceConnection: ''
-  subscriptionId: ''
-  resourceGroupName: ''
   uiDir: 'ui'
 
 stages:
