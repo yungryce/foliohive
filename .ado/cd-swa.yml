@@ -52,6 +52,9 @@ stages:
       pool:
         vmImage: ubuntu-latest
       steps:
+        - checkout: self
+          displayName: 'Checkout source code'
+
         # Download artifact from CI pipeline
         - download: ci-swa
           displayName: 'Download SWA artifact from CI'

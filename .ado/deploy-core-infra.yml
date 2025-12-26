@@ -9,6 +9,9 @@ jobs:
     pool:
       vmImage: ubuntu-latest
     steps:
+      - checkout: self
+        displayName: 'Checkout source code'
+
       - task: AzureResourceManagerTemplateDeployment@3
         displayName: Deploy core infrastructure
         inputs:
