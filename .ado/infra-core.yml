@@ -16,14 +16,30 @@ trigger:
       - .ado/params/params-core.yml
 
 parameters:
-  azureServiceConnection: ''
-  subscriptionId: ''
-  resourceGroupName: ''
-  location: 'westus2'
-  namePrefix: 'cloudfolio'
-  tags: '{}'
-  bicepFile: 'infra/bicep/main.bicep'
-  bicepParamFile: 'infra/bicep/main.bicepparam'
+  - name: azureServiceConnection
+    type: string
+    default: ''
+  - name: subscriptionId
+    type: string
+    default: ''
+  - name: resourceGroupName
+    type: string
+    default: ''
+  - name: location
+    type: string
+    default: 'westus2'
+  - name: namePrefix
+    type: string
+    default: 'cloudfolio'
+  - name: tags
+    type: string
+    default: '{}'
+  - name: bicepFile
+    type: string
+    default: 'infra/bicep/main.bicep'
+  - name: bicepParamFile
+    type: string
+    default: 'infra/bicep/main.bicepparam'
 
 stages:
 - stage: Core_Infrastructure
