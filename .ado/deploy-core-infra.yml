@@ -12,24 +12,6 @@ jobs:
       - checkout: self
         displayName: 'Checkout source code'
 
-      # Fail fast if paths are wrong (prevents "directory instead of file")
-      - bash: |
-          set -euo pipefail
-          ROOT_DIR="${SYSTEM_DEFAULTWORKINGDIRECTORY:-$PWD}"
-          BICEP_FILE_PATH="$ROOT_DIR/${{ parameters.bicepFile }}"
-          BICEP_PARAM_FILE_PATH="$ROOT_DIR/${{ parameters.bicepParamFile }}"
-          echo "=============================="
-          echo "VALIDATING BICEP FILES"
-          echo "SYSTEM_DEFAULTWORKINGDIRECTORY=$ROOT_DIR"
-          echo "bicepFile=${{ parameters.bicepFile }}"
-          echo "bicepParamFile=${{ parameters.bicepParamFile }}"
-          echo "Resolved bicepFile=$BICEP_FILE_PATH"
-          echo "Resolved bicepParamFile=$BICEP_PARAM_FILE_PATH"
-          test -f "$BICEP_FILE_PATH"
-          test -f "$BICEP_PARAM_FILE_PATH"
-          echo "+++ VALIDATION PASSED +++"
-        displayName: 'Validate Bicep files exist'
-
       - task: AzureResourceManagerTemplateDeployment@3
         displayName: Deploy core infrastructure
         inputs:
