@@ -24,10 +24,10 @@ parameters:
     default: '{}'
   - name: bicepFile
     type: string
-    default: 'infra/bicep/main.bicep'
+    default: './infra/bicep/main.bicep'
   - name: bicepParamFile
     type: string
-    default: 'infra/bicep/main.bicepparam'
+    default: './infra/bicep/main.bicepparam'
 
 jobs:
   - job: Deploy_Core_Infra
@@ -66,9 +66,9 @@ jobs:
           resourceGroupName: '${{ parameters.resourceGroupName }}'
           location: '${{ parameters.location }}'
           templateLocation: 'Linked artifact'
-          templateFile: '$(System.DefaultWorkingDirectory)/${{ parameters.bicepFile }}'
+          csmFile: '$(bicepFile)'
+          csmParametersFile: '$(bicepParamFile)'
           parametersLocation: 'Linked artifact'
-          csmParametersFile: '$(System.DefaultWorkingDirectory)/${{ parameters.bicepParamFile }}'
           overrideParameters: |
             -location ${{ parameters.location }}
             -namePrefix ${{ parameters.namePrefix }}
