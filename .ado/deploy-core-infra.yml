@@ -12,6 +12,15 @@ jobs:
       - checkout: self
         displayName: 'Checkout source code'
 
+      # Fail fast if paths are wrong (prevents "directory instead of file")
+      - bash: |
+          set -euo pipefail
+          echo "bicepFile=${{ parameters.bicepFile }}"
+          echo "bicepParamFile=${{ parameters.bicepParamFile }}"
+          test -f "${{ parameters.bicepFile }}"
+          test -f "${{ parameters.bicepParamFile }}"
+        displayName: 'Validate Bicep files exist'
+
       - task: AzureResourceManagerTemplateDeployment@3
         displayName: Deploy core infrastructure
         inputs:
