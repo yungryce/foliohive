@@ -3,6 +3,32 @@
 # - Used by CD pipelines (ensures infra exists before deploying app)
 # - Idempotent: Safe to run multiple times
 
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: ''
+  - name: subscriptionId
+    type: string
+    default: ''
+  - name: resourceGroupName
+    type: string
+    default: ''
+  - name: location
+    type: string
+    default: 'westus2'
+  - name: namePrefix
+    type: string
+    default: 'cloudfolio'
+  - name: tags
+    type: string
+    default: '{}'
+  - name: bicepFile
+    type: string
+    default: 'infra/bicep/main.bicep'
+  - name: bicepParamFile
+    type: string
+    default: 'infra/bicep/main.bicepparam'
+
 jobs:
   - job: Deploy_Core_Infra
     displayName: Deploy core infrastructure
@@ -15,10 +41,19 @@ jobs:
       # Fail fast if paths are wrong (prevents "directory instead of file")
       - bash: |
           set -euo pipefail
+          ROOT_DIR="${SYSTEM_DEFAULTWORKINGDIRECTORY:-$PWD}"
+          BICEP_FILE_PATH="$ROOT_DIR/${{ parameters.bicepFile }}"
+          BICEP_PARAM_FILE_PATH="$ROOT_DIR/${{ parameters.bicepParamFile }}"
+          echo "=============================="
+          echo "VALIDATING BICEP FILES"
+          echo "SYSTEM_DEFAULTWORKINGDIRECTORY=$ROOT_DIR"
           echo "bicepFile=${{ parameters.bicepFile }}"
           echo "bicepParamFile=${{ parameters.bicepParamFile }}"
-          test -f "${{ parameters.bicepFile }}"
-          test -f "${{ parameters.bicepParamFile }}"
+          echo "Resolved bicepFile=$BICEP_FILE_PATH"
+          echo "Resolved bicepParamFile=$BICEP_PARAM_FILE_PATH"
+          test -f "$BICEP_FILE_PATH"
+          test -f "$BICEP_PARAM_FILE_PATH"
+          echo "+++ VALIDATION PASSED +++"
         displayName: 'Validate Bicep files exist'
 
       - task: AzureResourceManagerTemplateDeployment@3
@@ -31,9 +66,9 @@ jobs:
           resourceGroupName: '${{ parameters.resourceGroupName }}'
           location: '${{ parameters.location }}'
           templateLocation: 'Linked artifact'
-          templateFile: ${{ parameters.bicepFile }}
+          templateFile: '$(System.DefaultWorkingDirectory)/${{ parameters.bicepFile }}'
           parametersLocation: 'Linked artifact'
-          csmParametersFile: '${{ parameters.bicepParamFile }}'
+          csmParametersFile: '$(System.DefaultWorkingDirectory)/${{ parameters.bicepParamFile }}'
           overrideParameters: |
             -location ${{ parameters.location }}
             -namePrefix ${{ parameters.namePrefix }}
