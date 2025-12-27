@@ -3,16 +3,19 @@
 # - Used by CD pipelines (ensures infra exists before deploying app)
 # - Idempotent: Safe to run multiple times
 
+variables:
+  - group: 'Cloudfolio-Vars'
+
 parameters:
   - name: azureServiceConnection
     type: string
-    default: 'cloudfolio-sc'
+    default: '$(azureServiceConnection)'
   - name: subscriptionId
     type: string
-    default: ''
+    default: '$(subscriptionId)'
   - name: resourceGroupName
     type: string
-    default: ''
+    default: '$(resourceGroupName)'
   - name: location
     type: string
     default: 'westus2'
