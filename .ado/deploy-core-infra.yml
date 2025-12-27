@@ -43,8 +43,6 @@ jobs:
           csmFile: '${{ parameters.bicepFile }}'
           csmParametersFile: '${{ parameters.bicepParamFile }}'
           parametersLocation: 'Linked artifact'
-          overrideParameters: |
-            -location ${{ parameters.location }}
-            -namePrefix ${{ parameters.namePrefix }}
+          overrideParameters: '-location "${{ parameters.location }}" -namePrefix "${{ parameters.namePrefix }}"'
           deploymentMode: 'Incremental'
           deploymentName: 'core-${{ parameters.namePrefix }}'
