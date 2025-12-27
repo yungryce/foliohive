@@ -13,37 +13,10 @@ trigger:
     include:
       - infra/bicep/**
       - .ado/infra-core.yml
-      - .ado/params/params-core.yml
       - .ado/deploy-core-infra.yml
 
 variables:
   - group: 'Cloudfolio-Vars'
-
-parameters:
-  - name: azureServiceConnection
-    type: string
-    default: '$(azureServiceConnection)'
-  - name: subscriptionId
-    type: string
-    default: '$(subscriptionId)'
-  - name: resourceGroupName
-    type: string
-    default: '$(resourceGroupName)'
-  - name: location
-    type: string
-    default: 'westus2'
-  - name: namePrefix
-    type: string
-    default: 'cloudfolio'
-  - name: tags
-    type: string
-    default: '{}'
-  - name: bicepFile
-    type: string
-    default: './infra/bicep/main.bicep'
-  - name: bicepParamFile
-    type: string
-    default: './infra/bicep/main.bicepparam'
 
 stages:
 - stage: Core_Infrastructure
@@ -51,11 +24,11 @@ stages:
   jobs:
     - template: deploy-core-infra.yml
       parameters:
-        azureServiceConnection: ${{ parameters.azureServiceConnection }}
-        subscriptionId: ${{ parameters.subscriptionId }}
-        resourceGroupName: ${{ parameters.resourceGroupName }}
-        location: ${{ parameters.location }}
-        namePrefix: ${{ parameters.namePrefix }}
-        bicepFile: ${{ parameters.bicepFile }}
-        bicepParamFile: ${{ parameters.bicepParamFile }}
+        azureServiceConnection: $(azureServiceConnection)
+        subscriptionId: $(subscriptionId)
+        resourceGroupName: $(resourceGroupName)
+        location: $(location)
+        namePrefix: $(namePrefix)
+        bicepFile: $(bicepFile)
+        bicepParamFile: $(bicepParamFile)
 
