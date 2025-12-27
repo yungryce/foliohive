@@ -22,13 +22,13 @@ variables:
 parameters:
   - name: azureServiceConnection
     type: string
-    default: ''
+    default: '$(azureServiceConnection)'
   - name: subscriptionId
     type: string
-    default: ''
+    default: '$(subscriptionId)'
   - name: resourceGroupName
     type: string
-    default: ''
+    default: '$(resourceGroupName)'
   - name: location
     type: string
     default: 'westus2'
