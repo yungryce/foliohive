@@ -41,7 +41,7 @@ parameters:
   # ================================================================================
   # CD-SPECIFIC: DEPLOYMENT & INFRASTRUCTURE
   # ================================================================================
-  bicepFile: 'infra/bicep/main.function.bicep'
+  bicepFile: './infra/bicep/main.function.bicep'
   deployPrivateEndpoints: false
 
   functionAppName: ''  # Computed during deployment

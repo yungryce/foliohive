@@ -19,5 +19,5 @@ parameters:
   # ================================================================================
   # BICEP TEMPLATES & PARAMETERS
   # ================================================================================
-  bicepFile: './infra/bicep/main.bicep'
-  bicepParamFile: './infra/bicep/main.bicepparam'
+  bicepFile: '././infra/bicep/main.bicep'
+  bicepParamFile: '././infra/bicep/main.bicepparam'

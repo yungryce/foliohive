@@ -19,7 +19,7 @@ parameters:
   resourceGroupName: ''
   location: 'westus2'
   namePrefix: 'cloudfolio'
-  bicepFile: 'infra/bicep/main.function.bicep'
+  bicepFile: './infra/bicep/main.function.bicep'
 
   appServicePlanId: ''
   functionsSubnetId: ''
@@ -45,8 +45,8 @@ stages:
         resourceGroupName: ${{ parameters.resourceGroupName }}
         location: ${{ parameters.location }}
         namePrefix: ${{ parameters.namePrefix }}
-        bicepFile: 'infra/bicep/main.bicep'
-        bicepParamFile: 'infra/bicep/main.bicepparam'
+        bicepFile: './infra/bicep/main.bicep'
+        bicepParamFile: './infra/bicep/main.bicepparam'
 
 - stage: CD_${{ replace(parameters.functionName, '-', '_') }}
   displayName: 'CD: Deploy ${{ parameters.functionName }}'

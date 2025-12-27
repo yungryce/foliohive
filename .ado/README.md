@@ -99,8 +99,8 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 
 #### Core Infrastructure (infra-core.yml)
 *See `params/params-core.yml` for core infrastructure parameters:*
-- `bicepFile` - Bicep template for core infra (default: `infra/bicep/main.bicep`)
-- `bicepParamFile` - Bicep parameters file (default: `infra/bicep/main.bicepparam`)
+- `bicepFile` - Bicep template for core infra (default: `./infra/bicep/main.bicep`)
+- `bicepParamFile` - Bicep parameters file (default: `./infra/bicep/main.bicepparam`)
 
 #### Core Infrastructure Outputs
 *Populated by the `infra-core` stage, used by other stages:*
@@ -116,7 +116,7 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 - `appServicePlanId` - Shared App Service Plan ID (deployed by core infra)
 - `deployPrivateEndpoints` - Enable private endpoints (default: `false`)
 - `pythonVersion` - Python version for builds (default: `3.13`)
-- `bicepFile` - Bicep template for function apps (default: `infra/bicep/main.function.bicep`)
+- `bicepFile` - Bicep template for function apps (default: `./infra/bicep/main.function.bicep`)
 
 #### Static Web App
 - `enableLinkedBackend` - Link SWA to Function backend (default: `false`)
@@ -232,7 +232,7 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
     resourceGroupName: $(resourceGroupName)
     location: $(location)
     namePrefix: $(namePrefix)
-    bicepFile: infra/bicep/main.function.bicep
+    bicepFile: ./infra/bicep/main.function.bicep
     appServicePlanId: $(appServicePlanId)
     functionsSubnetId: $(functionsSubnetId)
     privateEndpointsSubnetId: $(privateEndpointsSubnetId)
@@ -294,7 +294,7 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 - `Deploy_Content` - Publishes UI content to SWA (depends on Deploy_Infra)
 
 **Parameters:**
-- `bicepFile` - Bicep template path (default: `infra/bicep/main.staticwebapp.bicep`)
+- `bicepFile` - Bicep template path (default: `./infra/bicep/main.staticwebapp.bicep`)
 - `apiGatewayId`, `apiGatewayDefaultHostname` - Backend function app config (optional)
 - `enableLinkedBackend` - Link SWA to function backend (default: `false`)
 
@@ -363,7 +363,7 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
   - Container resource limits (CPU, memory, restart policy)
 
 **Parameters:**
-- `bicepFile` - Bicep template path (default: `infra/bicep/main.container.bicep`)
+- `bicepFile` - Bicep template path (default: `./infra/bicep/main.container.bicep`)
 - `dockerHubRepository`, `imageTag` - Container image location
 - `uamiPrincipalId`, `uamiId`, `uamiClientId` - Managed identity
 - `storageAccountName`, `logAnalyticsWorkspaceId`, `logAnalyticsWorkspaceKey` - Storage and logging

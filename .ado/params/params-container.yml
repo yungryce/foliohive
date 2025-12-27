@@ -28,7 +28,7 @@ parameters:
   # ================================================================================
   # CD-SPECIFIC: DEPLOYMENT & INFRASTRUCTURE
   # ================================================================================
-  bicepFile: 'infra/bicep/main.container.bicep'
+  bicepFile: './infra/bicep/main.container.bicep'
 
   # Core infra outputs (populated by infra-core stage)
   uamiPrincipalId: ''

@@ -136,7 +136,7 @@ parameters:
   - name: bicepFunctionAppFile
     displayName: 'Bicep File: Single Function App'
     type: string
-    default: 'infra/bicep/main.function.bicep'
+    default: './infra/bicep/main.function.bicep'
 
   # ================================================================================
   # FUNCTION APPS OUTPUTS (Populated by functions stage, used by SWA)
@@ -223,27 +223,27 @@ parameters:
   - name: bicepCoreFile
     displayName: 'Bicep File: Core Infrastructure'
     type: string
-    default: 'infra/bicep/main.bicep'
+    default: './infra/bicep/main.bicep'
 
   - name: bicepCoreParamFile
     displayName: 'Bicep Param File: Core Infrastructure'
     type: string
-    default: 'infra/bicep/main.bicepparam'
+    default: './infra/bicep/main.bicepparam'
 
   - name: bicepFunctionsFile
     displayName: 'Bicep File: Function Apps'
     type: string
-    default: 'infra/bicep/main.functions.bicep'
+    default: './infra/bicep/main.functions.bicep'
 
   - name: bicepSwaFile
     displayName: 'Bicep File: Static Web App'
     type: string
-    default: 'infra/bicep/main.staticwebapp.bicep'
+    default: './infra/bicep/main.staticwebapp.bicep'
 
   - name: bicepContainerFile
     displayName: 'Bicep File: Container Instance'
     type: string
-    default: 'infra/bicep/main.container.bicep'
+    default: './infra/bicep/main.container.bicep'
 
 # ================================================================================
 # NOTES
