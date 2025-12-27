@@ -66,8 +66,8 @@ jobs:
           resourceGroupName: '${{ parameters.resourceGroupName }}'
           location: '${{ parameters.location }}'
           templateLocation: 'Linked artifact'
-          csmFile: '$(bicepFile)'
-          csmParametersFile: '$(bicepParamFile)'
+          csmFile: '${{ parameters.bicepFile }}'
+          csmParametersFile: '${{ parameters.bicepParamFile }}'
           parametersLocation: 'Linked artifact'
           overrideParameters: |
             -location ${{ parameters.location }}
