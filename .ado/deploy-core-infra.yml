@@ -6,7 +6,7 @@
 parameters:
   - name: azureServiceConnection
     type: string
-    default: ''
+    default: 'cloudfolio-sc'
   - name: subscriptionId
     type: string
     default: ''
