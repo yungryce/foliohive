@@ -3,35 +3,6 @@
 # - Used by CD pipelines (ensures infra exists before deploying app)
 # - Idempotent: Safe to run multiple times
 
-variables:
-  - group: 'Cloudfolio-Vars'
-
-parameters:
-  - name: azureServiceConnection
-    type: string
-    default: '$(azureServiceConnection)'
-  - name: subscriptionId
-    type: string
-    default: '$(subscriptionId)'
-  - name: resourceGroupName
-    type: string
-    default: '$(resourceGroupName)'
-  - name: location
-    type: string
-    default: 'westus2'
-  - name: namePrefix
-    type: string
-    default: 'cloudfolio'
-  - name: tags
-    type: string
-    default: '{}'
-  - name: bicepFile
-    type: string
-    default: './infra/bicep/main.bicep'
-  - name: bicepParamFile
-    type: string
-    default: './infra/bicep/main.bicepparam'
-
 jobs:
   - job: Deploy_Core_Infra
     displayName: Deploy core infrastructure

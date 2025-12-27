@@ -16,6 +16,9 @@ trigger:
       - .ado/params/params-core.yml
       - .ado/deploy-core-infra.yml
 
+variables:
+  - group: 'Cloudfolio-Vars'
+
 parameters:
   - name: azureServiceConnection
     type: string
