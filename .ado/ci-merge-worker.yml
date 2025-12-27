@@ -18,13 +18,12 @@ trigger:
       - apps/**/__pycache__/**
       - '**/*.pyc'
 
-parameters:
-  pythonVersion: '3.13'
-
 variables:
-  functionName: 'merge-worker'
-  functionDir: 'apps/merge-worker'
-  sharedDir: 'apps/shared'
+  - group: 'Cloudfolio-Vars'
+  - functionName: 'merge-worker'
+  - functionDir: 'apps/merge-worker'
+  - sharedDir: 'apps/shared'
+  - pythonVersion: '3.13'
 
 stages:
 - stage: CI_merge_worker
@@ -36,9 +35,9 @@ stages:
         vmImage: ubuntu-latest
       steps:
         - task: UsePythonVersion@0
-          displayName: Use Python ${{ parameters.pythonVersion }}
+          displayName: Use Python $(pythonVersion)
           inputs:
-            versionSpec: '${{ parameters.pythonVersion }}'
+            versionSpec: '$(pythonVersion)'
 
         - script: |
             set -euo pipefail

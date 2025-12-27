@@ -17,6 +17,9 @@ trigger:
       - api/v0.2.0/training-worker/**/__pycache__/**
       - 'api/v0.2.0/training-worker/**/*.pyc'
 
+variables:
+  - group: 'Cloudfolio-Vars'
+
 parameters:
   azureServiceConnection: ''
   dockerHubServiceConnection: ''

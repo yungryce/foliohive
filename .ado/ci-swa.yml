@@ -18,8 +18,9 @@ trigger:
       - ui/.angular/cache/**
       - 'ui/**/*.spec.ts'
 
-parameters:
-  uiDir: 'ui'
+variables:
+  - group: 'Cloudfolio-Vars'
+  - uiDir: 'ui'
 
 stages:
 - stage: CI_SWA
@@ -37,7 +38,7 @@ stages:
 
         - script: |
             set -euo pipefail
-            dir="${{ parameters.uiDir }}"
+            dir="$(uiDir)"
 
             if [ -z "$dir" ] || [ ! -d "$dir" ]; then
               echo "##vso[task.logissue type=error]UI directory not found: $dir"
@@ -58,6 +59,6 @@ stages:
         - task: PublishPipelineArtifact@1
           displayName: 'Publish SWA artifact'
           inputs:
-            targetPath: '${{ parameters.uiDir }}/dist/cloudfolio-ui'
+            targetPath: '$(uiDir)/dist/cloudfolio-ui'
             artifact: 'swa-artifact'
             publishLocation: 'pipeline'
