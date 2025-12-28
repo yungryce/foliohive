@@ -13,6 +13,7 @@ trigger:
     include:
       - apps/merge-worker/**
       - apps/shared/**
+      - .ado/ci-merge-worker.yml
     exclude:
       - apps/**/tests/**
       - apps/**/__pycache__/**
@@ -20,10 +21,14 @@ trigger:
 
 variables:
   - group: 'Cloudfolio-Vars'
-  - functionName: 'merge-worker'
-  - functionDir: 'apps/merge-worker'
-  - sharedDir: 'apps/shared'
-  - pythonVersion: '3.13'
+  - name: functionName
+    value: 'merge-worker'
+  - name: functionDir
+    value: 'apps/merge-worker'
+  - name: sharedDir
+    value: 'apps/shared'
+  - name: pythonVersion
+    value: '3.13'
 
 stages:
 - stage: CI_merge_worker

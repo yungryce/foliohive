@@ -13,6 +13,7 @@ trigger:
     include:
       - apps/sync-worker/**
       - apps/shared/**
+      - .ado/ci-sync-worker.yml
     exclude:
       - apps/**/tests/**
       - apps/**/__pycache__/**
@@ -20,10 +21,14 @@ trigger:
 
 variables:
   - group: 'Cloudfolio-Vars'
-  - functionName: 'sync-worker'
-  - functionDir: 'apps/sync-worker'
-  - sharedDir: 'apps/shared'
-  - pythonVersion: '3.13' 
+  - name: functionName
+    value: 'sync-worker'
+  - name: functionDir
+    value: 'apps/sync-worker'
+  - name: sharedDir
+    value: 'apps/shared'
+  - name: pythonVersion
+    value: '3.13'
 
 stages:
 - stage: CI_sync_worker

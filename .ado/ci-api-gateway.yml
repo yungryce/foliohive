@@ -13,6 +13,7 @@ trigger:
     include:
       - apps/api-gateway/**
       - apps/shared/**
+      - .ado/ci-api-gateway.yml
     exclude:
       - apps/**/tests/**
       - apps/**/__pycache__/**
