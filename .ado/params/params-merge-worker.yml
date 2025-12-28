@@ -3,21 +3,8 @@
 
 parameters:
   # ================================================================================
-  # CORE INFRASTRUCTURE OUTPUTS (Populated by infra-core stage)
-  # ================================================================================
-  appServicePlanId: ''
-  functionsSubnetId: ''
-  privateEndpointsSubnetId: ''
-  storageAccountName: ''
-  uamiId: ''
-  uamiClientId: ''
-  appInsightsConnectionString: ''
-  privateDnsZoneAzureWebsitesId: ''
-
-  # ================================================================================
   # CI-SPECIFIC: BUILD & ARTIFACTS
   # ================================================================================
-  pythonVersion: '3.13'
   artifactBuildId: '$(Build.BuildId)'
   artifactContainerName: 'function-artifacts'
 
@@ -31,4 +18,3 @@ parameters:
   bicepFile: './infra/bicep/main.function.bicep'
   deployPrivateEndpoints: false
 
-  functionAppName: ''  # Computed during deployment

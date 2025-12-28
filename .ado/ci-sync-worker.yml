@@ -27,8 +27,6 @@ variables:
     value: 'api/v0.2.0/sync-worker'
   - name: sharedDir
     value: 'api/v0.2.0/shared'
-  - name: pythonVersion
-    value: '3.13'
 
 stages:
 - stage: CI_sync_worker

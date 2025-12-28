@@ -13,12 +13,7 @@ resources:
     trigger: true
 
 parameters:
-  azureServiceConnection: ''
-  subscriptionId: ''
-  resourceGroupName: ''
-  location: 'westus2'
-  namePrefix: 'cloudfolio'
-  bicepFile: './././././infra/bicep/main.container.bicep'
+  bicepFile: './infra/bicep/main.container.bicep'
 
   # Core infra outputs
   uamiPrincipalId: ''

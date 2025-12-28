@@ -22,7 +22,7 @@ parameters:
   apiGatewayDefaultHostname: ''
 
   # CD-specific
-  enableLinkedBackend: false
+  enableLinkedBackend: true
 
 stages:
 - stage: Ensure_Core_Infrastructure

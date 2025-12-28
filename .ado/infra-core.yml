@@ -18,6 +18,10 @@ trigger:
 variables:
   - group: 'Cloudfolio-Vars'
 
+parameters:
+  bicepFile: './infra/bicep/main.bicep'
+  bicepParamFile: './infra/bicep/main.bicepparam'
+
 stages:
 - stage: Core_Infrastructure
   displayName: Core Infrastructure (one-time)
@@ -29,6 +33,6 @@ stages:
         resourceGroupName: $(resourceGroupName)
         location: $(location)
         namePrefix: $(namePrefix)
-        bicepFile: $(bicepFile)
-        bicepParamFile: $(bicepParamFile)
+        bicepFile: ${{ parameters.bicepFile }}
+        bicepParamFile: ${{ parameters.bicepParamFile }}
 

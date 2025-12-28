@@ -1,0 +1,80 @@
+# Retrieves outputs from core infrastructure deployment
+# Used by: cd-function.yml, cd-swa.yml, cd-container.yml
+
+
+jobs:
+  - job: Get_Core_Infra_Outputs
+    displayName: Retrieve core infrastructure outputs
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - checkout: none
+
+      - task: AzureCLI@2
+        displayName: 'Query core infra deployment outputs'
+        inputs:
+          azureSubscription: '$(azureServiceConnection)'
+          scriptType: bash
+          inlineScript: |
+            set -euo pipefail
+            RG_NAME="$(resourceGroupName)"
+            
+            echo "=== Validating Core Infrastructure ==="
+            echo "Resource Group: $RG_NAME"
+            
+            # Check if RG exists
+            if ! az group show -n "$RG_NAME" &>/dev/null; then
+              echo "##vso[task.logissue type=error]Resource group does not exist: $RG_NAME"
+              echo "Run infra-core.yml first to create core infrastructure."
+              exit 1
+            fi
+
+            # Find the most recent core infra deployment
+            DEPLOYMENT_NAME=$(az deployment group list -g "$RG_NAME" --query "[?properties.provisioningState=='Succeeded'] | sort_by(@, &properties.timestamp) | [-1].name" -o tsv)
+            
+             if [ -z "$DEPLOYMENT_NAME" ] || [ "$DEPLOYMENT_NAME" = "None" ]; then
+              echo "##vso[task.logissue type=error]No successful core infrastructure deployment found in RG: $RG_NAME"
+              echo "Run infra-core.yml first to create core infrastructure."
+              exit 1
+            fi
+            
+            echo "✓ Found core infra deployment: $DEPLOYMENT_NAME"
+            
+            # Extract outputs
+            OUTPUTS=$(az deployment group show -g "$RG_NAME" -n "$DEPLOYMENT_NAME" --query "properties.outputs" -o json)
+            
+            # Parse and export as pipeline variables
+            appServicePlanId=$(echo "$OUTPUTS" | jq -r '.appServicePlanId.value // empty')
+            functionsSubnetId=$(echo "$OUTPUTS" | jq -r '.functionsSubnetId.value // empty')
+            privateEndpointsSubnetId=$(echo "$OUTPUTS" | jq -r '.privateEndpointsSubnetId.value // empty')
+            uamiId=$(echo "$OUTPUTS" | jq -r '.uamiId.value // empty')
+            uamiClientId=$(echo "$OUTPUTS" | jq -r '.uamiClientId.value // empty')
+            appInsightsConnectionString=$(echo "$OUTPUTS" | jq -r '.appInsightsConnectionString.value // empty')
+            privateDnsZoneAzureWebsitesId=$(echo "$OUTPUTS" | jq -r '.privateDnsZoneAzureWebsitesId.value // empty')
+            storageAccountName=$(echo "$OUTPUTS" | jq -r '.storageAccountName.value // empty')
+            logAnalyticsWorkspaceId=$(echo "$OUTPUTS" | jq -r '.logAnalyticsWorkspaceId.value // empty')
+            logAnalyticsWorkspaceKey=$(echo "$OUTPUTS" | jq -r '.logAnalyticsWorkspaceKey.value // empty')
+            apiGatewayId=$(echo "$OUTPUTS" | jq -r '.apiGatewayId.value // empty')
+            apiGatewayDefaultHostname=$(echo "$OUTPUTS" | jq -r '.apiGatewayDefaultHostname.value // empty')
+            
+            # Validate required outputs
+            if [ -z "$appServicePlanId" ]; then
+              echo "##vso[task.logissue type=error]Required output 'appServicePlanId' not found in core infra deployment"
+              exit 1
+            fi
+            
+            # Set as pipeline variables (output=true makes them available to dependent stages)
+            echo "##vso[task.setvariable variable=appServicePlanId;isOutput=true]$appServicePlanId"
+            echo "##vso[task.setvariable variable=functionsSubnetId;isOutput=true]$functionsSubnetId"
+            echo "##vso[task.setvariable variable=privateEndpointsSubnetId;isOutput=true]$privateEndpointsSubnetId"
+            echo "##vso[task.setvariable variable=uamiId;isOutput=true]$uamiId"
+            echo "##vso[task.setvariable variable=uamiClientId;isOutput=true]$uamiClientId"
+            echo "##vso[task.setvariable variable=appInsightsConnectionString;isOutput=true]$appInsightsConnectionString"
+            echo "##vso[task.setvariable variable=privateDnsZoneAzureWebsitesId;isOutput=true]$privateDnsZoneAzureWebsitesId"
+            echo "##vso[task.setvariable variable=storageAccountName;isOutput=true]$storageAccountName"
+            echo "##vso[task.setvariable variable=logAnalyticsWorkspaceId;isOutput=true]$logAnalyticsWorkspaceId"
+            echo "##vso[task.setvariable variable=logAnalyticsWorkspaceKey;isOutput=true]$logAnalyticsWorkspaceKey"
+            echo "##vso[task.setvariable variable=apiGatewayId;isOutput=true]$apiGatewayId"
+            echo "##vso[task.setvariable variable=apiGatewayDefaultHostname;isOutput=true]$apiGatewayDefaultHostname"
+            
+            echo "✓ All required outputs validated and exported"
