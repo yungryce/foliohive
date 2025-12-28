@@ -1,0 +1,81 @@
+# Reusable template for detecting which functions changed
+# - Single source of truth for change detection
+# - Sets output variables used by CI and CD pipelines
+# - Uses git diff to compare against previous commit
+
+jobs:
+  - job: Detect_Changes
+    displayName: 'Detect changed functions'
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - checkout: self
+        fetchDepth: 2
+        displayName: 'Checkout with history'
+
+      - bash: |
+          set -euo pipefail
+          
+          echo "=== Detecting Function Changes ==="
+          
+          # Get the list of changed files
+          if [ "$(Build.Reason)" = "PullRequest" ]; then
+            # For PRs, compare against target branch
+            CHANGED_FILES=$(git diff --name-only HEAD~1)
+          else
+            # For push/manual, compare against previous commit
+            CHANGED_FILES=$(git diff --name-only HEAD~1 2>/dev/null || echo "")
+          fi
+          
+          # If no changes detected (e.g., first commit), build all
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No git history or first commit - building all functions"
+            API_GATEWAY_CHANGED=true
+            SYNC_WORKER_CHANGED=true
+            MERGE_WORKER_CHANGED=true
+          else
+            echo "Changed files:"
+            echo "$CHANGED_FILES"
+            echo ""
+            
+            # Check each function directory and shared library
+            API_GATEWAY_CHANGED=false
+            SYNC_WORKER_CHANGED=false
+            MERGE_WORKER_CHANGED=false
+            
+            if echo "$CHANGED_FILES" | grep -qE '^api/v0\.2\.0/(api-gateway|shared)/'; then
+              API_GATEWAY_CHANGED=true
+              echo "✓ api-gateway changed"
+            fi
+            
+            if echo "$CHANGED_FILES" | grep -qE '^api/v0\.2\.0/(sync-worker|shared)/'; then
+              SYNC_WORKER_CHANGED=true
+              echo "✓ sync-worker changed"
+            fi
+            
+            if echo "$CHANGED_FILES" | grep -qE '^api/v0\.2\.0/(merge-worker|shared)/'; then
+              MERGE_WORKER_CHANGED=true
+              echo "✓ merge-worker changed"
+            fi
+            
+            # If CI/CD pipeline files changed, rebuild all
+            if echo "$CHANGED_FILES" | grep -qE '^\.ado/(ci-|cd-|.*-function\.yml)'; then
+              echo "Pipeline files changed - building all functions"
+              API_GATEWAY_CHANGED=true
+              SYNC_WORKER_CHANGED=true
+              MERGE_WORKER_CHANGED=true
+            fi
+          fi
+          
+          # Set output variables for downstream jobs/stages
+          echo "##vso[task.setvariable variable=apiGatewayChanged;isOutput=true]$API_GATEWAY_CHANGED"
+          echo "##vso[task.setvariable variable=syncWorkerChanged;isOutput=true]$SYNC_WORKER_CHANGED"
+          echo "##vso[task.setvariable variable=mergeWorkerChanged;isOutput=true]$MERGE_WORKER_CHANGED"
+          
+          echo ""
+          echo "=== Change Detection Summary ==="
+          echo "api-gateway: $API_GATEWAY_CHANGED"
+          echo "sync-worker: $SYNC_WORKER_CHANGED"
+          echo "merge-worker: $MERGE_WORKER_CHANGED"
+        displayName: 'Detect function changes'
+        name: DetectChanges

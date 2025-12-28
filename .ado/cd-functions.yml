@@ -1,0 +1,38 @@
+# Unified CD pipeline for all Function Apps
+# - Triggered by ci-functions pipeline completion
+# - Reactive design: attempts to deploy all functions, skips if artifact not found
+# - Single source of truth: CI decides what to build, artifact existence decides what to deploy
+# - Simple and maintainable: no cross-stage dependencies, no complex conditions
+
+resources:
+  pipelines:
+    - pipeline: ci-functions
+      source: yungryce.cloudfolio.ci-functions
+
+variables:
+  - group: 'Cloudfolio-Vars'
+
+stages:
+- stage: Deploy_Functions
+  displayName: 'Deploy Functions'
+  jobs:
+    - template: cd-deploy-function.yml
+      parameters:
+        functionName: 'api-gateway'
+        bicepFile: './infra/bicep/main.function.bicep'
+        deployPrivateEndpoints: false
+        ciPipelineResourceName: 'ci-functions'
+
+    - template: cd-deploy-function.yml
+      parameters:
+        functionName: 'sync-worker'
+        bicepFile: './infra/bicep/main.function.bicep'
+        deployPrivateEndpoints: false
+        ciPipelineResourceName: 'ci-functions'
+
+    - template: cd-deploy-function.yml
+      parameters:
+        functionName: 'merge-worker'
+        bicepFile: './infra/bicep/main.function.bicep'
+        deployPrivateEndpoints: false
+        ciPipelineResourceName: 'ci-functions'

@@ -1,0 +1,140 @@
+# Reusable job template for deploying a Function App
+# - Checks if artifact exists (if not, skips deployment)
+# - Validates core infrastructure outputs exist
+# - Deploys function infra via Bicep
+# - Deploys code to Function App
+#
+# Used by: cd-functions.yml (unified CD pipeline)
+# Design: Reactive and simple - artifact existence is the single source of truth
+
+parameters:
+  - name: functionName
+    type: string
+  - name: bicepFile
+    type: string
+    default: './infra/bicep/main.function.bicep'
+  - name: deployPrivateEndpoints
+    type: boolean
+    default: false
+  - name: ciPipelineResourceName
+    type: string
+    default: 'ci-functions'
+
+jobs:
+  - job: Deploy_${{ replace(parameters.functionName, '-', '_') }}
+    displayName: 'Deploy ${{ parameters.functionName }}'
+    pool:
+      vmImage: ubuntu-latest
+    variables:
+      artifactExists: 'false'
+    steps:
+      - checkout: self
+        displayName: 'Checkout source code'
+
+      - task: UsePythonVersion@0
+        displayName: 'Use Python $(pythonVersion)'
+        inputs:
+          versionSpec: '$(pythonVersion)'
+
+      # Try to download artifact - if it doesn't exist, CI didn't build this function
+      - download: ${{ parameters.ciPipelineResourceName }}
+        displayName: 'Download ${{ parameters.functionName }} artifact from CI'
+        artifact: ${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.runID)
+        continueOnError: true
+
+      # Check if artifact was downloaded successfully
+      - bash: |
+          if [ -d "$(Pipeline.Workspace)/${{ parameters.ciPipelineResourceName }}/${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.runID)" ]; then
+            echo "✓ Artifact found - will proceed with deployment"
+            echo "##vso[task.setvariable variable=artifactExists]true"
+          else
+            echo "✗ Artifact not found - skipping deployment for ${{ parameters.functionName }}"
+            echo "##vso[task.setvariable variable=artifactExists]false"
+          fi
+        displayName: 'Check artifact existence'
+
+      # Get core infrastructure outputs
+      - task: AzureCLI@2
+        displayName: 'Get core infrastructure outputs'
+        condition: eq(variables['artifactExists'], 'true')
+        inputs:
+          azureSubscription: '$(azureServiceConnection)'
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -euo pipefail
+            RG_NAME="$(resourceGroupName)"
+            
+            echo "=== Retrieving Core Infrastructure Outputs ==="
+            
+            # Find the most recent successful core infra deployment
+            DEPLOYMENT_NAME=$(az deployment group list -g "$RG_NAME" \
+              --query "[?properties.provisioningState=='Succeeded'] | sort_by(@, &properties.timestamp) | [-1].name" -o tsv)
+            
+            if [ -z "$DEPLOYMENT_NAME" ] || [ "$DEPLOYMENT_NAME" = "None" ]; then
+              echo "##vso[task.logissue type=error]No successful core infrastructure deployment found"
+              echo "Run infra-core.yml first"
+              exit 1
+            fi
+            
+            echo "✓ Found deployment: $DEPLOYMENT_NAME"
+            
+            # Extract outputs
+            OUTPUTS=$(az deployment group show -g "$RG_NAME" -n "$DEPLOYMENT_NAME" --query "properties.outputs" -o json)
+            
+            # Set as variables
+            echo "##vso[task.setvariable variable=appServicePlanId]$(echo "$OUTPUTS" | jq -r '.appServicePlanId.value // empty')"
+            echo "##vso[task.setvariable variable=functionsSubnetId]$(echo "$OUTPUTS" | jq -r '.functionsSubnetId.value // empty')"
+            echo "##vso[task.setvariable variable=privateEndpointsSubnetId]$(echo "$OUTPUTS" | jq -r '.privateEndpointsSubnetId.value // empty')"
+            echo "##vso[task.setvariable variable=uamiId]$(echo "$OUTPUTS" | jq -r '.uamiId.value // empty')"
+            echo "##vso[task.setvariable variable=uamiClientId]$(echo "$OUTPUTS" | jq -r '.uamiClientId.value // empty')"
+            echo "##vso[task.setvariable variable=appInsightsConnectionString]$(echo "$OUTPUTS" | jq -r '.appInsightsConnectionString.value // empty')"
+            echo "##vso[task.setvariable variable=privateDnsZoneAzureWebsitesId]$(echo "$OUTPUTS" | jq -r '.privateDnsZoneAzureWebsitesId.value // empty')"
+            
+            echo "✓ Infrastructure outputs retrieved"
+
+      # Deploy function infrastructure
+      - task: AzureResourceManagerTemplateDeployment@3
+        displayName: 'Deploy ${{ parameters.functionName }} infra'
+        condition: eq(variables['artifactExists'], 'true')
+        inputs:
+          deploymentScope: 'Resource Group'
+          azureResourceManagerConnection: '$(azureServiceConnection)'
+          subscriptionId: '$(subscriptionId)'
+          action: 'Select Resource Group'
+          resourceGroupName: '$(resourceGroupName)'
+          location: '$(location)'
+          templateLocation: 'Linked artifact'
+          csmFile: '${{ parameters.bicepFile }}'
+          overrideParameters: '-location "$(location)" -functionAppName "${{ parameters.functionName }}" -appServicePlanId "$(appServicePlanId)" -functionsSubnetId "$(functionsSubnetId)" -privateEndpointsSubnetId "$(privateEndpointsSubnetId)" -uamiId "$(uamiId)" -uamiClientId "$(uamiClientId)" -appInsightsConnectionString "$(appInsightsConnectionString)" -privateDnsZoneAzureWebsitesId "$(privateDnsZoneAzureWebsitesId)" -deployPrivateEndpoint "${{ parameters.deployPrivateEndpoints }}"'
+          deploymentMode: 'Incremental'
+          deploymentName: '${{ parameters.functionName }}-$(Build.BuildId)'
+
+      # Resolve function app name from deployment outputs
+      - task: AzureCLI@2
+        displayName: 'Resolve function app name'
+        condition: eq(variables['artifactExists'], 'true')
+        inputs:
+          azureSubscription: '$(azureServiceConnection)'
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -euo pipefail
+            deployment_name="${{ parameters.functionName }}-$(Build.BuildId)"
+            funcName=$(az deployment group show -g "$(resourceGroupName)" -n "$deployment_name" --query "properties.outputs.functionAppName.value" -o tsv)
+            if [ -z "$funcName" ]; then
+              echo "##vso[task.logissue type=error]Failed to read functionAppName from deployment outputs"
+              exit 1
+            fi
+            echo "##vso[task.setvariable variable=functionAppName]$funcName"
+            echo "✓ Resolved function app: $funcName"
+
+      # Deploy function code
+      - task: AzureFunctionApp@2
+        displayName: 'Deploy ${{ parameters.functionName }} code'
+        condition: eq(variables['artifactExists'], 'true')
+        inputs:
+          connectedServiceNameARM: '$(azureServiceConnection)'
+          appType: functionAppLinux
+          appName: '$(functionAppName)'
+          package: '$(Pipeline.Workspace)/${{ parameters.ciPipelineResourceName }}/${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.runID)/${{ parameters.functionName }}.zip'

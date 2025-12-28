@@ -1,0 +1,62 @@
+# Unified CI pipeline for all Function Apps
+# - Detects which functions changed (single source of truth)
+# - Builds only changed functions (conditional execution)
+# - Publishes artifacts for changed functions only
+# - Triggered by changes to any function or shared library
+# - Standalone: No Azure dependency, triggered by code changes only
+
+trigger:
+  branches:
+    include:
+      - main
+      - test
+  paths:
+    include:
+      - api/v0.2.0/api-gateway/**
+      - api/v0.2.0/sync-worker/**
+      - api/v0.2.0/merge-worker/**
+      - api/v0.2.0/shared/**
+      - .ado/ci-functions.yml
+      - .ado/ci-build-function.yml
+      - .ado/detect-function-changes.yml
+    exclude:
+      - api/v0.2.0/**/tests/**
+      - api/v0.2.0/**/__pycache__/**
+      - '**/*.pyc'
+
+variables:
+  - group: 'Cloudfolio-Vars'
+
+stages:
+- stage: Detect_Changes
+  displayName: 'Detect Changed Functions'
+  jobs:
+    - template: detect-function-changes.yml
+
+- stage: CI_Functions
+  displayName: 'CI: Build Changed Functions'
+  dependsOn: Detect_Changes
+  jobs:
+    - template: ci-build-function.yml
+      condition: eq(dependencies.Detect_Changes.outputs['Detect_Changes.DetectChanges.apiGatewayChanged'], 'true')
+      parameters:
+        functionName: 'api-gateway'
+        functionDir: 'api/v0.2.0/api-gateway'
+        sharedDir: 'api/v0.2.0/shared'
+        pythonVersion: '$(pythonVersion)'
+
+    - template: ci-build-function.yml
+      condition: eq(dependencies.Detect_Changes.outputs['Detect_Changes.DetectChanges.syncWorkerChanged'], 'true')
+      parameters:
+        functionName: 'sync-worker'
+        functionDir: 'api/v0.2.0/sync-worker'
+        sharedDir: 'api/v0.2.0/shared'
+        pythonVersion: '$(pythonVersion)'
+
+    - template: ci-build-function.yml
+      condition: eq(dependencies.Detect_Changes.outputs['Detect_Changes.DetectChanges.mergeWorkerChanged'], 'true')
+      parameters:
+        functionName: 'merge-worker'
+        functionDir: 'api/v0.2.0/merge-worker'
+        sharedDir: 'api/v0.2.0/shared'
+        pythonVersion: '$(pythonVersion)'

@@ -1,0 +1,64 @@
+# Reusable job template for building a Function App
+# Used by: ci-functions.yml (unified CI pipeline)
+
+parameters:
+  - name: functionName
+    type: string
+  - name: functionDir
+    type: string
+  - name: sharedDir
+    type: string
+  - name: pythonVersion
+    type: string
+    default: '3.13'
+
+jobs:
+  - job: Build_${{ replace(parameters.functionName, '-', '_') }}
+    displayName: 'Build ${{ parameters.functionName }}'
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - task: UsePythonVersion@0
+        displayName: 'Use Python ${{ parameters.pythonVersion }}'
+        inputs:
+          versionSpec: '${{ parameters.pythonVersion }}'
+
+      - script: |
+          set -euo pipefail
+
+          dir="${{ parameters.functionDir }}"
+          shared="${{ parameters.sharedDir }}"
+          artifact="$BUILD_ARTIFACTSTAGINGDIRECTORY/${{ parameters.functionName }}.zip"
+          site_packages="$dir/.python_packages/lib/site-packages"
+
+          if [ ! -d "$dir" ]; then
+            echo "##vso[task.logissue type=error]Function directory not found: $dir"
+            exit 1
+          fi
+
+          echo "[CI] Packaging function: ${{ parameters.functionName }}"
+
+          rm -rf "$site_packages"
+          mkdir -p "$site_packages"
+
+          python -m pip install --upgrade pip
+          python -m pip install -r "$dir/requirements.txt" --target "$site_packages"
+          python -m pip install "$shared" --target "$site_packages"
+
+          (cd "$dir" && zip -r "$artifact" . \
+            -x "**/__pycache__/**" \
+            -x "**/*.pyc" \
+            -x "**/.venv/**" \
+            -x "**/.pytest_cache/**" \
+            -x "**/.git/**" \
+            -x "**/.DS_Store")
+
+          echo "[CI] Created artifact: $artifact"
+        displayName: 'Package ${{ parameters.functionName }}'
+
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish ${{ parameters.functionName }} artifact'
+        inputs:
+          targetPath: '$(Build.ArtifactStagingDirectory)/${{ parameters.functionName }}.zip'
+          artifact: '${{ parameters.functionName }}-$(Build.BuildId)'
+          publishLocation: 'pipeline'
