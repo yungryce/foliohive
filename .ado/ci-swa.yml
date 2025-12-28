@@ -20,7 +20,8 @@ trigger:
 
 variables:
   - group: 'Cloudfolio-Vars'
-  - uiDir: 'ui'
+  - name: uiDir
+    value: ui
 
 stages:
 - stage: CI_SWA
