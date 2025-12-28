@@ -431,7 +431,7 @@ kubectl create namespace monitoring
 
 **2.1 API Gateway Dockerfile**
 ```dockerfile
-# apps/api-gateway/Dockerfile (already exists in Function Apps plan)
+# api/v.../api-gateway/Dockerfile (already exists in Function Apps plan)
 FROM python:3.13-slim
 
 WORKDIR /app
@@ -441,11 +441,11 @@ COPY apps/shared /tmp/shared
 RUN pip install -e /tmp/shared
 
 # Install gateway dependencies
-COPY apps/api-gateway/requirements.txt .
+COPY api/v.../api-gateway/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY apps/api-gateway/ .
+COPY api/v.../api-gateway/ .
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s \
@@ -457,21 +457,21 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 **2.2 Sync Worker Dockerfile**
 ```dockerfile
-# apps/sync-worker/Dockerfile
+# api/v.../sync-worker/Dockerfile
 FROM python:3.13-slim
 
 WORKDIR /app
 
 # Install shared package
-COPY apps/shared /tmp/shared
+COPY api/v.../shared /tmp/shared
 RUN pip install -e /tmp/shared
 
 # Install worker dependencies
-COPY apps/sync-worker/requirements.txt .
+COPY api/v.../sync-worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy worker code
-COPY apps/sync-worker/ .
+COPY api/v.../sync-worker/ .
 
 # Run worker (polls Azure Storage Queue)
 CMD ["python", "worker.py"]
@@ -479,14 +479,14 @@ CMD ["python", "worker.py"]
 
 **2.3 Merge Worker Dockerfile**
 ```dockerfile
-# apps/merge-worker/Dockerfile (similar structure)
+# api/v.../merge-worker/Dockerfile (similar structure)
 FROM python:3.13-slim
 WORKDIR /app
-COPY apps/shared /tmp/shared
+COPY api/v.../shared /tmp/shared
 RUN pip install -e /tmp/shared
-COPY apps/merge-worker/requirements.txt .
+COPY api/v.../merge-worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY apps/merge-worker/ .
+COPY api/v.../merge-worker/ .
 CMD ["python", "worker.py"]
 ```
 
@@ -496,9 +496,9 @@ CMD ["python", "worker.py"]
 az acr login --name acrportfolio
 
 # Build images
-docker build -t acrportfolio.azurecr.io/api-gateway:v1 apps/api-gateway/
-docker build -t acrportfolio.azurecr.io/sync-worker:v1 apps/sync-worker/
-docker build -t acrportfolio.azurecr.io/merge-worker:v1 apps/merge-worker/
+docker build -t acrportfolio.azurecr.io/api-gateway:v1 api/v.../api-gateway/
+docker build -t acrportfolio.azurecr.io/sync-worker:v1 api/v.../sync-worker/
+docker build -t acrportfolio.azurecr.io/merge-worker:v1 api/v.../merge-worker/
 
 # Push to ACR
 docker push acrportfolio.azurecr.io/api-gateway:v1

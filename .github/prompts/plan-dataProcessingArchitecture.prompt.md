@@ -2,7 +2,7 @@
 
 **Date**: December 6, 2025  
 **Status**: Implemented / Living Document  
-**Applies To**: `apps/api-gateway`, `apps/sync-worker`, `apps/merge-worker`, `apps/shared`, `apps/training-worker`
+**Applies To**: `api/v.../api-gateway`, `api/v.../sync-worker`, `api/v.../merge-worker`, `api/v.../shared`, `api/v.../training-worker`
 
 ## Terminology
 - **User**: recruiter consuming Cloudfolio APIs to evaluate candidates.
@@ -19,10 +19,10 @@
 ---
 
 ## 2. Request-to-Response Flow
-1. **Trigger** – `apps/api-gateway/function_app.py` receives `/bundles/{username}/refresh` or `/ai` requests, validates usernames, and persists initial job metadata through `cloudfolio_shared.cache_manager` (internally powered by the shared `table_manager`).
-2. **Sync Stage** – `apps/sync-worker/function_app.py` consumes `github-sync` queue messages, fetches repo metadata via `GitHubAPI`/`GitHubRepoManager`, fingerprints payloads, and stores **repo-level metadata** in Azure Tables via the shared `table_manager` plus **ephemeral repo content blobs** for training.
-3. **Merge Stage** – `apps/merge-worker/function_app.py` consumes `merge-results`, merges cached repo **metadata rows** for the job into a consolidated candidate bundle record in Tables using `table_manager` primitives and, when needed, emits a `model-training` message whose payload points at ephemeral blobs.
-4. **Training Stage** – `apps/training-worker/train_worker.py` (container) processes `model-training` messages, downloads referenced blobs containing full repo content, trains/refreshes models, and writes **long-lived model artifacts** back to blob storage and **lightweight model metadata** to Tables through `table_manager` helpers.
+1. **Trigger** – `api/v.../api-gateway/function_app.py` receives `/bundles/{username}/refresh` or `/ai` requests, validates usernames, and persists initial job metadata through `cloudfolio_shared.cache_manager` (internally powered by the shared `table_manager`).
+2. **Sync Stage** – `api/v.../sync-worker/function_app.py` consumes `github-sync` queue messages, fetches repo metadata via `GitHubAPI`/`GitHubRepoManager`, fingerprints payloads, and stores **repo-level metadata** in Azure Tables via the shared `table_manager` plus **ephemeral repo content blobs** for training.
+3. **Merge Stage** – `api/v.../merge-worker/function_app.py` consumes `merge-results`, merges cached repo **metadata rows** for the job into a consolidated candidate bundle record in Tables using `table_manager` primitives and, when needed, emits a `model-training` message whose payload points at ephemeral blobs.
+4. **Training Stage** – `api/v.../training-worker/train_worker.py` (container) processes `model-training` messages, downloads referenced blobs containing full repo content, trains/refreshes models, and writes **long-lived model artifacts** back to blob storage and **lightweight model metadata** to Tables through `table_manager` helpers.
 5. **Response** – `api-gateway` reads **only structured metadata** (e.g., candidate sessions, skills, repo summaries, model status) from Tables via `cache_manager`/`table_manager` and combines it with model outputs to serve `/bundles/{username}` and `/ai` without ever loading full repo content.
 
 ---
@@ -185,12 +185,12 @@ Observability tips:
 1. `./apps/setup-dev.sh --run-tests` – creates `.venv`, installs shared + worker deps, runs pytest (unit + integration) using Azurite if needed.
 2. `./apps/run-dev-session.sh [--skip-e2e]` – activates venv, launches Function Apps via `func start`, logs output to `apps/logs/`, and runs curl-based smoke tests.
 3. Targeted tests:
-   - `pytest apps/api-gateway/tests` – HTTP contract & queue emission.
-   - `pytest apps/sync-worker/tests` – message deserialization, GitHub fetch mocks.
-   - `pytest apps/merge-worker/tests` – bundle merge logic, fingerprint drift.
-   - `pytest apps/shared/src/cloudfolio_shared/*/tests` – shared utilities.
-   - `pytest apps/tests/integration` – queue → cache → response loop.
-4. Training worker: `docker build -t cloudfolio-training apps/training-worker && docker run --env-file .env cloudfolio-training` for manual job processing.
+   - `pytest api/v.../api-gateway/tests` – HTTP contract & queue emission.
+   - `pytest api/v.../sync-worker/tests` – message deserialization, GitHub fetch mocks.
+   - `pytest api/v.../merge-worker/tests` – bundle merge logic, fingerprint drift.
+   - `pytest api/v.../shared/src/cloudfolio_shared/*/tests` – shared utilities.
+   - `pytest api/v.../tests/integration` – queue → cache → response loop.
+4. Training worker: `docker build -t cloudfolio-training api/v.../training-worker && docker run --env-file .env cloudfolio-training` for manual job processing.
 5. Storage emulation: Azurite provides both Table and Blob APIs; integration tests must cover Table row lifecycle and blob lifecycle assumptions (e.g., missing ephemeral blobs).
 
 ---

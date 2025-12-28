@@ -65,5 +65,3 @@ AzuriteConfig
 
 # Portfolio artifacts
 portfolio/
-apps/port-kill.sh
-apps/global.json

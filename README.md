@@ -8,9 +8,9 @@ Cloud-native personal portfolio platform that ingests GitHub activity, enriches 
 
 | Path | Description |
 |------|-------------|
-| `apps/` | All backend Function Apps (`api-gateway`, `sync-worker`, `merge-worker`, `training-worker`) plus the shared Python package consumed by every service. |
-| `apps/shared/` | Reusable modules for cache, GitHub integrations, AI helpers, and Pydantic schemas. Packaged as `apps.shared`. |
-| `apps/tests/` | Central pytest configuration, fixtures, and runner script for every backend component (unit + integration suites). |
+| `api/v...` | All backend Function Apps (`api-gateway`, `sync-worker`, `merge-worker`, `training-worker`) plus the shared Python package consumed by every service. |
+| `api/v.../shared/` | Reusable modules for cache, GitHub integrations, AI helpers, and Pydantic schemas. Packaged as `apps.shared`. |
+| `api/v.../tests/` | Central pytest configuration, fixtures, and runner script for every backend component (unit + integration suites). |
 | `portfolio/` | Angular SPA that surfaces skills, projects, and the AI assistant. Includes its own Azure Static Web Apps assets and pipelines. |
 | `infra/terraform/` | Terraform definitions used for lower-level Azure resources (storage, queues, etc.). |
 | `portfolio/infra/` | Bicep templates + deployment docs for the portfolio-hosting stack. |
@@ -25,7 +25,7 @@ Cloud-native personal portfolio platform that ingests GitHub activity, enriches 
 4. **Training Worker** – Containerized job that fine-tunes semantic models used by the assistant.
 5. **Angular Portfolio** – Static web app that reads the cached bundles, renders projects/skills, and hosts the assistant UX.
 
-Shared logic lives under `apps/shared` and is imported by all workers. Tests are coordinated via `apps/tests` so fixtures, environment variables, and Azurite setup stay consistent.
+Shared logic lives under `api/v.../shared` and is imported by all workers. Tests are coordinated via `api/v.../tests` so fixtures, environment variables, and Azurite setup stay consistent.
 
 ---
 
@@ -51,7 +51,7 @@ Additional commands:
 
 | Purpose | Command |
 |---------|---------|
-| Target a specific backend suite | `./apps/tests/run_tests.sh ../apps/api-gateway/tests -m unit` |
+| Target a specific backend suite | `./apps/tests/run_tests.sh ../api/v.../api-gateway/tests -m unit` |
 | Run integration/E2E tests | `./apps/tests/run_tests.sh -m "integration" apps/tests/integration` |
 | Start Azurite manually | `azurite --silent --location .azurite` |
 | Terraform init (infra/terraform) | `cd infra/terraform && terraform init -upgrade` |

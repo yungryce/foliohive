@@ -194,7 +194,7 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 - Publishes artifact via `PublishPipelineArtifact@1` (pipeline artifacts, not storage)
 
 **Example: ci-api-gateway.yml**
-- Triggers on: `apps/api-gateway/**` + `apps/shared/**` changes on `main` branch
+- Triggers on: `api/v.../api-gateway/**` + `api/v.../shared/**` changes on `main` branch
 - Publishes artifact: `api-gateway-$(Build.BuildId)`
 
 **Key benefit:** Each function's CI only runs when that function (or shared code) changes. No unnecessary builds.

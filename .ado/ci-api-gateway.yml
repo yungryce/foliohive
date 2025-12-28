@@ -12,7 +12,7 @@ trigger:
   paths:
     include:
       - api/v0.2.0/api-gateway/**
-      - apps/shared/**
+      - api/v0.2.0/shared/**
       - .ado/ci-api-gateway.yml
     exclude:
       - api/v0.2.0/**/tests/**
@@ -24,9 +24,9 @@ variables:
   - name: functionName
     value: 'api-gateway'
   - name: functionDir
-    value: 'apps/api-gateway'
+    value: 'api/v0.2.0/api-gateway'
   - name: sharedDir
-    value: 'apps/shared'
+    value: 'api/v0.2.0/shared'
   - name: pythonVersion
     value: '3.13'
 

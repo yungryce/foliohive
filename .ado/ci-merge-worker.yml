@@ -11,12 +11,12 @@ trigger:
       - test
   paths:
     include:
-      - apps/merge-worker/**
-      - apps/shared/**
+      - api/v0.2.0/merge-worker/**
+      - api/v0.2.0/shared/**
       - .ado/ci-merge-worker.yml
     exclude:
-      - apps/**/tests/**
-      - apps/**/__pycache__/**
+      - api/v0.2.0/**/tests/**
+      - api/v0.2.0/**/__pycache__/**
       - '**/*.pyc'
 
 variables:
@@ -24,9 +24,9 @@ variables:
   - name: functionName
     value: 'merge-worker'
   - name: functionDir
-    value: 'apps/merge-worker'
+    value: 'api/v0.2.0/merge-worker'
   - name: sharedDir
-    value: 'apps/shared'
+    value: 'api/v0.2.0/shared'
   - name: pythonVersion
     value: '3.13'
 

@@ -2,7 +2,7 @@
 
 **Date**: December 6, 2025  
 **Status**: Implemented / Living Document  
-**Scope**: `apps/api-gateway`, `apps/sync-worker`, `apps/merge-worker`, `apps/training-worker`, `apps/shared`
+**Scope**: `api/v.../api-gateway`, `api/v.../sync-worker`, `api/v.../merge-worker`, `api/v.../training-worker`, `api/v.../shared`
 
 ## Terminology
 - **User**: recruiter leveraging Cloudfolio services to refresh bundles and chat about candidates.
@@ -75,12 +75,12 @@ Failure handling: each worker logs to App Insights/Container Insights with `job_
 ## 7. Testing & Observability Matrix
 | Layer | Location | Key Scenarios |
 |-------|----------|---------------|
-| Shared unit tests | `apps/shared/src/cloudfolio_shared/*/tests` | Cache TTL rollover, GitHub rate limit handling, queue schema validation, linguist parsing |
-| Function tests | `apps/api-gateway/tests`, `apps/sync-worker/tests`, `apps/merge-worker/tests` | HTTP contracts, queue message emissions/consumption, fingerprint mismatch recovery |
-| Integration tests | `apps/tests/integration` | github-sync → merge-results workflow using Azurite; cache sync accuracy |
-| Unit curl | `apps/api-gateway/tests`, `apps/sync-worker/tests`, `apps/merge-worker/tests` | (To be implemented) targeted curl requests per worker for faster feedback 
-| E2E curl | `apps/tests/e2e_curl_tests.sh` | `/health`, `/bundles/{username}`, refresh polling, `/ai` response shape |
-| Training tests | `apps/training-worker/tests` | Queue polling loop, blob upload failures, model registry selection |
+| Shared unit tests | `api/v.../shared/src/cloudfolio_shared/*/tests` | Cache TTL rollover, GitHub rate limit handling, queue schema validation, linguist parsing |
+| Function tests | `api/v.../api-gateway/tests`, `api/v.../sync-worker/tests`, `api/v.../merge-worker/tests` | HTTP contracts, queue message emissions/consumption, fingerprint mismatch recovery |
+| Integration tests | `api/v.../tests/integration` | github-sync → merge-results workflow using Azurite; cache sync accuracy |
+| Unit curl | `api/v.../api-gateway/tests`, `api/v.../sync-worker/tests`, `api/v.../merge-worker/tests` | (To be implemented) targeted curl requests per worker for faster feedback 
+| E2E curl | `api/v.../tests/e2e_curl_tests.sh` | `/health`, `/bundles/{username}`, refresh polling, `/ai` response shape |
+| Training tests | `api/v.../training-worker/tests` | Queue polling loop, blob upload failures, model registry selection |
 | Monitoring | App Insights + Log Analytics | Queue depth alerts, worker failures, latency budgets |
 
 Edge cases to keep on radar:

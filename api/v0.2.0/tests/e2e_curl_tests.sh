@@ -93,12 +93,12 @@ Prerequisites:
      azurite --silent --location ~/.azurite --debug ~/.azurite/debug.log
 
   2. Start API Gateway (in separate terminal):
-     cd apps/api-gateway && source .venv/bin/activate
+     cd api/v.../api-gateway && source .venv/bin/activate
      func start --port 7071
 
   3. (Optional) Start workers for queue tests:
-     cd apps/sync-worker && func start --port 7072
-     cd apps/merge-worker && func start --port 7073
+     cd api/v.../sync-worker && func start --port 7072
+     cd api/v.../merge-worker && func start --port 7073
 
   4. Set GITHUB_TOKEN environment variable for GitHub API access
 
@@ -288,7 +288,7 @@ check_prerequisites() {
     # Check API Gateway
     if ! check_service "${API_BASE}/health" "API Gateway"; then
         log_error "API Gateway must be running on port $API_PORT"
-        log_info "Start with: cd apps/api-gateway && func start --port $API_PORT"
+        log_info "Start with: cd api/v.../api-gateway && func start --port $API_PORT"
         exit 1
     fi
 }
