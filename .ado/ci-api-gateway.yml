@@ -11,12 +11,12 @@ trigger:
       - test
   paths:
     include:
-      - apps/api-gateway/**
+      - api/v0.2.0/api-gateway/**
       - apps/shared/**
       - .ado/ci-api-gateway.yml
     exclude:
-      - apps/**/tests/**
-      - apps/**/__pycache__/**
+      - api/v0.2.0/**/tests/**
+      - api/v0.2.0/**/__pycache__/**
       - '**/*.pyc'
 
 variables:
