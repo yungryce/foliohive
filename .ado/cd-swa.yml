@@ -10,16 +10,11 @@
 
 resources:
   pipelines:
-    - pipeline: ci-swa
-      source: ci-swa # given pipeline name
+    - pipeline: yungryce.cloudfolio.swa-ci
+      source: yungryce.cloudfolio.swa-ci # given pipeline name
       trigger: true
 
 parameters:
-  azureServiceConnection: ''
-  subscriptionId: ''
-  resourceGroupName: ''
-  location: 'westus2'
-  namePrefix: 'cloudfolio'
   bicepFile: './infra/bicep/main.staticwebapp.bicep'
 
   # Core infra outputs
@@ -35,11 +30,11 @@ stages:
   jobs:
     - template: deploy-core-infra.yml
       parameters:
-        azureServiceConnection: ${{ parameters.azureServiceConnection }}
-        subscriptionId: ${{ parameters.subscriptionId }}
-        resourceGroupName: ${{ parameters.resourceGroupName }}
-        location: ${{ parameters.location }}
-        namePrefix: ${{ parameters.namePrefix }}
+        azureServiceConnection: $(azureServiceConnection)
+        subscriptionId: $(subscriptionId)
+        resourceGroupName: $(resourceGroupName)
+        location: $(location)
+        namePrefix: $(namePrefix)
         bicepFile: './infra/bicep/main.bicep'
         bicepParamFile: './infra/bicep/main.bicepparam'
 
