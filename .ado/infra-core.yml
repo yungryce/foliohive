@@ -19,8 +19,12 @@ variables:
   - group: 'Cloudfolio-Vars'
 
 parameters:
-  bicepFile: './infra/bicep/main.bicep'
-  bicepParamFile: './infra/bicep/main.bicepparam'
+  - name: bicepFile
+    type: string
+    default: './infra/bicep/main.bicep'
+  - name: bicepParamFile
+    type: string
+    default: './infra/bicep/main.bicepparam'
 
 stages:
 - stage: Core_Infrastructure
