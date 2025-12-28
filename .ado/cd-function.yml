@@ -14,11 +14,6 @@ resources:
       trigger: true
 
 parameters:
-  azureServiceConnection: ''
-  subscriptionId: ''
-  resourceGroupName: ''
-  location: 'westus2'
-  namePrefix: 'cloudfolio'
   bicepFile: './infra/bicep/main.function.bicep'
 
   appServicePlanId: ''
@@ -40,11 +35,11 @@ stages:
   jobs:
     - template: deploy-core-infra.yml
       parameters:
-        azureServiceConnection: ${{ parameters.azureServiceConnection }}
-        subscriptionId: ${{ parameters.subscriptionId }}
-        resourceGroupName: ${{ parameters.resourceGroupName }}
-        location: ${{ parameters.location }}
-        namePrefix: ${{ parameters.namePrefix }}
+        azureServiceConnection: $(azureServiceConnection)
+        subscriptionId: $(subscriptionId)
+        resourceGroupName: $(resourceGroupName)
+        location: $(location)
+        namePrefix: $(namePrefix)
         bicepFile: './infra/bicep/main.bicep'
         bicepParamFile: './infra/bicep/main.bicepparam'
 

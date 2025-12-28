@@ -20,10 +20,14 @@ trigger:
 
 variables:
   - group: 'Cloudfolio-Vars'
-  - functionName: 'api-gateway'
-  - functionDir: 'apps/api-gateway'
-  - sharedDir: 'apps/shared'
-  - pythonVersion: '3.13'
+  - name: functionName
+    value: 'api-gateway'
+  - name: functionDir
+    value: 'apps/api-gateway'
+  - name: sharedDir
+    value: 'apps/shared'
+  - name: pythonVersion
+    value: '3.13'
 
 stages:
 - stage: CI_api_gateway
