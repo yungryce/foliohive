@@ -38,25 +38,25 @@ stages:
   dependsOn: Detect_Changes
   jobs:
     - template: ci-build-function.yml
-      condition: eq(dependencies.Detect_Changes.outputs['Detect_Changes.DetectChanges.apiGatewayChanged'], 'true')
       parameters:
         functionName: 'api-gateway'
         functionDir: 'api/v0.2.0/api-gateway'
         sharedDir: 'api/v0.2.0/shared'
         pythonVersion: '$(pythonVersion)'
+        condition: eq(dependencies.Detect_Changes.outputs['Detect_Changes.DetectChanges.apiGatewayChanged'], 'true')
 
     - template: ci-build-function.yml
-      condition: eq(dependencies.Detect_Changes.outputs['Detect_Changes.DetectChanges.syncWorkerChanged'], 'true')
       parameters:
         functionName: 'sync-worker'
         functionDir: 'api/v0.2.0/sync-worker'
         sharedDir: 'api/v0.2.0/shared'
         pythonVersion: '$(pythonVersion)'
+        condition: eq(dependencies.Detect_Changes.outputs['Detect_Changes.DetectChanges.syncWorkerChanged'], 'true')
 
     - template: ci-build-function.yml
-      condition: eq(dependencies.Detect_Changes.outputs['Detect_Changes.DetectChanges.mergeWorkerChanged'], 'true')
       parameters:
         functionName: 'merge-worker'
         functionDir: 'api/v0.2.0/merge-worker'
         sharedDir: 'api/v0.2.0/shared'
         pythonVersion: '$(pythonVersion)'
+        condition: eq(dependencies.Detect_Changes.outputs['Detect_Changes.DetectChanges.mergeWorkerChanged'], 'true')

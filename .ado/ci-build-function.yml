@@ -11,10 +11,14 @@ parameters:
   - name: pythonVersion
     type: string
     default: '3.13'
+  - name: condition
+    type: string
+    default: 'succeeded()'
 
 jobs:
   - job: Build_${{ replace(parameters.functionName, '-', '_') }}
     displayName: 'Build ${{ parameters.functionName }}'
+    condition: ${{ parameters.condition }}
     pool:
       vmImage: ubuntu-latest
     steps:
