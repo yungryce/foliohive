@@ -440,7 +440,7 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 
 ### 9. Resource Group Creation (Phase 12)
 - **Before:** Custom jobs in each template to create RG
-- **After:** Only `infra-core.yml` creates RG via `action: 'Create Or Update Resource Group'`; CD templates use `action: 'Select Resource Group'`
+- **After:** Only `infra-core.yml` creates RG via `action: 'Create Or Update Resource Group'`; CD templates use `action: 'Create Or Update Resource Group'`
 - **Benefit:** Single RG creation point, reduced redundancy, clearer intent
 
 ### 10. Artifact Handling
