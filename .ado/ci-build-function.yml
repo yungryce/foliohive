@@ -27,8 +27,59 @@ jobs:
         inputs:
           versionSpec: '${{ parameters.pythonVersion }}'
 
+      # Compute stable hashes for cache keys (requirements + shared code)
+      - bash: |
+          set -euo pipefail
+
+          req_file="$(Build.SourcesDirectory)/${{ parameters.functionDir }}/requirements.txt"
+          shared_dir="$(Build.SourcesDirectory)/${{ parameters.sharedDir }}"
+
+          if [ ! -f "$req_file" ]; then
+            echo "##vso[task.logissue type=error]requirements.txt not found: $req_file"
+            exit 1
+          fi
+          if [ ! -d "$shared_dir" ]; then
+            echo "##vso[task.logissue type=error]Shared directory not found: $shared_dir"
+            exit 1
+          fi
+
+          req_hash="$(sha256sum "$req_file" | awk '{print $1}')"
+
+          # Hash shared directory content deterministically
+          shared_hash="$(
+            (cd "$shared_dir" && \
+              find . -type f -print0 | sort -z | xargs -0 sha256sum) \
+            | sha256sum | awk '{print $1}'
+          )"
+
+          echo "Req hash: $req_hash"
+          echo "Shared hash: $shared_hash"
+
+          echo "##vso[task.setvariable variable=ReqHash]$req_hash"
+          echo "##vso[task.setvariable variable=SharedHash]$shared_hash"
+        displayName: 'Compute dependency cache keys'
+
+      # Cache pip download artifacts (wheels/sdists)
+      - task: Cache@2
+        displayName: 'Cache pip downloads'
+        inputs:
+          key: 'pip | "$(Agent.OS)" | py${{ parameters.pythonVersion }}'
+          restoreKeys: |
+            pip | "$(Agent.OS)"
+          path: '$(Pipeline.Workspace)/.pip'
+
+      # Cache the installed dependency layer for this function (including installed shared package)
+      - task: Cache@2
+        displayName: 'Cache function dependencies (.python_packages)'
+        inputs:
+          key: 'deps | "$(Agent.OS)" | py${{ parameters.pythonVersion }} | ${{ parameters.functionName }} | $(ReqHash) | $(SharedHash)'
+          path: '$(Build.SourcesDirectory)/${{ parameters.functionDir }}/.python_packages'
+          cacheHitVar: 'DEPS_CACHE_HIT'
+
       - script: |
           set -euo pipefail
+
+          export PIP_CACHE_DIR="$(Pipeline.Workspace)/.pip"
 
           dir="${{ parameters.functionDir }}"
           shared="${{ parameters.sharedDir }}"
@@ -41,13 +92,21 @@ jobs:
           fi
 
           echo "[CI] Packaging function: ${{ parameters.functionName }}"
+          echo "[CI] PIP_CACHE_DIR: $PIP_CACHE_DIR"
+          echo "[CI] Dependency cache hit? $(DEPS_CACHE_HIT)"
 
-          rm -rf "$site_packages"
-          mkdir -p "$site_packages"
+          # Only (re)install deps when cache missed or site-packages is absent
+          if [ "$(DEPS_CACHE_HIT)" != "true" ] || [ ! -d "$site_packages" ]; then
+            echo "[CI] Installing dependencies (cache miss or missing site-packages)"
+            rm -rf "$site_packages"
+            mkdir -p "$site_packages"
 
-          python -m pip install --upgrade pip
-          python -m pip install -r "$dir/requirements.txt" --target "$site_packages"
-          python -m pip install "$shared" --target "$site_packages"
+            python -m pip install --upgrade pip
+            python -m pip install -r "$dir/requirements.txt" --target "$site_packages"
+            python -m pip install "$shared" --target "$site_packages"
+          else
+            echo "[CI] Skipping dependency install (cache hit)"
+          fi
 
           (cd "$dir" && zip -r "$artifact" . \
             -x "**/__pycache__/**" \
