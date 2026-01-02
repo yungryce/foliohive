@@ -21,18 +21,15 @@ stages:
         functionName: 'api-gateway'
         bicepFile: './infra/bicep/main.function.bicep'
         deployPrivateEndpoints: false
-        ciPipelineResourceName: 'functions_ci'
 
     - template: cd-deploy-function.yml
       parameters:
         functionName: 'sync-worker'
         bicepFile: './infra/bicep/main.function.bicep'
         deployPrivateEndpoints: false
-        ciPipelineResourceName: 'functions_ci'
 
     - template: cd-deploy-function.yml
       parameters:
         functionName: 'merge-worker'
         bicepFile: './infra/bicep/main.function.bicep'
         deployPrivateEndpoints: false
-        ciPipelineResourceName: 'functions_ci'
