@@ -129,5 +129,5 @@ jobs:
         displayName: 'Publish ${{ parameters.functionName }} artifact'
         inputs:
           targetPath: '$(Build.ArtifactStagingDirectory)/${{ parameters.functionName }}.zip'
-          artifact: '$(Build.BuildId)-${{ parameters.functionName }}'
+          artifact: '${{ parameters.functionName }}-$(Build.BuildId)'
           publishLocation: 'pipeline'
