@@ -79,3 +79,7 @@ jobs:
           echo "merge-worker: $MERGE_WORKER_CHANGED"
         displayName: 'Detect function changes'
         name: DetectChanges
+    outputs:
+      apiGatewayChanged: DetectChanges.apiGatewayChanged
+      syncWorkerChanged: DetectChanges.syncWorkerChanged
+      mergeWorkerChanged: DetectChanges.mergeWorkerChanged
