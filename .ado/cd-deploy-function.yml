@@ -39,7 +39,7 @@ jobs:
       # Try to download artifact - if it doesn't exist, CI didn't build this function
       - download: ${{ parameters.ciPipelineResourceName }}
         displayName: 'Download ${{ parameters.functionName }} artifact from CI'
-        artifact: ${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.id)
+        artifact: '${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.buildId)'
         continueOnError: true
 
       - bash: |
