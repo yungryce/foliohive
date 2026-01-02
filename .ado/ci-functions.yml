@@ -43,7 +43,7 @@ stages:
         functionDir: 'api/v0.2.0/api-gateway'
         sharedDir: 'api/v0.2.0/shared'
         pythonVersion: '$(pythonVersion)'
-        condition: eq(dependencies.Detect_Changes.outputs['Detect_Changes.apiGatewayChanged'], 'true')
+        condition: eq(dependencies.Detect_Changes.outputs['DetectChanges.apiGatewayChanged'], 'true')
 
     - template: ci-build-function.yml
       parameters:
@@ -51,7 +51,7 @@ stages:
         functionDir: 'api/v0.2.0/sync-worker'
         sharedDir: 'api/v0.2.0/shared'
         pythonVersion: '$(pythonVersion)'
-        condition: eq(dependencies.Detect_Changes.outputs['Detect_Changes.syncWorkerChanged'], 'true')
+        condition: eq(dependencies.Detect_Changes.outputs['DetectChanges.syncWorkerChanged'], 'true')
 
     - template: ci-build-function.yml
       parameters:
@@ -59,4 +59,4 @@ stages:
         functionDir: 'api/v0.2.0/merge-worker'
         sharedDir: 'api/v0.2.0/shared'
         pythonVersion: '$(pythonVersion)'
-        condition: eq(dependencies.Detect_Changes.outputs['Detect_Changes.mergeWorkerChanged'], 'true')
+        condition: eq(dependencies.Detect_Changes.outputs['DetectChanges.mergeWorkerChanged'], 'true')
