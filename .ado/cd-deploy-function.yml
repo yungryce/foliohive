@@ -37,7 +37,7 @@ jobs:
       - bash: |
           echo "Function name: ${{ parameters.functionName }}"
           echo "CI run ID: $(resources.pipeline.functions_ci.runID)"
-          echo "Expected artifact: $(resources.pipeline.functions_ci.runID)-${{ parameters.functionName }}"
+          echo "Expected artifact: ${{ parameters.functionName }}-$(resources.pipeline.functions_ci.runID)"
           echo "Workspace:"
           ls -la "$(Pipeline.Workspace)"
         displayName: Debug pipeline resource context
@@ -45,14 +45,14 @@ jobs:
       # Download artifact from CI
       - download: functions_ci
         displayName: Download ${{ parameters.functionName }} artifact
-        artifact: $(resources.pipeline.functions_ci.runID)-${{ parameters.functionName }}
+        artifact: ${{ parameters.functionName }}-$(resources.pipeline.functions_ci.runID)
         continueOnError: true
 
       # Check artifact existence
       - bash: |
           set -euo pipefail
 
-          ARTIFACT_NAME="$(resources.pipeline.functions_ci.runID)-${{ parameters.functionName }}"
+          ARTIFACT_NAME="${{ parameters.functionName }}-$(resources.pipeline.functions_ci.runID)"
           ARTIFACT_DIR="$(Pipeline.Workspace)/functions_ci/$ARTIFACT_NAME"
           ARTIFACT_ZIP="$ARTIFACT_DIR/${{ parameters.functionName }}.zip"
 
