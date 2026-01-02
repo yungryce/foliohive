@@ -48,7 +48,7 @@ jobs:
       - download: ${{ parameters.ciPipelineResourceName }}
         displayName: 'Download ${{ parameters.functionName }} artifact from CI'
         # artifact: '${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.buildId)'
-        artifact: api-gateway-${{ resources.pipeline.ci-functions.runID }}
+        artifact: api-gateway-${{ resources.pipeline.${{ parameters.ciPipelineResourceName }}.runID }}
         continueOnError: true
 
       - bash: |
