@@ -47,16 +47,16 @@ jobs:
 
       - download: ${{ parameters.ciPipelineResourceName }}
         displayName: 'Download ${{ parameters.functionName }} artifact from CI'
-        artifact: '${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.buildId)'
+        # artifact: '${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.buildId)'
+        artifact: api-gateway-${{ resources.pipeline.ci-functions.runID }}
         continueOnError: true
 
       - bash: |
           set -euo pipefail
           artifactName="${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.id)"
           artifactZip="$(Pipeline.Workspace)/${{ parameters.ciPipelineResourceName }}/$artifactName/${{ parameters.functionName }}.zip"
-
           echo "=== Artifact Existence Check ==="
-          echo "[CD] Artifact name (with .id): $artifactName"
+          echo "[CD] Artifact name: $artifactName"
           echo "[CD] Expected artifact zip: $artifactZip"
           echo "[CD] Pipeline workspace structure:"
           ls -la "$(Pipeline.Workspace)" 2>/dev/null || echo "  [Pipeline.Workspace not found]"
@@ -75,6 +75,7 @@ jobs:
             echo "##vso[task.setvariable variable=artifactExists]false"
           fi
         displayName: 'Check artifact existence'
+
 
       # Get core infrastructure outputs
       - task: AzureCLI@2
