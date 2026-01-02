@@ -63,7 +63,7 @@ jobs:
       - task: Cache@2
         displayName: 'Cache pip downloads'
         inputs:
-          key: 'pip | "$(Agent.OS)" | py${{ parameters.pythonVersion }}'
+          key: 'pip | "$(Agent.OS)" | ${{ parameters.pythonVersion }}'
           restoreKeys: |
             pip | "$(Agent.OS)"
           path: '$(Pipeline.Workspace)/.pip'
@@ -72,7 +72,7 @@ jobs:
       - task: Cache@2
         displayName: 'Cache function dependencies (.python_packages)'
         inputs:
-          key: 'deps | "$(Agent.OS)" | py${{ parameters.pythonVersion }} | ${{ parameters.functionName }} | $(ReqHash) | $(SharedHash)'
+          key: 'deps | "$(Agent.OS)" | ${{ parameters.pythonVersion }} | ${{ parameters.functionName }} | $(ReqHash) | $(SharedHash)'
           path: '$(Build.SourcesDirectory)/${{ parameters.functionDir }}/.python_packages'
           cacheHitVar: 'DEPS_CACHE_HIT'
 
