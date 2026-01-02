@@ -16,9 +16,6 @@ parameters:
   - name: deployPrivateEndpoints
     type: boolean
     default: false
-  - name: ciPipelineResourceName
-    type: string
-    default: 'ci-functions'
 
 jobs:
   - job: Deploy_${{ replace(parameters.functionName, '-', '_') }}
@@ -36,46 +33,40 @@ jobs:
         inputs:
           versionSpec: '$(pythonVersion)'
 
-      # Try to download artifact - if it doesn't exist, CI didn't build this function
+      # Debug visibility
       - bash: |
-          echo "=== Artifact Download Debug ==="
-          echo "[CD] Expected artifact name: ${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.buildId)"
-          echo "[CD] CI Pipeline Resource: ${{ parameters.ciPipelineResourceName }}"
-          echo "[CD] CI Build ID: $(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.buildId)"
-          echo "[CD] Pipeline Workspace: $(Pipeline.Workspace)"
-        displayName: 'Log artifact download details'
+          echo "Function name: ${{ parameters.functionName }}"
+          echo "CI run ID: $(resources.pipeline.functions_ci.runID)"
+          echo "Expected artifact: ${{ parameters.functionName }}-$(resources.pipeline.functions_ci.runID)"
+          echo "Workspace:"
+          ls -la "$(Pipeline.Workspace)"
+        displayName: Debug pipeline resource context
 
-      - download: ${{ parameters.ciPipelineResourceName }}
-        displayName: 'Download ${{ parameters.functionName }} artifact from CI'
-        # artifact: '${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.buildId)'
-        artifact: api-gateway-${{ resources.pipeline.functions_ci.runID }}
+      # Download artifact from CI
+      - download: functions_ci
+        displayName: Download ${{ parameters.functionName }} artifact
+        artifact: ${{ parameters.functionName }}-$(resources.pipeline.functions_ci.runID)
         continueOnError: true
 
+      # Check artifact existence
       - bash: |
           set -euo pipefail
-          artifactName="${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.id)"
-          artifactZip="$(Pipeline.Workspace)/${{ parameters.ciPipelineResourceName }}/$artifactName/${{ parameters.functionName }}.zip"
-          echo "=== Artifact Existence Check ==="
-          echo "[CD] Artifact name: $artifactName"
-          echo "[CD] Expected artifact zip: $artifactZip"
-          echo "[CD] Pipeline workspace structure:"
-          ls -la "$(Pipeline.Workspace)" 2>/dev/null || echo "  [Pipeline.Workspace not found]"
-          if [ -d "$(Pipeline.Workspace)/${{ parameters.ciPipelineResourceName }}" ]; then
-            echo "[CD] CI resource artifacts:"
-            ls -la "$(Pipeline.Workspace)/${{ parameters.ciPipelineResourceName }}"
-          else
-            echo "  [CI resource folder not found]"
-          fi
 
-          if [ -f "$artifactZip" ]; then
-            echo "✓ Artifact found: $artifactZip"
+          ARTIFACT_NAME="${{ parameters.functionName }}-$(resources.pipeline.functions_ci.runID)"
+          ARTIFACT_DIR="$(Pipeline.Workspace)/functions_ci/$ARTIFACT_NAME"
+          ARTIFACT_ZIP="$ARTIFACT_DIR/${{ parameters.functionName }}.zip"
+
+          echo "Checking for artifact zip:"
+          echo "$ARTIFACT_ZIP"
+
+          if [ -f "$ARTIFACT_ZIP" ]; then
+            echo "Artifact found"
             echo "##vso[task.setvariable variable=artifactExists]true"
           else
-            echo "✗ Artifact not found: $artifactZip"
+            echo "Artifact not found"
             echo "##vso[task.setvariable variable=artifactExists]false"
           fi
-        displayName: 'Check artifact existence'
-
+        displayName: Check artifact existence
 
       # Get core infrastructure outputs
       - task: AzureCLI@2
@@ -161,4 +152,4 @@ jobs:
           connectedServiceNameARM: '$(azureServiceConnection)'
           appType: functionAppLinux
           appName: '$(functionAppName)'
-          package: '$(Pipeline.Workspace)/${{ parameters.ciPipelineResourceName }}/${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.id)/${{ parameters.functionName }}.zip'
+          package: '$(Pipeline.Workspace)/functions_ci/${{ parameters.functionName }}-$(resources.pipeline.functions_ci.runID)/${{ parameters.functionName }}.zip'
