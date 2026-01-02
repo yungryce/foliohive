@@ -6,7 +6,7 @@
 
 resources:
   pipelines:
-    - pipeline: ci-functions
+    - pipeline: functions_ci
       source: yungryce.cloudfolio.function-ci
 
 variables:
@@ -21,18 +21,18 @@ stages:
         functionName: 'api-gateway'
         bicepFile: './infra/bicep/main.function.bicep'
         deployPrivateEndpoints: false
-        ciPipelineResourceName: 'ci-functions'
+        ciPipelineResourceName: 'functions_ci'
 
     - template: cd-deploy-function.yml
       parameters:
         functionName: 'sync-worker'
         bicepFile: './infra/bicep/main.function.bicep'
         deployPrivateEndpoints: false
-        ciPipelineResourceName: 'ci-functions'
+        ciPipelineResourceName: 'functions_ci'
 
     - template: cd-deploy-function.yml
       parameters:
         functionName: 'merge-worker'
         bicepFile: './infra/bicep/main.function.bicep'
         deployPrivateEndpoints: false
-        ciPipelineResourceName: 'ci-functions'
+        ciPipelineResourceName: 'functions_ci'
