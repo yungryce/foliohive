@@ -37,6 +37,14 @@ jobs:
           versionSpec: '$(pythonVersion)'
 
       # Try to download artifact - if it doesn't exist, CI didn't build this function
+      - bash: |
+          echo "=== Artifact Download Debug ==="
+          echo "[CD] Expected artifact name: ${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.buildId)"
+          echo "[CD] CI Pipeline Resource: ${{ parameters.ciPipelineResourceName }}"
+          echo "[CD] CI Build ID: $(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.buildId)"
+          echo "[CD] Pipeline Workspace: $(Pipeline.Workspace)"
+        displayName: 'Log artifact download details'
+
       - download: ${{ parameters.ciPipelineResourceName }}
         displayName: 'Download ${{ parameters.functionName }} artifact from CI'
         artifact: '${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.buildId)'
@@ -46,6 +54,18 @@ jobs:
           set -euo pipefail
           artifactName="${{ parameters.functionName }}-$(resources.pipeline.${{ parameters.ciPipelineResourceName }}.build.id)"
           artifactZip="$(Pipeline.Workspace)/${{ parameters.ciPipelineResourceName }}/$artifactName/${{ parameters.functionName }}.zip"
+
+          echo "=== Artifact Existence Check ==="
+          echo "[CD] Artifact name (with .id): $artifactName"
+          echo "[CD] Expected artifact zip: $artifactZip"
+          echo "[CD] Pipeline workspace structure:"
+          ls -la "$(Pipeline.Workspace)" 2>/dev/null || echo "  [Pipeline.Workspace not found]"
+          if [ -d "$(Pipeline.Workspace)/${{ parameters.ciPipelineResourceName }}" ]; then
+            echo "[CD] CI resource artifacts:"
+            ls -la "$(Pipeline.Workspace)/${{ parameters.ciPipelineResourceName }}"
+          else
+            echo "  [CI resource folder not found]"
+          fi
 
           if [ -f "$artifactZip" ]; then
             echo "✓ Artifact found: $artifactZip"

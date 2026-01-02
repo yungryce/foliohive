@@ -60,6 +60,12 @@ jobs:
           echo "[CI] Created artifact: $artifact"
         displayName: 'Package ${{ parameters.functionName }}'
 
+      - bash: |
+          echo "[CI] Publishing artifact with name: ${{ parameters.functionName }}-$(Build.BuildId)"
+          echo "[CI] Build ID: $(Build.BuildId)"
+          echo "[CI] Artifact zip path: $(Build.ArtifactStagingDirectory)/${{ parameters.functionName }}.zip"
+        displayName: 'Log artifact publishing details'
+
       - task: PublishPipelineArtifact@1
         displayName: 'Publish ${{ parameters.functionName }} artifact'
         inputs:
