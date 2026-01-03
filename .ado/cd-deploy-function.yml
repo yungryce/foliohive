@@ -12,7 +12,7 @@ parameters:
     type: string
   - name: bicepFile
     type: string
-    default: './infra/bicep/main.function.bicep'
+    default: './infra/bicep/main.functions.bicep'
   - name: deployPrivateEndpoints
     type: boolean
     default: false
@@ -125,7 +125,8 @@ jobs:
           resourceGroupName: '$(resourceGroupName)'
           location: '$(location)'
           templateLocation: 'Linked artifact'
-          csmFile: '$(System.DefaultWorkingDirectory)/${{ parameters.bicepFile }}'
+          # csmFile: '$(System.DefaultWorkingDirectory)/${{ parameters.bicepFile }}'
+          csmFile: '${{ parameters.bicepFile }}'
           overrideParameters: '-location "$(location)" -functionAppName "${{ parameters.functionName }}" -appServicePlanId "$(appServicePlanId)" -functionsSubnetId "$(functionsSubnetId)" -privateEndpointsSubnetId "$(privateEndpointsSubnetId)" -uamiId "$(uamiId)" -uamiClientId "$(uamiClientId)" -appInsightsConnectionString "$(appInsightsConnectionString)" -privateDnsZoneAzureWebsitesId "$(privateDnsZoneAzureWebsitesId)" -deployPrivateEndpoint "${{ parameters.deployPrivateEndpoints }}"'
           deploymentMode: 'Incremental'
           deploymentName: '${{ parameters.functionName }}-infra'
