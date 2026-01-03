@@ -116,7 +116,7 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 - `appServicePlanId` - Shared App Service Plan ID (deployed by core infra)
 - `deployPrivateEndpoints` - Enable private endpoints (default: `false`)
 - `pythonVersion` - Python version for builds (default: `3.13`)
-- `bicepFile` - Bicep template for function apps (default: `./infra/bicep/main.function.bicep`)
+- `bicepFile` - Bicep template for function apps (default: `./infra/bicep/main.functions.bicep`)
 
 #### Static Web App
 - `enableLinkedBackend` - Link SWA to Function backend (default: `false`)
@@ -232,7 +232,7 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
     resourceGroupName: $(resourceGroupName)
     location: $(location)
     namePrefix: $(namePrefix)
-    bicepFile: ./infra/bicep/main.function.bicep
+    bicepFile: ./infra/bicep/main.functions.bicep
     appServicePlanId: $(appServicePlanId)
     functionsSubnetId: $(functionsSubnetId)
     privateEndpointsSubnetId: $(privateEndpointsSubnetId)
