@@ -19,6 +19,12 @@ param uniqueSuffix string = uniqueString(resourceGroup().id, namePrefix)
 @description('Whether to deploy private endpoints for Function Apps')
 param deployFunctionAppPrivateEndpoints bool = false
 
+@description('App Service Plan resource ID')
+param appServicePlanId string
+
+@description('Function App name to deploy')
+param functionAppName string
+
 @description('Subnet ID for Function Apps VNet integration')
 param functionsSubnetId string
 
@@ -48,6 +54,8 @@ module functionApps './modules/functionApps.bicep' = {
     namePrefix: namePrefix
     uniqueSuffix: uniqueSuffix
 
+    functionAppName: functionAppName
+    appServicePlanId: appServicePlanId
     functionsSubnetId: functionsSubnetId
     privateEndpointsSubnetId: privateEndpointsSubnetId
 
@@ -56,7 +64,7 @@ module functionApps './modules/functionApps.bicep' = {
     uamiClientId: uamiClientId
 
     appInsightsConnectionString: appInsightsConnectionString
-    deployPrivateEndpoints: deployFunctionAppPrivateEndpoints
+    deployPrivateEndpoint: deployFunctionAppPrivateEndpoints
     privateDnsZoneAzureWebsitesId: privateDnsZoneAzureWebsitesId
   }
 }
