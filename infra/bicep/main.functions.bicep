@@ -20,7 +20,7 @@ param appServicePlanId string
 param functionsSubnetId string
 
 @description('Whether to deploy private endpoints for Function Apps')
-param deployFunctionAppPrivateEndpoints bool = false
+param deployPrivateEndpoint bool = false
 
 @description('Subnet ID for Private Endpoints')
 param privateEndpointsSubnetId string
@@ -53,7 +53,7 @@ module functionApps './modules/functionApps.bicep' = {
     uamiId: uamiId
     uamiClientId: uamiClientId
     appInsightsConnectionString: appInsightsConnectionString
-    deployPrivateEndpoint: deployFunctionAppPrivateEndpoints
+    deployPrivateEndpoint: deployPrivateEndpoint
     privateDnsZoneAzureWebsitesId: privateDnsZoneAzureWebsitesId
   }
 }
