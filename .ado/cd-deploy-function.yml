@@ -82,12 +82,12 @@ jobs:
             
             echo "=== Retrieving Core Infrastructure Outputs ==="
             
-            # Find the most recent successful core infra deployment (look for specific pattern)
+            # Find the most recent successful core infra deployment
             DEPLOYMENT_NAME=$(az deployment group list -g "$RG_NAME" \
-              --query "[?properties.provisioningState=='Succeeded' && starts_with(name, 'core-infra') || starts_with(name, 'infra-core')] | sort_by(@, &properties.timestamp) | [-1].name" -o tsv)
+              --query "[?properties.provisioningState=='Succeeded'] | sort_by(@, &properties.timestamp) | [-1].name" -o tsv)
             
             if [ -z "$DEPLOYMENT_NAME" ] || [ "$DEPLOYMENT_NAME" = "None" ]; then
-              echo "##vso[task.logissue type=error]No successful core infrastructure deployment found (looking for 'core-infra-*' or 'infra-core-*')"
+              echo "##vso[task.logissue type=error]No successful core infrastructure deployment found"
               echo "Run infra-core.yml first"
               exit 1
             fi
