@@ -10,23 +10,17 @@ param location string = resourceGroup().location
 @description('Tags applied to all resources')
 param tags Tags = {}
 
-@description('Prefix used for resource naming')
-param namePrefix string = 'cloudfolio'
-
-@description('Unique suffix to keep resource names stable across deployments')
-param uniqueSuffix string = uniqueString(resourceGroup().id, namePrefix)
-
-@description('Whether to deploy private endpoints for Function Apps')
-param deployFunctionAppPrivateEndpoints bool = false
+@description('Function App name to deploy')
+param functionAppName string
 
 @description('App Service Plan resource ID')
 param appServicePlanId string
 
-@description('Function App name to deploy')
-param functionAppName string
-
 @description('Subnet ID for Function Apps VNet integration')
 param functionsSubnetId string
+
+@description('Whether to deploy private endpoints for Function Apps')
+param deployFunctionAppPrivateEndpoints bool = false
 
 @description('Subnet ID for Private Endpoints')
 param privateEndpointsSubnetId string
@@ -51,27 +45,19 @@ module functionApps './modules/functionApps.bicep' = {
   params: {
     location: location
     tags: tags
-    namePrefix: namePrefix
-    uniqueSuffix: uniqueSuffix
-
     functionAppName: functionAppName
     appServicePlanId: appServicePlanId
     functionsSubnetId: functionsSubnetId
     privateEndpointsSubnetId: privateEndpointsSubnetId
-
     storageAccountName: storageAccountName
     uamiId: uamiId
     uamiClientId: uamiClientId
-
     appInsightsConnectionString: appInsightsConnectionString
     deployPrivateEndpoint: deployFunctionAppPrivateEndpoints
     privateDnsZoneAzureWebsitesId: privateDnsZoneAzureWebsitesId
   }
 }
 
-output functionAppNames array = functionApps.outputs.functionAppNames
-output apiGatewayName string = functionApps.outputs.apiGatewayName
-output mergeWorkerName string = functionApps.outputs.mergeWorkerName
-output syncWorkerName string = functionApps.outputs.syncWorkerName
-output apiGatewayId string = functionApps.outputs.apiGatewayId
-output apiGatewayDefaultHostname string = functionApps.outputs.apiGatewayDefaultHostname
+output functionAppId string = functionApps.outputs.functionAppId
+output functionAppName string = functionApps.outputs.functionAppName
+output functionAppDefaultHostname string = functionApps.outputs.functionAppDefaultHostname
