@@ -108,6 +108,11 @@ jobs:
             
             echo "✓ Infrastructure outputs retrieved"
 
+      - bash: |
+          echo "Template path:"
+          ls -la "$(System.DefaultWorkingDirectory)/$(dirname '${{ parameters.bicepFile }}')"
+        displayName: 'Debug bicep file presence'
+
       # Deploy function infrastructure
       - task: AzureResourceManagerTemplateDeployment@3
         displayName: 'Deploy ${{ parameters.functionName }} infra'
@@ -123,7 +128,7 @@ jobs:
           csmFile: '$(System.DefaultWorkingDirectory)/${{ parameters.bicepFile }}'
           overrideParameters: '-location "$(location)" -functionAppName "${{ parameters.functionName }}" -appServicePlanId "$(appServicePlanId)" -functionsSubnetId "$(functionsSubnetId)" -privateEndpointsSubnetId "$(privateEndpointsSubnetId)" -uamiId "$(uamiId)" -uamiClientId "$(uamiClientId)" -appInsightsConnectionString "$(appInsightsConnectionString)" -privateDnsZoneAzureWebsitesId "$(privateDnsZoneAzureWebsitesId)" -deployPrivateEndpoint "${{ parameters.deployPrivateEndpoints }}"'
           deploymentMode: 'Incremental'
-          deploymentName: '${{ parameters.functionName }}-$(Build.BuildId)'
+          deploymentName: '${{ parameters.functionName }}-infra'
 
       # Resolve function app name from deployment outputs
       - task: AzureCLI@2
@@ -135,7 +140,7 @@ jobs:
           scriptLocation: inlineScript
           inlineScript: |
             set -euo pipefail
-            deployment_name="${{ parameters.functionName }}-$(Build.BuildId)"
+            deployment_name="${{ parameters.functionName }}-infra"
             funcName=$(az deployment group show -g "$(resourceGroupName)" -n "$deployment_name" --query "properties.outputs.functionAppName.value" -o tsv)
             if [ -z "$funcName" ]; then
               echo "##vso[task.logissue type=error]Failed to read functionAppName from deployment outputs"
