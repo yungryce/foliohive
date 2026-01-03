@@ -20,16 +20,16 @@ stages:
       parameters:
         functionName: 'api-gateway'
         bicepFile: './infra/bicep/main.functions.bicep'
-        deployPrivateEndpoints: false
+        deployPrivateEndpoint: false
 
     - template: cd-deploy-function.yml
       parameters:
         functionName: 'sync-worker'
         bicepFile: './infra/bicep/main.functions.bicep'
-        deployPrivateEndpoints: false
+        deployPrivateEndpoint: false
 
     - template: cd-deploy-function.yml
       parameters:
         functionName: 'merge-worker'
         bicepFile: './infra/bicep/main.functions.bicep'
-        deployPrivateEndpoints: false
+        deployPrivateEndpoint: false
