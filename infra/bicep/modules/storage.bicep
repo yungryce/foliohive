@@ -41,6 +41,18 @@ resource storage 'Microsoft.Storage/storageAccounts@2024-01-01' = {
       bypass: 'AzureServices'
     }
   }
+    resource blobServices 'blobServices' = {
+    name: 'default'
+    properties: {
+      deleteRetentionPolicy: {}
+    }
+    resource storageContainerDeployment 'containers' = {
+      name: 'function-deployments'
+      properties: {
+        publicAccess: 'None'
+      }
+    }
+  }
 }
 
 resource peBlob 'Microsoft.Network/privateEndpoints@2024-10-01' = {
@@ -200,3 +212,4 @@ resource raTable 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 output storageAccountName string = storage.name
 output storageAccountId string = storage.id
+output deploymentContainerUri string = '${storage.properties.primaryEndpoints.blob}function-deployments'

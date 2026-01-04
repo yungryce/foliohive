@@ -22,6 +22,9 @@ param functionsSubnetId string
 @description('Storage account name')
 param storageAccountName string
 
+@description('URI of the deployment container in the storage account')
+param deploymentContainerUri string
+
 @description('User-assigned managed identity resource ID')
 param uamiId string
 
@@ -109,6 +112,25 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
       ftpsState: 'Disabled'
       vnetRouteAllEnabled: true
       appSettings: baseAppSettings
+    }
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: deploymentContainerUri
+          authentication: {
+            type: 'UserAssignedIdentity'
+            userAssignedIdentityResourceId: uamiId
+          }
+        }
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 100
+      }
+      runtime: {
+        name: 'python'
+        version: '3.13'
+      }
     }
   }
 }

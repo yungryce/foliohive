@@ -116,6 +116,7 @@ output privateDnsZoneAzureWebsitesId string = privateDns.outputs.privateDnsZoneA
 
 output storageAccountName string = storage.outputs.storageAccountName
 output storageAccountId string = storage.outputs.storageAccountId
+output deploymentContainerUri string = storage.outputs.deploymentContainerUri
 
 output appServicePlanId string = appServicePlan.id
 output appServicePlanName string = appServicePlan.name

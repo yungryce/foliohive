@@ -57,7 +57,8 @@ jobs:
             APP_INSIGHTS_CONN_STR=$(echo "$OUTPUTS" | jq -r '.appInsightsConnectionString.value // empty')
             PRIVATE_DNS_ZONE_ID=$(echo "$OUTPUTS" | jq -r '.privateDnsZoneAzureWebsitesId.value // empty')
             STORAGE_ACCOUNT_NAME=$(echo "$OUTPUTS" | jq -r '.storageAccountName.value // empty')
-            
+            DEPLOYMENT_CONTAINER_URI=$(echo "$OUTPUTS" | jq -r '.deploymentContainerUri.value // empty')
+
             # Validate critical outputs
             if [ -z "$NAME_PREFIX" ] || [ -z "$UNIQUE_SUFFIX" ] || [ -z "$UAMI_ID" ] || [ -z "$APP_SERVICE_PLAN_ID" ] || [ -z "$STORAGE_ACCOUNT_NAME" ]; then
               echo "##vso[task.logissue type=error]Missing critical infrastructure outputs from deployment"
@@ -85,6 +86,7 @@ jobs:
               "appInsightsConnectionString": "$APP_INSIGHTS_CONN_STR",
               "privateDnsZoneAzureWebsitesId": "$PRIVATE_DNS_ZONE_ID",
               "storageAccountName": "$STORAGE_ACCOUNT_NAME"
+              "deploymentContainerUri": "$DEPLOYMENT_CONTAINER_URI"
             }
             EOF
             
