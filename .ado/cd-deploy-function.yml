@@ -79,22 +79,6 @@ jobs:
             RG_NAME="$(resourceGroupName)"
             
             echo "=== Retrieving Core Infrastructure Outputs ==="
-            
-            # Find the most recent successful core infra deployment
-            DEPLOYMENT_NAME=$(az deployment group list -g "$RG_NAME" \
-              --query "[?properties.provisioningState=='Succeeded'] | sort_by(@, &properties.timestamp) | [-1].name" -o tsv)
-            
-            if [ -z "$DEPLOYMENT_NAME" ] || [ "$DEPLOYMENT_NAME" = "None" ]; then
-              echo "##vso[task.logissue type=error]No successful core infrastructure deployment found"
-              echo "Run infra-core.yml first"
-              exit 1
-            fi
-            
-            echo "✓ Found deployment: $DEPLOYMENT_NAME"
-            
-            # Extract outputs
-            OUTPUTS=$(az deployment group show -g "$RG_NAME" -n "$DEPLOYMENT_NAME" --query "properties.outputs" -o json)
-            
             echo "=== Debug: Raw outputs ==="
             echo "$OUTPUTS" | jq '.'
             
