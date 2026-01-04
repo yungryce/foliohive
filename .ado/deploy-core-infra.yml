@@ -85,7 +85,7 @@ jobs:
               "privateEndpointsSubnetId": "$PRIVATE_ENDPOINTS_SUBNET_ID",
               "appInsightsConnectionString": "$APP_INSIGHTS_CONN_STR",
               "privateDnsZoneAzureWebsitesId": "$PRIVATE_DNS_ZONE_ID",
-              "storageAccountName": "$STORAGE_ACCOUNT_NAME"
+              "storageAccountName": "$STORAGE_ACCOUNT_NAME",
               "deploymentContainerUri": "$DEPLOYMENT_CONTAINER_URI"
             }
             EOF
