@@ -163,3 +163,4 @@ jobs:
           appType: functionAppLinux
           appName: '$(functionAppName)'
           package: '$(Pipeline.Workspace)/functions_ci/${{ parameters.functionName }}-$(resources.pipeline.functions_ci.runID)/${{ parameters.functionName }}.zip'
+          resourceGroupName: '$(resourceGroupName)'
