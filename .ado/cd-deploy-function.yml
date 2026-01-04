@@ -95,17 +95,39 @@ jobs:
             # Extract outputs
             OUTPUTS=$(az deployment group show -g "$RG_NAME" -n "$DEPLOYMENT_NAME" --query "properties.outputs" -o json)
             
-            # Set as variables
-            echo "##vso[task.setvariable variable=appServicePlanId]$(echo "$OUTPUTS" | jq -r '.appServicePlanId.value // empty')"
-            echo "##vso[task.setvariable variable=functionsSubnetId]$(echo "$OUTPUTS" | jq -r '.functionsSubnetId.value // empty')"
-            echo "##vso[task.setvariable variable=privateEndpointsSubnetId]$(echo "$OUTPUTS" | jq -r '.privateEndpointsSubnetId.value // empty')"
-            echo "##vso[task.setvariable variable=uamiId]$(echo "$OUTPUTS" | jq -r '.uamiId.value // empty')"
-            echo "##vso[task.setvariable variable=uamiClientId]$(echo "$OUTPUTS" | jq -r '.uamiClientId.value // empty')"
-            echo "##vso[task.setvariable variable=appInsightsConnectionString]$(echo "$OUTPUTS" | jq -r '.appInsightsConnectionString.value // empty')"
-            echo "##vso[task.setvariable variable=privateDnsZoneAzureWebsitesId]$(echo "$OUTPUTS" | jq -r '.privateDnsZoneAzureWebsitesId.value // empty')"
-            echo "##vso[task.setvariable variable=storageAccountName]$(echo "$OUTPUTS" | jq -r '.storageAccountName.value // empty')"
+            echo "=== Debug: Raw outputs ==="
+            echo "$OUTPUTS" | jq '.'
             
-            echo "✓ Infrastructure outputs retrieved"
+            # Extract and validate required outputs
+            APP_SERVICE_PLAN_ID=$(echo "$OUTPUTS" | jq -r '.appServicePlanId.value // empty')
+            FUNCTIONS_SUBNET_ID=$(echo "$OUTPUTS" | jq -r '.functionsSubnetId.value // empty')
+            PRIVATE_ENDPOINTS_SUBNET_ID=$(echo "$OUTPUTS" | jq -r '.privateEndpointsSubnetId.value // empty')
+            UAMI_ID=$(echo "$OUTPUTS" | jq -r '.uamiId.value // empty')
+            UAMI_CLIENT_ID=$(echo "$OUTPUTS" | jq -r '.uamiClientId.value // empty')
+            APP_INSIGHTS_CONN_STR=$(echo "$OUTPUTS" | jq -r '.appInsightsConnectionString.value // empty')
+            PRIVATE_DNS_ZONE_ID=$(echo "$OUTPUTS" | jq -r '.privateDnsZoneAzureWebsitesId.value // empty')
+            STORAGE_ACCOUNT_NAME=$(echo "$OUTPUTS" | jq -r '.storageAccountName.value // empty')
+            
+            # Validate critical outputs
+            if [ -z "$UAMI_ID" ] || [ -z "$APP_SERVICE_PLAN_ID" ] || [ -z "$STORAGE_ACCOUNT_NAME" ]; then
+              echo "##vso[task.logissue type=error]Missing critical infrastructure outputs"
+              echo "UAMI_ID: $UAMI_ID"
+              echo "APP_SERVICE_PLAN_ID: $APP_SERVICE_PLAN_ID"
+              echo "STORAGE_ACCOUNT_NAME: $STORAGE_ACCOUNT_NAME"
+              exit 1
+            fi
+            
+            # Set as pipeline variables
+            echo "##vso[task.setvariable variable=appServicePlanId]$APP_SERVICE_PLAN_ID"
+            echo "##vso[task.setvariable variable=functionsSubnetId]$FUNCTIONS_SUBNET_ID"
+            echo "##vso[task.setvariable variable=privateEndpointsSubnetId]$PRIVATE_ENDPOINTS_SUBNET_ID"
+            echo "##vso[task.setvariable variable=uamiId]$UAMI_ID"
+            echo "##vso[task.setvariable variable=uamiClientId]$UAMI_CLIENT_ID"
+            echo "##vso[task.setvariable variable=appInsightsConnectionString]$APP_INSIGHTS_CONN_STR"
+            echo "##vso[task.setvariable variable=privateDnsZoneAzureWebsitesId]$PRIVATE_DNS_ZONE_ID"
+            echo "##vso[task.setvariable variable=storageAccountName]$STORAGE_ACCOUNT_NAME"
+            
+            echo "✓ Infrastructure outputs retrieved and validated"
 
       - task: AzureResourceManagerTemplateDeployment@3
         displayName: 'Deploy ${{ parameters.functionName }} infra'
