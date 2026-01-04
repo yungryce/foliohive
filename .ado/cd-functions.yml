@@ -8,6 +8,10 @@ resources:
   pipelines:
     - pipeline: functions_ci
       source: yungryce.cloudfolio.function-ci
+      trigger: true
+    - pipeline: core_infra
+      source: yungryce.cloudfolio.infra
+      trigger: true
 
 variables:
   - group: 'Cloudfolio-Vars'

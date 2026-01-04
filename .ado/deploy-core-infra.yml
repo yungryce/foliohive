@@ -14,6 +14,7 @@ jobs:
 
       - task: AzureResourceManagerTemplateDeployment@3
         displayName: Deploy core infrastructure
+        name: DeployCoreInfra
         inputs:
           deploymentScope: 'Resource Group'
           azureResourceManagerConnection: '${{ parameters.azureServiceConnection }}'
@@ -28,3 +29,63 @@ jobs:
           overrideParameters: '-location "${{ parameters.location }}" -namePrefix "${{ parameters.namePrefix }}"'
           deploymentMode: 'Incremental'
           deploymentName: 'core-${{ parameters.namePrefix }}'
+          deploymentOutputs: 'coreInfraOutputs'
+
+      - task: AzureCLI@2
+        displayName: 'Extract and persist core infrastructure outputs'
+        inputs:
+          azureSubscription: '${{ parameters.azureServiceConnection }}'
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -euo pipefail
+            
+            echo "=== Extracting Core Infrastructure Outputs ==="
+            
+            # Parse deployment outputs from ARM task
+            OUTPUTS='$(coreInfraOutputs)'
+            echo "Raw outputs: $OUTPUTS"
+            
+            # Extract all required values
+            UAMI_ID=$(echo "$OUTPUTS" | jq -r '.uamiId.value // empty')
+            UAMI_CLIENT_ID=$(echo "$OUTPUTS" | jq -r '.uamiClientId.value // empty')
+            APP_SERVICE_PLAN_ID=$(echo "$OUTPUTS" | jq -r '.appServicePlanId.value // empty')
+            FUNCTIONS_SUBNET_ID=$(echo "$OUTPUTS" | jq -r '.functionsSubnetId.value // empty')
+            PRIVATE_ENDPOINTS_SUBNET_ID=$(echo "$OUTPUTS" | jq -r '.privateEndpointsSubnetId.value // empty')
+            APP_INSIGHTS_CONN_STR=$(echo "$OUTPUTS" | jq -r '.appInsightsConnectionString.value // empty')
+            PRIVATE_DNS_ZONE_ID=$(echo "$OUTPUTS" | jq -r '.privateDnsZoneAzureWebsitesId.value // empty')
+            STORAGE_ACCOUNT_NAME=$(echo "$OUTPUTS" | jq -r '.storageAccountName.value // empty')
+            
+            # Validate critical outputs
+            if [ -z "$UAMI_ID" ] || [ -z "$APP_SERVICE_PLAN_ID" ] || [ -z "$STORAGE_ACCOUNT_NAME" ]; then
+              echo "##vso[task.logissue type=error]Missing critical infrastructure outputs from deployment"
+              echo "UAMI_ID: $UAMI_ID"
+              echo "APP_SERVICE_PLAN_ID: $APP_SERVICE_PLAN_ID"
+              echo "STORAGE_ACCOUNT_NAME: $STORAGE_ACCOUNT_NAME"
+              exit 1
+            fi
+            
+            # Create outputs directory
+            mkdir -p $(Build.ArtifactStagingDirectory)/infra-outputs
+            
+            # Save as JSON artifact for downstream pipelines
+            cat > $(Build.ArtifactStagingDirectory)/infra-outputs/core-infra.json <<EOF
+            {
+              "uamiId": "$UAMI_ID",
+              "uamiClientId": "$UAMI_CLIENT_ID",
+              "appServicePlanId": "$APP_SERVICE_PLAN_ID",
+              "functionsSubnetId": "$FUNCTIONS_SUBNET_ID",
+              "privateEndpointsSubnetId": "$PRIVATE_ENDPOINTS_SUBNET_ID",
+              "appInsightsConnectionString": "$APP_INSIGHTS_CONN_STR",
+              "privateDnsZoneAzureWebsitesId": "$PRIVATE_DNS_ZONE_ID",
+              "storageAccountName": "$STORAGE_ACCOUNT_NAME"
+            }
+            EOF
+            
+            echo "✓ Core infrastructure outputs saved to artifact"
+            cat $(Build.ArtifactStagingDirectory)/infra-outputs/core-infra.json
+
+      - publish: $(Build.ArtifactStagingDirectory)/infra-outputs
+        artifact: infra-outputs
+        displayName: 'Publish infrastructure outputs artifact'
+

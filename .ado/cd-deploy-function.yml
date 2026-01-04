@@ -66,52 +66,61 @@ jobs:
           fi
         displayName: Check artifact existence
 
-      # Get core infrastructure outputs
-      - task: AzureCLI@2
-        displayName: 'Get core infrastructure outputs'
+      # Download core infrastructure outputs from infra-core pipeline
+      - download: core_infra
+        displayName: 'Download core infrastructure outputs'
+        artifact: infra-outputs
+
+      # Load core infrastructure outputs
+      - bash: |
+          set -euo pipefail
+          
+          echo "=== Loading Core Infrastructure Outputs ==="
+          
+          INFRA_FILE="$(Pipeline.Workspace)/core_infra/infra-outputs/core-infra.json"
+          
+          if [ ! -f "$INFRA_FILE" ]; then
+            echo "##vso[task.logissue type=error]Core infrastructure outputs file not found"
+            echo "Expected: $INFRA_FILE"
+            echo "Run the infra-core pipeline first to generate infrastructure outputs"
+            exit 1
+          fi
+          
+          echo "Reading outputs from: $INFRA_FILE"
+          cat "$INFRA_FILE"
+          
+          # Extract values
+          APP_SERVICE_PLAN_ID=$(jq -r '.appServicePlanId // empty' "$INFRA_FILE")
+          FUNCTIONS_SUBNET_ID=$(jq -r '.functionsSubnetId // empty' "$INFRA_FILE")
+          PRIVATE_ENDPOINTS_SUBNET_ID=$(jq -r '.privateEndpointsSubnetId // empty' "$INFRA_FILE")
+          UAMI_ID=$(jq -r '.uamiId // empty' "$INFRA_FILE")
+          UAMI_CLIENT_ID=$(jq -r '.uamiClientId // empty' "$INFRA_FILE")
+          APP_INSIGHTS_CONN_STR=$(jq -r '.appInsightsConnectionString // empty' "$INFRA_FILE")
+          PRIVATE_DNS_ZONE_ID=$(jq -r '.privateDnsZoneAzureWebsitesId // empty' "$INFRA_FILE")
+          STORAGE_ACCOUNT_NAME=$(jq -r '.storageAccountName // empty' "$INFRA_FILE")
+          
+          # Validate critical outputs
+          if [ -z "$UAMI_ID" ] || [ -z "$APP_SERVICE_PLAN_ID" ] || [ -z "$STORAGE_ACCOUNT_NAME" ]; then
+            echo "##vso[task.logissue type=error]Missing critical infrastructure outputs"
+            echo "UAMI_ID: $UAMI_ID"
+            echo "APP_SERVICE_PLAN_ID: $APP_SERVICE_PLAN_ID"
+            echo "STORAGE_ACCOUNT_NAME: $STORAGE_ACCOUNT_NAME"
+            exit 1
+          fi
+          
+          # Set as pipeline variables
+          echo "##vso[task.setvariable variable=appServicePlanId]$APP_SERVICE_PLAN_ID"
+          echo "##vso[task.setvariable variable=functionsSubnetId]$FUNCTIONS_SUBNET_ID"
+          echo "##vso[task.setvariable variable=privateEndpointsSubnetId]$PRIVATE_ENDPOINTS_SUBNET_ID"
+          echo "##vso[task.setvariable variable=uamiId]$UAMI_ID"
+          echo "##vso[task.setvariable variable=uamiClientId]$UAMI_CLIENT_ID"
+          echo "##vso[task.setvariable variable=appInsightsConnectionString]$APP_INSIGHTS_CONN_STR"
+          echo "##vso[task.setvariable variable=privateDnsZoneAzureWebsitesId]$PRIVATE_DNS_ZONE_ID"
+          echo "##vso[task.setvariable variable=storageAccountName]$STORAGE_ACCOUNT_NAME"
+          
+          echo "✓ Infrastructure outputs loaded and validated"
+        displayName: 'Load core infrastructure outputs'
         condition: eq(variables['artifactExists'], 'true')
-        inputs:
-          azureSubscription: '$(azureServiceConnection)'
-          scriptType: bash
-          scriptLocation: inlineScript
-          inlineScript: |
-            set -euo pipefail
-            RG_NAME="$(resourceGroupName)"
-            
-            echo "=== Retrieving Core Infrastructure Outputs ==="
-            echo "=== Debug: Raw outputs ==="
-            echo "$OUTPUTS" | jq '.'
-            
-            # Extract and validate required outputs
-            APP_SERVICE_PLAN_ID=$(echo "$OUTPUTS" | jq -r '.appServicePlanId.value // empty')
-            FUNCTIONS_SUBNET_ID=$(echo "$OUTPUTS" | jq -r '.functionsSubnetId.value // empty')
-            PRIVATE_ENDPOINTS_SUBNET_ID=$(echo "$OUTPUTS" | jq -r '.privateEndpointsSubnetId.value // empty')
-            UAMI_ID=$(echo "$OUTPUTS" | jq -r '.uamiId.value // empty')
-            UAMI_CLIENT_ID=$(echo "$OUTPUTS" | jq -r '.uamiClientId.value // empty')
-            APP_INSIGHTS_CONN_STR=$(echo "$OUTPUTS" | jq -r '.appInsightsConnectionString.value // empty')
-            PRIVATE_DNS_ZONE_ID=$(echo "$OUTPUTS" | jq -r '.privateDnsZoneAzureWebsitesId.value // empty')
-            STORAGE_ACCOUNT_NAME=$(echo "$OUTPUTS" | jq -r '.storageAccountName.value // empty')
-            
-            # Validate critical outputs
-            if [ -z "$UAMI_ID" ] || [ -z "$APP_SERVICE_PLAN_ID" ] || [ -z "$STORAGE_ACCOUNT_NAME" ]; then
-              echo "##vso[task.logissue type=error]Missing critical infrastructure outputs"
-              echo "UAMI_ID: $UAMI_ID"
-              echo "APP_SERVICE_PLAN_ID: $APP_SERVICE_PLAN_ID"
-              echo "STORAGE_ACCOUNT_NAME: $STORAGE_ACCOUNT_NAME"
-              exit 1
-            fi
-            
-            # Set as pipeline variables
-            echo "##vso[task.setvariable variable=appServicePlanId]$APP_SERVICE_PLAN_ID"
-            echo "##vso[task.setvariable variable=functionsSubnetId]$FUNCTIONS_SUBNET_ID"
-            echo "##vso[task.setvariable variable=privateEndpointsSubnetId]$PRIVATE_ENDPOINTS_SUBNET_ID"
-            echo "##vso[task.setvariable variable=uamiId]$UAMI_ID"
-            echo "##vso[task.setvariable variable=uamiClientId]$UAMI_CLIENT_ID"
-            echo "##vso[task.setvariable variable=appInsightsConnectionString]$APP_INSIGHTS_CONN_STR"
-            echo "##vso[task.setvariable variable=privateDnsZoneAzureWebsitesId]$PRIVATE_DNS_ZONE_ID"
-            echo "##vso[task.setvariable variable=storageAccountName]$STORAGE_ACCOUNT_NAME"
-            
-            echo "✓ Infrastructure outputs retrieved and validated"
 
       - task: AzureResourceManagerTemplateDeployment@3
         displayName: 'Deploy ${{ parameters.functionName }} infra'
