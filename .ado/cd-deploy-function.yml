@@ -120,7 +120,7 @@ jobs:
           templateLocation: 'Linked artifact'
           # csmFile: '$(System.DefaultWorkingDirectory)/${{ parameters.bicepFile }}'
           csmFile: '${{ parameters.bicepFile }}'
-          overrideParameters: |
+          overrideParameters: >
             -location "$(location)"
             -functionAppName "${{ parameters.functionName }}"
             -appServicePlanId "$(appServicePlanId)"
