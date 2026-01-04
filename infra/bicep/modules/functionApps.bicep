@@ -53,6 +53,10 @@ var baseAppSettings = [
     value: 'python'
   }
   {
+    name: 'WEBSITE_RUN_FROM_PACKAGE'
+    value: '1'
+  }
+  {
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
