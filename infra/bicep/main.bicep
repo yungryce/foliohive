@@ -119,3 +119,5 @@ output storageAccountId string = storage.outputs.storageAccountId
 
 output appServicePlanId string = appServicePlan.id
 output appServicePlanName string = appServicePlan.name
+output namePrefixOut string = namePrefix
+output uniqueSuffixOut string = uniqueSuffix

@@ -47,6 +47,8 @@ jobs:
             echo "Raw outputs: $OUTPUTS"
             
             # Extract all required values
+            NAME_PREFIX=$(echo "$OUTPUTS" | jq -r '.namePrefixOut.value // .namePrefix.value // empty')
+            UNIQUE_SUFFIX=$(echo "$OUTPUTS" | jq -r '.uniqueSuffixOut.value // .uniqueSuffix.value // empty')
             UAMI_ID=$(echo "$OUTPUTS" | jq -r '.uamiId.value // empty')
             UAMI_CLIENT_ID=$(echo "$OUTPUTS" | jq -r '.uamiClientId.value // empty')
             APP_SERVICE_PLAN_ID=$(echo "$OUTPUTS" | jq -r '.appServicePlanId.value // empty')
@@ -57,8 +59,10 @@ jobs:
             STORAGE_ACCOUNT_NAME=$(echo "$OUTPUTS" | jq -r '.storageAccountName.value // empty')
             
             # Validate critical outputs
-            if [ -z "$UAMI_ID" ] || [ -z "$APP_SERVICE_PLAN_ID" ] || [ -z "$STORAGE_ACCOUNT_NAME" ]; then
+            if [ -z "$NAME_PREFIX" ] || [ -z "$UNIQUE_SUFFIX" ] || [ -z "$UAMI_ID" ] || [ -z "$APP_SERVICE_PLAN_ID" ] || [ -z "$STORAGE_ACCOUNT_NAME" ]; then
               echo "##vso[task.logissue type=error]Missing critical infrastructure outputs from deployment"
+              echo "NAME_PREFIX: $NAME_PREFIX"
+              echo "UNIQUE_SUFFIX: $UNIQUE_SUFFIX"
               echo "UAMI_ID: $UAMI_ID"
               echo "APP_SERVICE_PLAN_ID: $APP_SERVICE_PLAN_ID"
               echo "STORAGE_ACCOUNT_NAME: $STORAGE_ACCOUNT_NAME"
@@ -71,6 +75,8 @@ jobs:
             # Save as JSON artifact for downstream pipelines
             cat > $(Build.ArtifactStagingDirectory)/infra-outputs/core-infra.json <<EOF
             {
+              "namePrefix": "$NAME_PREFIX",
+              "uniqueSuffix": "$UNIQUE_SUFFIX",
               "uamiId": "$UAMI_ID",
               "uamiClientId": "$UAMI_CLIENT_ID",
               "appServicePlanId": "$APP_SERVICE_PLAN_ID",

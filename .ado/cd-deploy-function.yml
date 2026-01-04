@@ -90,6 +90,8 @@ jobs:
           cat "$INFRA_FILE"
           
           # Extract values
+          NAME_PREFIX=$(jq -r '.namePrefix // empty' "$INFRA_FILE")
+          UNIQUE_SUFFIX=$(jq -r '.uniqueSuffix // empty' "$INFRA_FILE")
           APP_SERVICE_PLAN_ID=$(jq -r '.appServicePlanId // empty' "$INFRA_FILE")
           FUNCTIONS_SUBNET_ID=$(jq -r '.functionsSubnetId // empty' "$INFRA_FILE")
           PRIVATE_ENDPOINTS_SUBNET_ID=$(jq -r '.privateEndpointsSubnetId // empty' "$INFRA_FILE")
@@ -100,15 +102,22 @@ jobs:
           STORAGE_ACCOUNT_NAME=$(jq -r '.storageAccountName // empty' "$INFRA_FILE")
           
           # Validate critical outputs
-          if [ -z "$UAMI_ID" ] || [ -z "$APP_SERVICE_PLAN_ID" ] || [ -z "$STORAGE_ACCOUNT_NAME" ]; then
+          if [ -z "$NAME_PREFIX" ] || [ -z "$UNIQUE_SUFFIX" ] || [ -z "$UAMI_ID" ] || [ -z "$APP_SERVICE_PLAN_ID" ] || [ -z "$STORAGE_ACCOUNT_NAME" ]; then
             echo "##vso[task.logissue type=error]Missing critical infrastructure outputs"
+            echo "NAME_PREFIX: $NAME_PREFIX"
+            echo "UNIQUE_SUFFIX: $UNIQUE_SUFFIX"
             echo "UAMI_ID: $UAMI_ID"
             echo "APP_SERVICE_PLAN_ID: $APP_SERVICE_PLAN_ID"
             echo "STORAGE_ACCOUNT_NAME: $STORAGE_ACCOUNT_NAME"
             exit 1
           fi
+
+          # Build environment-unique function app name
+          FUNC_BASE="${{ parameters.functionName }}"
+          FUNCTION_APP_NAME="$NAME_PREFIX-$FUNC_BASE-$UNIQUE_SUFFIX"
           
           # Set as pipeline variables
+          echo "##vso[task.setvariable variable=functionAppParameter]$FUNCTION_APP_NAME"
           echo "##vso[task.setvariable variable=appServicePlanId]$APP_SERVICE_PLAN_ID"
           echo "##vso[task.setvariable variable=functionsSubnetId]$FUNCTIONS_SUBNET_ID"
           echo "##vso[task.setvariable variable=privateEndpointsSubnetId]$PRIVATE_ENDPOINTS_SUBNET_ID"
