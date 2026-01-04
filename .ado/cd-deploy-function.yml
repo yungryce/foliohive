@@ -79,12 +79,9 @@ jobs:
             RG_NAME="$(resourceGroupName)"
             
             echo "=== Retrieving Core Infrastructure Outputs ==="
-
-            # Extract outputs
-            OUTPUTS=$(az deployment group show -g "$RG_NAME" -n "$DEPLOYMENT_NAME" --query "properties.outputs" -o json)
             echo "=== Debug: Raw outputs ==="
             echo "$OUTPUTS" | jq '.'
-
+            
             # Extract and validate required outputs
             APP_SERVICE_PLAN_ID=$(echo "$OUTPUTS" | jq -r '.appServicePlanId.value // empty')
             FUNCTIONS_SUBNET_ID=$(echo "$OUTPUTS" | jq -r '.functionsSubnetId.value // empty')
