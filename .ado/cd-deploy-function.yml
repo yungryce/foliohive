@@ -13,9 +13,6 @@ parameters:
   - name: bicepFile
     type: string
     default: './infra/bicep/main.functions.bicep'
-  - name: deployPrivateEndpoint
-    type: boolean
-    default: false
 
 jobs:
   - job: Deploy_${{ replace(parameters.functionName, '-', '_') }}
@@ -105,13 +102,9 @@ jobs:
             echo "##vso[task.setvariable variable=uamiClientId]$(echo "$OUTPUTS" | jq -r '.uamiClientId.value // empty')"
             echo "##vso[task.setvariable variable=appInsightsConnectionString]$(echo "$OUTPUTS" | jq -r '.appInsightsConnectionString.value // empty')"
             echo "##vso[task.setvariable variable=privateDnsZoneAzureWebsitesId]$(echo "$OUTPUTS" | jq -r '.privateDnsZoneAzureWebsitesId.value // empty')"
+            echo "##vso[task.setvariable variable=storageAccountName]$(echo "$OUTPUTS" | jq -r '.storageAccountName.value // empty')"
             
             echo "✓ Infrastructure outputs retrieved"
-
-      - bash: |
-          echo "Template path:"
-          ls -la "$(System.DefaultWorkingDirectory)/$(dirname '${{ parameters.bicepFile }}')"
-        displayName: 'Debug bicep file presence'
 
       # Deploy function infrastructure
       - task: AzureResourceManagerTemplateDeployment@3
@@ -127,7 +120,18 @@ jobs:
           templateLocation: 'Linked artifact'
           # csmFile: '$(System.DefaultWorkingDirectory)/${{ parameters.bicepFile }}'
           csmFile: '${{ parameters.bicepFile }}'
-          overrideParameters: '-location "$(location)" -functionAppName "${{ parameters.functionName }}" -appServicePlanId "$(appServicePlanId)" -functionsSubnetId "$(functionsSubnetId)" -privateEndpointsSubnetId "$(privateEndpointsSubnetId)" -uamiId "$(uamiId)" -uamiClientId "$(uamiClientId)" -appInsightsConnectionString "$(appInsightsConnectionString)" -privateDnsZoneAzureWebsitesId "$(privateDnsZoneAzureWebsitesId)" -deployPrivateEndpoint ${{ parameters.deployPrivateEndpoint }}'
+          overrideParameters: |
+            -location "$(location)"
+            -functionAppName "${{ parameters.functionName }}"
+            -appServicePlanId "$(appServicePlanId)"
+            -functionsSubnetId "$(functionsSubnetId)"
+            -privateEndpointsSubnetId "$(privateEndpointsSubnetId)"
+            -uamiId "$(uamiId)"
+            -uamiClientId "$(uamiClientId)"
+            -appInsightsConnectionString "$(appInsightsConnectionString)"
+            -privateDnsZoneAzureWebsitesId "$(privateDnsZoneAzureWebsitesId)"
+            -storageAccountName "$(storageAccountName)"
+            -deployPrivateEndpoint false
           deploymentMode: 'Incremental'
           deploymentName: '${{ parameters.functionName }}-infra'
 
