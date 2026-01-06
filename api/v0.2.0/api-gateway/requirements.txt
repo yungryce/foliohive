@@ -4,6 +4,20 @@
 
 azure-functions>=1.17.0
 
+# Runtime deps needed by cloudfolio_shared imports during Function indexing
+azure-core
+azure-identity
+azure-storage-blob
+azure-storage-queue
+azure-data-tables
+requests
+
+# AI deps imported by API gateway at startup
+openai
+numpy
+scikit-learn
+pyyaml
+
 # Shared package is installed in editable mode by setup-dev.sh:
 #   pip install -e ../shared
 # That install does NOT pull ML extras by default.
