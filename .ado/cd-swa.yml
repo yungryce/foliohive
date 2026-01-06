@@ -16,12 +16,10 @@ resources:
 
 variables:
   - group: 'Cloudfolio-Vars'
-
-parameters:
-  bicepFile: './infra/bicep/main.staticwebapp.bicep'
-
-  # CD-specific
-  enableLinkedBackend: true
+  - name: bicepFile
+    value: './infra/bicep/main.staticwebapp.bicep'
+  - name: enableLinkedBackend
+    value: 'true'
 
 stages:
 - stage: Ensure_Core_Infrastructure
@@ -103,37 +101,37 @@ stages:
           displayName: Deploy SWA (Incremental)
           inputs:
             deploymentScope: Resource Group
-            azureResourceManagerConnection: '${{ parameters.azureServiceConnection }}'
-            subscriptionId: '${{ parameters.subscriptionId }}'
+            azureResourceManagerConnection: '$(azureServiceConnection)'
+            subscriptionId: '$(subscriptionId)'
             action: Create Or Update Resource Group
-            resourceGroupName: '${{ parameters.resourceGroupName }}'
-            location: '${{ parameters.location }}'
+            resourceGroupName: '$(resourceGroupName)'
+            location: '$(location)'
             templateLocation: Linked artifact
-            templateFile: ${{ parameters.bicepFile }}
+            templateFile: $(bicepFile)
             overrideParameters: |
-              -location ${{ parameters.location }}
-              -namePrefix ${{ parameters.namePrefix }}
+              -location $(location)
+              -namePrefix $(namePrefix)
               -apiGatewayId "$(apiGatewayId)"
               -apiGatewayDefaultHostname "$(apiGatewayHostname)"
-              -enableLinkedBackend ${{ parameters.enableLinkedBackend }}
+              -enableLinkedBackend $(enableLinkedBackend)
             deploymentMode: Incremental
-            deploymentName: 'swa-${{ parameters.namePrefix }}'
+            deploymentName: 'swa-$(namePrefix)'
 
         - task: AzureCLI@2
           displayName: Read SWA outputs
           inputs:
-            azureSubscription: '${{ parameters.azureServiceConnection }}'
+            azureSubscription: '$(azureServiceConnection)'
             scriptType: bash
             scriptLocation: inlineScript
             inlineScript: |
               set -euo pipefail
-              dep="swa-${{ parameters.namePrefix }}"
-              swaName=$(az deployment group show -g "${{ parameters.resourceGroupName }}" -n "$dep" --query properties.outputs.staticWebAppName.value -o tsv)
-              swaUrl=$(az deployment group show -g "${{ parameters.resourceGroupName }}" -n "$dep" --query properties.outputs.staticWebAppUrl.value -o tsv)
+              dep="swa-$(namePrefix)"
+              swaName=$(az deployment group show -g "$(resourceGroupName)" -n "$dep" --query properties.outputs.staticWebAppName.value -o tsv)
+              swaUrl=$(az deployment group show -g "$(resourceGroupName)" -n "$dep" --query properties.outputs.staticWebAppUrl.value -o tsv)
               echo "##vso[task.setvariable variable=staticWebAppName]$swaName"
               echo "##vso[task.setvariable variable=staticWebAppUrl]$swaUrl"
               
-              swaToken=$(az staticwebapp secrets list -n "$swaName" -g "${{ parameters.resourceGroupName }}" --query properties.apiKey -o tsv)
+              swaToken=$(az staticwebapp secrets list -n "$swaName" -g "$(resourceGroupName)" --query properties.apiKey -o tsv)
               echo "##vso[task.setvariable variable=staticWebAppToken;issecret=true]$swaToken"
 
         - task: AzureStaticWebApp@0
