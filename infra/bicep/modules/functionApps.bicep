@@ -108,7 +108,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
   properties: {
     serverFarmId: appServicePlanId
     httpsOnly: true
-    publicNetworkAccess: 'Disabled'
+    publicNetworkAccess: 'Enabled'
     virtualNetworkSubnetId: functionsSubnetId
     siteConfig: {
       minTlsVersion: '1.2'
