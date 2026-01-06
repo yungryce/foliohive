@@ -10,8 +10,11 @@
 
 resources:
   pipelines:
-    - pipeline: yungryce.cloudfolio.swa-ci
-      source: yungryce.cloudfolio.swa-ci # given pipeline name
+    - pipeline: swa_ci
+      source: yungryce.cloudfolio.swa-ci
+      trigger: true
+    - pipeline: core_infra
+      source: yungryce.cloudfolio.infra
       trigger: true
 
 variables:
@@ -48,7 +51,7 @@ stages:
           displayName: 'Checkout source code'
 
         # Download artifact from CI pipeline
-        - download: ci-swa
+        - download: swa_ci
           displayName: 'Download SWA artifact from CI'
           artifact: swa-artifact
 
