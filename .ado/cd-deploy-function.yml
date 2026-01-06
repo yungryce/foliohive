@@ -100,7 +100,6 @@ jobs:
           APP_INSIGHTS_CONN_STR=$(jq -r '.appInsightsConnectionString // empty' "$INFRA_FILE")
           PRIVATE_DNS_ZONE_ID=$(jq -r '.privateDnsZoneAzureWebsitesId // empty' "$INFRA_FILE")
           STORAGE_ACCOUNT_NAME=$(jq -r '.storageAccountName // empty' "$INFRA_FILE")
-          DEPLOYMENT_CONTAINER_URI=$(jq -r '.deploymentContainerUri // empty' "$INFRA_FILE")
 
           # Validate critical outputs
           if [ -z "$NAME_PREFIX" ] || [ -z "$UNIQUE_SUFFIX" ] || [ -z "$UAMI_ID" ] || [ -z "$APP_SERVICE_PLAN_ID" ] || [ -z "$STORAGE_ACCOUNT_NAME" ]; then
@@ -127,7 +126,6 @@ jobs:
           echo "##vso[task.setvariable variable=appInsightsConnectionString]$APP_INSIGHTS_CONN_STR"
           echo "##vso[task.setvariable variable=privateDnsZoneAzureWebsitesId]$PRIVATE_DNS_ZONE_ID"
           echo "##vso[task.setvariable variable=storageAccountName]$STORAGE_ACCOUNT_NAME"
-          echo "##vso[task.setvariable variable=deploymentContainerUri]$DEPLOYMENT_CONTAINER_URI"
           
           echo "✓ Infrastructure outputs loaded and validated"
         displayName: 'Load core infrastructure outputs'
@@ -158,7 +156,6 @@ jobs:
             -privateDnsZoneAzureWebsitesId "$(privateDnsZoneAzureWebsitesId)"
             -storageAccountName "$(storageAccountName)"
             -deployPrivateEndpoint false
-            -deploymentContainerUri "$(deploymentContainerUri)"
           deploymentMode: 'Incremental'
           deploymentName: '${{ parameters.functionName }}-infra'
 

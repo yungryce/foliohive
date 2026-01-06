@@ -28,9 +28,6 @@ param privateEndpointsSubnetId string
 @description('Storage account name used by the Function Apps')
 param storageAccountName string
 
-@description('URI of the deployment container in the storage account')
-param deploymentContainerUri string
-
 @description('User-assigned managed identity resource ID')
 param uamiId string
 
@@ -58,7 +55,6 @@ module functionApps './modules/functionApps.bicep' = {
     appInsightsConnectionString: appInsightsConnectionString
     deployPrivateEndpoint: deployPrivateEndpoint
     privateDnsZoneAzureWebsitesId: privateDnsZoneAzureWebsitesId
-    deploymentContainerUri: deploymentContainerUri
   }
 }
 

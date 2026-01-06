@@ -212,4 +212,3 @@ resource raTable 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 output storageAccountName string = storage.name
 output storageAccountId string = storage.id
-output deploymentContainerUri string = '${storage.properties.primaryEndpoints.blob}function-deployments'
