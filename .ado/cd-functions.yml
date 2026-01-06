@@ -13,6 +13,17 @@ resources:
       source: yungryce.cloudfolio.infra
       trigger: true
 
+trigger:
+  branches:
+    include:
+      - main
+      - test
+  paths:
+    include:
+      - .ado/cd-functions.yml
+      - infra/bicep/main.functions.bicep
+      - infra/bicep/modules/functionApp.bicep
+
 variables:
   - group: 'Cloudfolio-Vars'
 

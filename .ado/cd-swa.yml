@@ -1,12 +1,11 @@
 # CD pipeline for Static Web App
-# - Triggered by ci-swa pipeline completion
+# - Triggered by ci-swa pipeline completion or changes to this pipeline
 # - First step: Validates core infrastructure exists (fails fast if not)
 # - Deploys SWA infra via Bicep
 # - Downloads UI artifact from CI pipeline
 # - Publishes content to SWA
 #
 # Usage: Configure via params/params-swa.yml
-
 
 resources:
   pipelines:
@@ -16,6 +15,17 @@ resources:
     - pipeline: core_infra
       source: yungryce.cloudfolio.infra
       trigger: true
+
+trigger:
+  branches:
+    include:
+      - main
+      - test
+  paths:
+    include:
+      - .ado/cd-swa.yml
+      - infra/bicep/main.staticwebapp.bicep
+      - infra/bicep/modules/staticWebApp.bicep
 
 variables:
   - group: 'Cloudfolio-Vars'
@@ -110,7 +120,7 @@ stages:
             resourceGroupName: '$(resourceGroupName)'
             location: '$(location)'
             templateLocation: Linked artifact
-            templateFile: $(bicepFile)
+            csmFile: $(bicepFile)
             overrideParameters: |
               -location $(location)
               -namePrefix $(namePrefix)
