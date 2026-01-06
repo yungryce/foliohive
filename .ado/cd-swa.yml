@@ -12,9 +12,6 @@ resources:
     - pipeline: swa_ci
       source: yungryce.cloudfolio.swa-ci
       trigger: true
-    - pipeline: core_infra
-      source: yungryce.cloudfolio.infra
-      trigger: true
 
 trigger:
   branches:
