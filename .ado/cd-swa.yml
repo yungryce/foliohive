@@ -31,7 +31,7 @@ variables:
   - name: enableLinkedBackend
     value: 'true'
   - name: repositoryUrl
-    value: 'https://github.com/chxgbx/cloudfolio/_git/cloudfolio'
+    value: 'https://dev.azure.com/chxgbx/cloudfolio/_git/cloudfolio'
 
 stages:
 - stage: Ensure_Core_Infrastructure

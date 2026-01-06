@@ -17,7 +17,7 @@ param namePrefix string = 'cloudfolio'
 param uniqueSuffix string = uniqueString(resourceGroup().id, namePrefix)
 
 @description('GitHub repository URL for the Static Web App (required by Azure, even for manual deployments)')
-param repositoryUrl string = 'https://github.com/chxgbx/cloudfolio/_git/cloudfolio'
+param repositoryUrl string = 'https://dev.azure.com/chxgbx/cloudfolio/_git/cloudfolio'
 
 @description('Resource ID of the api-gateway Function App (optional when SWA is standalone)')
 param apiGatewayId string = ''
