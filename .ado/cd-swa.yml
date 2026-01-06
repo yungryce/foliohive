@@ -14,12 +14,11 @@ resources:
       source: yungryce.cloudfolio.swa-ci # given pipeline name
       trigger: true
 
+variables:
+  - group: 'Cloudfolio-Vars'
+
 parameters:
   bicepFile: './infra/bicep/main.staticwebapp.bicep'
-
-  # Core infra outputs
-  apiGatewayId: ''
-  apiGatewayDefaultHostname: ''
 
   # CD-specific
   enableLinkedBackend: true
@@ -59,6 +58,47 @@ stages:
             echo "##vso[task.setvariable variable=artifactPath;isOutput=true]$(Pipeline.Workspace)/ci-swa/swa-artifact"
           displayName: 'Output artifact path'
 
+        - task: AzureCLI@2
+          displayName: 'Query API Gateway function app details'
+          inputs:
+            azureSubscription: '$(azureServiceConnection)'
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              set -euo pipefail
+              
+              echo "=== Querying API Gateway Function App ==="
+              
+              rg_name="$(resourceGroupName)"
+              
+              # Query resource group for api-gateway function app
+              # Function app naming pattern: {namePrefix}-api-gateway-{uniqueSuffix}
+              api_gw_functions=$(az functionapp list -g "$rg_name" --query "[?contains(name, 'api-gateway')]" -o json)
+              
+              if [ "$api_gw_functions" == "[]" ]; then
+                echo "##vso[task.logissue type=warning]API Gateway function app not found in resource group"
+                echo "Proceeding with empty values - SWA will deploy without linked backend"
+                echo "##vso[task.setvariable variable=apiGatewayId]"
+                echo "##vso[task.setvariable variable=apiGatewayHostname]"
+              else
+                api_gateway_id=$(echo "$api_gw_functions" | jq -r '.[0].id')
+                api_gateway_hostname=$(echo "$api_gw_functions" | jq -r '.[0].defaultHostName')
+                
+                if [ -z "$api_gateway_id" ] || [ -z "$api_gateway_hostname" ]; then
+                  echo "##vso[task.logissue type=warning]Failed to extract API Gateway details from resource"
+                  echo "Proceeding with empty values"
+                  echo "##vso[task.setvariable variable=apiGatewayId]"
+                  echo "##vso[task.setvariable variable=apiGatewayHostname]"
+                else
+                  echo "##vso[task.setvariable variable=apiGatewayId]$api_gateway_id"
+                  echo "##vso[task.setvariable variable=apiGatewayHostname]$api_gateway_hostname"
+                  
+                  echo "✓ API Gateway details found"
+                  echo "  ID: $api_gateway_id"
+                  echo "  Hostname: $api_gateway_hostname"
+                fi
+              fi
+
         - task: AzureResourceManagerTemplateDeployment@3
           displayName: Deploy SWA (Incremental)
           inputs:
@@ -73,8 +113,8 @@ stages:
             overrideParameters: |
               -location ${{ parameters.location }}
               -namePrefix ${{ parameters.namePrefix }}
-              -apiGatewayId "${{ parameters.apiGatewayId }}"
-              -apiGatewayDefaultHostname "${{ parameters.apiGatewayDefaultHostname }}"
+              -apiGatewayId "$(apiGatewayId)"
+              -apiGatewayDefaultHostname "$(apiGatewayHostname)"
               -enableLinkedBackend ${{ parameters.enableLinkedBackend }}
             deploymentMode: Incremental
             deploymentName: 'swa-${{ parameters.namePrefix }}'

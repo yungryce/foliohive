@@ -34,3 +34,55 @@ stages:
       parameters:
         functionName: 'merge-worker'
         bicepFile: './infra/bicep/main.functions.bicep'
+
+    - job: Capture_API_Gateway_Outputs
+      displayName: 'Capture API Gateway outputs'
+      dependsOn:
+        - Deploy_api_gateway
+      condition: succeeded('Deploy_api_gateway')
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - checkout: self
+          displayName: 'Checkout source code'
+
+        - task: AzureCLI@2
+          displayName: 'Read API Gateway deployment outputs'
+          inputs:
+            azureSubscription: '$(azureServiceConnection)'
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              set -euo pipefail
+              
+              echo "=== Reading API Gateway Deployment Outputs ==="
+              
+              deployment_name="api-gateway-infra"
+              rg_name="$(resourceGroupName)"
+              
+              # Query deployment for function app details
+              api_gateway_id=$(az deployment group show \
+                -g "$rg_name" \
+                -n "$deployment_name" \
+                --query "properties.outputs.functionAppId.value" \
+                -o tsv)
+              
+              api_gateway_hostname=$(az deployment group show \
+                -g "$rg_name" \
+                -n "$deployment_name" \
+                --query "properties.outputs.functionAppDefaultHostname.value" \
+                -o tsv)
+              
+              if [ -z "$api_gateway_id" ] || [ -z "$api_gateway_hostname" ]; then
+                echo "##vso[task.logissue type=error]Failed to read API Gateway outputs"
+                echo "api_gateway_id: $api_gateway_id"
+                echo "api_gateway_hostname: $api_gateway_hostname"
+                exit 1
+              fi
+              
+              echo "##vso[task.setvariable variable=apiGatewayId;isOutput=true]$api_gateway_id"
+              echo "##vso[task.setvariable variable=apiGatewayHostname;isOutput=true]$api_gateway_hostname"
+              
+              echo "✓ API Gateway outputs captured"
+              echo "  ID: $api_gateway_id"
+              echo "  Hostname: $api_gateway_hostname"

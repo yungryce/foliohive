@@ -22,9 +22,6 @@ param functionsSubnetId string
 @description('Storage account name')
 param storageAccountName string
 
-@description('URI of the deployment container in the storage account')
-param deploymentContainerUri string
-
 @description('User-assigned managed identity resource ID')
 param uamiId string
 
