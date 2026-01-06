@@ -33,6 +33,8 @@ variables:
     value: './infra/bicep/main.staticwebapp.bicep'
   - name: enableLinkedBackend
     value: 'true'
+  - name: repositoryUrl
+    value: 'https://github.com/chxgbx/cloudfolio/_git/cloudfolio'
 
 stages:
 - stage: Ensure_Core_Infrastructure
@@ -124,6 +126,7 @@ stages:
             overrideParameters: >
               -location "$(location)"
               -namePrefix "$(namePrefix)"
+              -repositoryUrl "$(repositoryUrl)"
               -apiGatewayId "$(apiGatewayId)"
               -apiGatewayDefaultHostname "$(apiGatewayHostname)"
               -enableLinkedBackend "$(enableLinkedBackend)"

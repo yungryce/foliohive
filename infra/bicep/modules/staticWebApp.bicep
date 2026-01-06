@@ -18,6 +18,9 @@ param apiGatewayId string
 @description('Default hostname of the api-gateway Function App, used to configure SWA API_BASE_URL')
 param apiGatewayDefaultHostname string
 
+@description('GitHub repository URL for the Static Web App (required by Azure, even for manual deployments)')
+param repositoryUrl string = 'https://github.com/chxgbx/cloudfolio/_git/cloudfolio'
+
 var swaName = '${namePrefix}-swa-${uniqueSuffix}'
 
 resource staticWebApp 'Microsoft.Web/staticSites@2023-12-01' = {
@@ -29,7 +32,7 @@ resource staticWebApp 'Microsoft.Web/staticSites@2023-12-01' = {
     tier: 'Standard'
   }
   properties: {
-    repositoryUrl: ''  // Set to your GitHub repo URL if deploying via GitHub Actions
+    repositoryUrl: repositoryUrl
     branch: 'main'
     buildProperties: {
       appLocation: 'ui'  // Adjust to your SPA source folder (e.g., 'src', 'dist', 'ui')
