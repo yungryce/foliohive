@@ -121,12 +121,12 @@ stages:
             location: '$(location)'
             templateLocation: Linked artifact
             csmFile: $(bicepFile)
-            overrideParameters: |
-              -location $(location)
-              -namePrefix $(namePrefix)
+            overrideParameters: >
+              -location "$(location)"
+              -namePrefix "$(namePrefix)"
               -apiGatewayId "$(apiGatewayId)"
               -apiGatewayDefaultHostname "$(apiGatewayHostname)"
-              -enableLinkedBackend $(enableLinkedBackend)
+              -enableLinkedBackend "$(enableLinkedBackend)"
             deploymentMode: Incremental
             deploymentName: 'swa-$(namePrefix)'
 
