@@ -1,97 +1,74 @@
 # Cloudfolio
 
-Cloud-native personal portfolio platform that ingests GitHub activity, enriches it with AI, and publishes curated bundles via an Angular front end and Azure Functions microservices. This repository is a monorepo that houses every component: infrastructure-as-code, backend workers, and the web experience.
-
----
+Cloud-native personal portfolio platform that ingests GitHub activity, enriches it with AI, and publishes curated bundles via an Angular front end and Azure Functions microservices.
 
 ## Repository Layout
 
 | Path | Description |
 |------|-------------|
-| `api/v...` | All backend Function Apps (`api-gateway`, `sync-worker`, `merge-worker`, `training-worker`) plus the shared Python package consumed by every service. |
-| `api/v.../shared/` | Reusable modules for cache, GitHub integrations, AI helpers, and Pydantic schemas. Packaged as `apps.shared`. |
-| `api/v.../tests/` | Central pytest configuration, fixtures, and runner script for every backend component (unit + integration suites). |
-| `portfolio/` | Angular SPA that surfaces skills, projects, and the AI assistant. Includes its own Azure Static Web Apps assets and pipelines. |
-| `infra/terraform/` | Terraform definitions used for lower-level Azure resources (storage, queues, etc.). |
-| `portfolio/infra/` | Bicep templates + deployment docs for the portfolio-hosting stack. |
-
----
+| `api/v0.2.0/` | Backend (Azure Functions) + shared Python package + backend tests. |
+| `api/v0.2.0/api-gateway/` | HTTP API gateway Function App. |
+| `api/v0.2.0/sync-worker/` | Queue-trigger worker that syncs GitHub data into storage. |
+| `api/v0.2.0/merge-worker/` | Queue-trigger worker that merges/dedupes bundles for the UI. |
+| `api/v0.2.0/training-worker/` | Containerized training job + models (not an Azure Function). |
+| `api/v0.2.0/shared/` | Shared Python package used by all backend components (`cloudfolio_shared`). |
+| `api/v0.2.0/tests/` | Central pytest config + integration/e2e harness. |
+| `ui/` | Angular SPA (deployed to Azure Static Web Apps). |
+| `infra/` | Infrastructure-as-code (Bicep + Terraform). |
+| `.ado/` | Azure Pipelines definitions and templates. |
 
 ## High-Level Architecture
 
-1. **API Gateway** – HTTP-triggered Azure Function that exposes REST endpoints for refreshing bundles, retrieving cached data, and interacting with the AI assistant. Enqueues work for downstream workers.
-2. **Sync Worker** – Queue-triggered Function that clones GitHub metadata, normalizes repositories, and writes annotated bundles to Azure Storage.
-3. **Merge Worker** – Aggregates bundles, deduplicates technology tags, and prepares final payloads for the UI.
-4. **Training Worker** – Containerized job that fine-tunes semantic models used by the assistant.
-5. **Angular Portfolio** – Static web app that reads the cached bundles, renders projects/skills, and hosts the assistant UX.
+1. **API Gateway** – HTTP-triggered Azure Function that exposes endpoints for refresh/retrieval and the assistant UX. It enqueues work for downstream workers.
+2. **Sync Worker** – Queue-triggered Function that ingests GitHub metadata and writes normalized bundles to Azure Storage.
+3. **Merge Worker** – Queue-triggered Function that aggregates bundles and prepares final payloads for the UI.
+4. **Training Worker** – Builds/updates semantic models used by the assistant.
+5. **Angular UI** – Reads cached bundles and renders projects/skills + assistant UI.
 
-Shared logic lives under `api/v.../shared` and is imported by all workers. Tests are coordinated via `api/v.../tests` so fixtures, environment variables, and Azurite setup stay consistent.
+Shared logic lives under `api/v0.2.0/shared/` and is imported by all backend services.
 
----
+## Quick Start (Local Dev)
 
-## Quick Start
+The simplest way to run the full local stack (Azurite + 3 Function Apps + UI) is:
 
 ```bash
-# Clone and install base tooling
-cd cloudfolio
-python -m venv .venv && source .venv/bin/activate
-python -m pip install -r apps/tests/requirements.txt
-npm install -g azurite
-
-# Run the full backend test suite with coverage
-./apps/tests/run_tests.sh -c
-
-# Install Angular dependencies and start the dev server
-cd portfolio
-npm install
-npm run start
+./run-dev-session.sh
 ```
 
-Additional commands:
+Common options:
 
-| Purpose | Command |
-|---------|---------|
-| Target a specific backend suite | `./apps/tests/run_tests.sh ../api/v.../api-gateway/tests -m unit` |
-| Run integration/E2E tests | `./apps/tests/run_tests.sh -m "integration" apps/tests/integration` |
-| Start Azurite manually | `azurite --silent --location .azurite` |
-| Terraform init (infra/terraform) | `cd infra/terraform && terraform init -upgrade` |
+```bash
+./run-dev-session.sh --no-ui
+./run-dev-session.sh --run-e2e
+```
 
----
+## Backend Setup & Tests
 
-## Testing Strategy
+Create the backend virtualenv and install all backend deps (shared + workers):
 
-- **Central runner**: `apps/tests/run_tests.sh` wraps `pytest` for every backend module, injects repo paths, seeds environment variables, and ensures Azurite is available.
-- **Markers**: use `@pytest.mark.unit` for fast mocked scenarios, `@pytest.mark.integration` for Azurite/remote calls, and `@pytest.mark.slow` for long-lived jobs.
-- **Coverage**: add `-c` to collect HTML + terminal coverage across `apps/`.
-- **Frontend**: run the Angular spec suite via `npm run test` inside `portfolio/`.
+```bash
+cd api/v0.2.0
+./setup-dev.sh
+```
 
-See `TESTING-GUIDE.md` for a deep dive into the suite layout and manual verification tips.
+Run the backend tests:
 
----
+```bash
+cd api/v0.2.0/tests
+./run_tests.sh
+```
+
+## UI Setup
+
+```bash
+cd ui
+npm install
+npm start
+```
 
 ## Deployment Notes
 
-- Terraform definitions under `infra/terraform/` manage shared Azure resources.
-- The Angular app uses Azure Static Web Apps (see `portfolio/staticwebapp.config.json` and `portfolio/azure-pipelines-artifact.yml`).
-- Function Apps deploy through Azure Pipelines defined at the repo root of each service; environment variables are sourced from Azure Key Vault where possible.
+- Azure Functions and the UI deploy via Azure Pipelines (see `.ado/`).
+- Infrastructure is under `infra/bicep/` and `infra/terraform/`.
 
-Before deploying, ensure your Azure subscription is set, run `terraform plan/apply` for foundational resources, and verify that storage connection strings plus GitHub tokens are available in your deployment environment.
-
----
-
-## Contribution Workflow
-
-1. **Branching** – Create a feature branch from `pilot`.
-2. **Install deps** – Use the virtual environment + `apps/tests/requirements.txt` for backend, and `npm install` under `portfolio/` for frontend.
-3. **Testing** – Run `./apps/tests/run_tests.sh -c -m "not slow"` before raising a PR. Include frontend tests if UI changes are present.
-4. **Linting/formatting** – Use `ruff` + `black` (Python) and `npm run lint` (Angular). Suggested Python command: `ruff check apps && black apps`.
-5. **Pull Request** – Provide architecture context, test evidence, and mention any new infrastructure requirements.
-
----
-
-## Resources
-
-- `PIPELINE-OPTIMIZATION.md` – Guidance for Azure Pipelines improvements.
-- `TESTING-GUIDE.md` – Expanded testing playbook.
-
-For questions, open an issue or reach out via the project discussion channels.terraform init -upgrade
+If you’re updating CI/CD docs, start with [.ado/README.md](.ado/README.md).

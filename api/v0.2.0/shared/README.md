@@ -1,88 +1,52 @@
 # Cloudfolio Shared Package
 
-Shared utilities for Cloudfolio microservices architecture.
+Shared Python utilities for Cloudfolio services.
 
-## Installation
+The package lives under `api/v0.2.0/shared/` and is imported by Function Apps and other backend components as `cloudfolio_shared`.
 
-### Local Development (Editable Mode)
+## Local development
+
+The backend setup script creates a single virtualenv for the backend and installs shared + workers:
 
 ```bash
-# From repo root
-cd apps
+cd api/v0.2.0
 ./setup-dev.sh
 ```
 
-Or manually:
+If you want to work on *only* the shared package in editable mode:
 
 ```bash
-cd apps/shared
+cd api/v0.2.0/shared
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-### Build Wheel (for Deployment)
-
-```bash
-cd apps/shared
-pip install build
-python -m build --wheel
-# Wheel will be in dist/cloudfolio_shared-1.0.0-py3-none-any.whl
+pip install -e .
 ```
 
 ## Usage
 
 ```python
-# Clean imports - no sys.path manipulation needed
-from cloudfolio_shared import cache_manager, GitHubAPI, queue_manager
-from cloudfolio_shared.ai import AIAssistant, RepoScoringService
+from cloudfolio_shared.github.github_api import GitHubAPI
 
-# Use directly
 api = GitHubAPI(token="...", username="yungryce")
 repos = api.get_user_repos()
 ```
 
-## Package Structure
+## Package structure
 
 ```
-apps/shared/
-├── pyproject.toml              # Modern Python packaging
+api/v0.2.0/shared/
+├── pyproject.toml
 ├── src/
-│   └── cloudfolio_shared/      # Installable package
-│       ├── __init__.py         # Lazy-loading exports
-│       ├── ai/                 # AI/ML utilities
-│       │   ├── ai_assistant.py
-│       │   ├── repo_scoring_service.py
-│       │   ├── type_analyzer.py
-│       │   └── fine_tuning.py
-│       ├── cache/              # Azure Blob storage
-│       │   ├── cache_manager.py
-│       │   └── fingerprint_manager.py
-│       ├── github/             # GitHub API client
-│       │   ├── github_api.py
-│       │   └── github_repo_manager.py
-│       ├── linguist/           # Language detection
-│       │   └── languages.yml
-│       └── queue/              # Azure Storage Queues
-│           └── queue_manager.py
+│   └── cloudfolio_shared/
+└── README.md
 ```
 
-## Running Tests
+## Tests
+
+Backend tests (unit + integration) are centralized under `api/v0.2.0/tests/`:
 
 ```bash
-# From apps directory
-source tests/.venv/bin/activate
-./tests/run_tests.sh -m unit  # Fast unit tests
-./tests/run_tests.sh          # All tests (requires Azurite)
+cd api/v0.2.0/tests
+./run_tests.sh
 ```
-
-## Dependencies
-
-Core dependencies (installed automatically):
-- `azure-storage-blob`, `azure-storage-queue`, `azure-identity` - Azure SDK
-- `requests` - GitHub API client
-- `openai`, `groq` - AI/ML inference
-
-Optional dependencies:
-- `[dev]` - Testing and linting tools
-- `[ml]` - PyTorch, sentence-transformers for local model training
+# Cloudfolio Shared Package
