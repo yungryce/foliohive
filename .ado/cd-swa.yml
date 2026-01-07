@@ -64,9 +64,29 @@ stages:
           displayName: 'Download SWA artifact from CI'
           artifact: swa-artifact
 
-        - script: |
-            echo "##vso[task.setvariable variable=artifactPath;isOutput=true]$(Pipeline.Workspace)/ci-swa/swa-artifact"
-          displayName: 'Output artifact path'
+        - bash: |
+            set -euo pipefail
+            # Pipeline resource downloads land under: $(Pipeline.Workspace)/<pipelineAlias>/<artifactName>
+            artifact_path="$(Pipeline.Workspace)/swa_ci/swa-artifact"
+            echo "Artifact path: $artifact_path"
+
+            if [ ! -d "$artifact_path" ]; then
+              echo "##vso[task.logissue type=error]SWA artifact directory not found: $artifact_path"
+              echo "Pipeline workspace listing:"
+              ls -la "$(Pipeline.Workspace)" || true
+              exit 1
+            fi
+
+            echo "Artifact directory listing:"
+            ls -la "$artifact_path"
+
+            if [ ! -f "$artifact_path/index.html" ] && [ ! -f "$artifact_path/Index.html" ]; then
+              echo "##vso[task.logissue type=error]index.html not found in SWA artifact root: $artifact_path"
+              exit 1
+            fi
+
+            echo "##vso[task.setvariable variable=artifactPath]$artifact_path"
+          displayName: 'Set SWA artifact path'
 
         - task: AzureCLI@2
           displayName: 'Query API Gateway function app details'
