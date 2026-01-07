@@ -22,7 +22,7 @@ var blobPeName = '${namePrefix}-pe-blob-${uniqueSuffix}'
 var queuePeName = '${namePrefix}-pe-queue-${uniqueSuffix}'
 var tablePeName = '${namePrefix}-pe-table-${uniqueSuffix}'
 
-resource storage 'Microsoft.Storage/storageAccounts@2024-01-01' = {
+resource storage 'Microsoft.Storage/storageAccounts@2025-01-01' = {
   name: storageAccountName
   location: location
   kind: 'StorageV2'
@@ -55,7 +55,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2024-01-01' = {
   }
 }
 
-resource peBlob 'Microsoft.Network/privateEndpoints@2024-10-01' = {
+resource peBlob 'Microsoft.Network/privateEndpoints@2025-01-01' = {
   name: blobPeName
   location: location
   tags: tags
@@ -73,7 +73,7 @@ resource peBlob 'Microsoft.Network/privateEndpoints@2024-10-01' = {
   }
 }
 
-resource peBlobDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-10-01' = {
+resource peBlobDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2025-01-01' = {
   name: 'default'
   parent: peBlob
   properties: {
@@ -88,7 +88,7 @@ resource peBlobDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024
   }
 }
 
-resource peQueue 'Microsoft.Network/privateEndpoints@2024-10-01' = {
+resource peQueue 'Microsoft.Network/privateEndpoints@2025-01-01' = {
   name: queuePeName
   location: location
   tags: tags
@@ -106,7 +106,7 @@ resource peQueue 'Microsoft.Network/privateEndpoints@2024-10-01' = {
   }
 }
 
-resource peQueueDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-10-01' = {
+resource peQueueDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2025-01-01' = {
   name: 'default'
   parent: peQueue
   properties: {
@@ -121,7 +121,7 @@ resource peQueueDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@202
   }
 }
 
-resource peTable 'Microsoft.Network/privateEndpoints@2024-10-01' = {
+resource peTable 'Microsoft.Network/privateEndpoints@2025-01-01' = {
   name: tablePeName
   location: location
   tags: tags
@@ -139,7 +139,7 @@ resource peTable 'Microsoft.Network/privateEndpoints@2024-10-01' = {
   }
 }
 
-resource peTableDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-10-01' = {
+resource peTableDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2025-01-01' = {
   name: 'default'
   parent: peTable
   properties: {

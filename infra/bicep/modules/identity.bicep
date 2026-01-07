@@ -11,7 +11,7 @@ param uniqueSuffix string
 
 var uamiName = '${namePrefix}-uami-${uniqueSuffix}'
 
-resource uami 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-30' = {
+resource uami 'Microsoft.ManagedIdentity/userAssignedIdentities@2025-01-31-preview' = {
   name: uamiName
   location: location
   tags: tags

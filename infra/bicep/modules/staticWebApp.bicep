@@ -23,7 +23,7 @@ param repositoryUrl string = 'https://dev.azure.com/chxgbx/cloudfolio/_git/cloud
 
 var swaName = '${namePrefix}-swa-${uniqueSuffix}'
 
-resource staticWebApp 'Microsoft.Web/staticSites@2023-12-01' = {
+resource staticWebApp 'Microsoft.Web/staticSites@2024-11-01' = {
   name: swaName
   location: location
   tags: tags

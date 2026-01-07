@@ -15,7 +15,7 @@ param privateEndpointsSubnetPrefix string
 
 var vnetName = '${namePrefix}-vnet-${uniqueSuffix}'
 
-resource vnet 'Microsoft.Network/virtualNetworks@2024-03-01' = {
+resource vnet 'Microsoft.Network/virtualNetworks@2024-07-01' = {
   name: vnetName
   location: location
   tags: tags
@@ -28,7 +28,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-03-01' = {
   }
 }
 
-resource functionsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-03-01' = {
+resource functionsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-07-01' = {
   name: 'snet-functions'
   parent: vnet
   properties: {
@@ -44,7 +44,7 @@ resource functionsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-03-01' 
   }
 }
 
-resource privateEndpointsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-03-01' = {
+resource privateEndpointsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-07-01' = {
   name: 'snet-private-endpoints'
   parent: vnet
   properties: {

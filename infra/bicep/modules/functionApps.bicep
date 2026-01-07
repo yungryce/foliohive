@@ -89,6 +89,10 @@ var baseAppSettings = [
     name: 'AzureWebJobsStorage__tableServiceUri'
     value: 'https://${storageAccountName}.table.${environment().suffixes.storage}/'
   }
+  {
+    name: 'WEBSITE_VNET_ROUTE_ALL'
+    value: '1'
+  }
 ]
 
 resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
@@ -111,7 +115,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
       minTlsVersion: '1.2'
       linuxFxVersion: 'Python|3.13'
       ftpsState: 'Disabled'
-      vnetRouteAllEnabled: true
+      // vnetRouteAllEnabled: true
       appSettings: baseAppSettings
     }
   }
