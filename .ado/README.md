@@ -264,7 +264,7 @@ All parameters used across the templates are documented in **`.ado/parameters.ym
 
 **What it does:**
 - Builds Angular UI using Node.js
-- Creates dist directory: `ui/dist/cloudfolio-ui`
+- Creates dist directory: `ui/dist/browser`
 - Publishes artifact via `PublishPipelineArtifact@1` (no zipping, direct files)
 
 **Parameters:**

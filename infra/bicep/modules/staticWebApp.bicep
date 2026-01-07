@@ -37,7 +37,7 @@ resource staticWebApp 'Microsoft.Web/staticSites@2023-12-01' = {
     buildProperties: {
       appLocation: 'ui'  // Adjust to your SPA source folder (e.g., 'src', 'dist', 'ui')
       apiLocation: ''  // Not used; API is external (api-gateway)
-      outputLocation: 'dist/cloudfolio-ui'
+      outputLocation: 'dist/browser'
       skipGithubActionWorkflowGeneration: true  // Use custom workflow or manual deploy
     }
   }

@@ -52,8 +52,13 @@ stages:
             npm ci
             npm run build:prod
 
-            if [ ! -d "dist/cloudfolio-ui" ]; then
-              echo "##vso[task.logissue type=error]UI build failed: dist/cloudfolio-ui not found"
+            if [ ! -d "dist/browser" ]; then
+              echo "##vso[task.logissue type=error]UI build failed: dist/browser not found"
+              exit 1
+            fi
+
+            if [ ! -f "dist/browser/index.html" ] && [ ! -f "dist/browser/Index.html" ]; then
+              echo "##vso[task.logissue type=error]UI build failed: dist/browser/index.html not found"
               exit 1
             fi
           displayName: 'Build Angular UI'
@@ -61,6 +66,6 @@ stages:
         - task: PublishPipelineArtifact@1
           displayName: 'Publish SWA artifact'
           inputs:
-            targetPath: '$(uiDir)/dist/cloudfolio-ui'
+            targetPath: '$(uiDir)/dist/browser'
             artifact: 'swa-artifact'
             publishLocation: 'pipeline'

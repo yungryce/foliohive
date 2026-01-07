@@ -6,7 +6,7 @@
     "start": "ng serve --configuration development",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
-    "build:prod": "ng build --configuration production --output-path dist/cloudfolio-ui"
+    "build:prod": "ng build --configuration production"
   },
   "private": true,
   "dependencies": {
