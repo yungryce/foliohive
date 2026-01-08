@@ -41,8 +41,8 @@ If you need to point the UI at a different backend (deployed Function App), upda
 
 ## Backend pointers
 
-- API Gateway Function App (local/dev): `api/v0.2.0/api-gateway/`
-- Function entrypoint: `api/v0.2.0/api-gateway/function_app.py`
+- API Gateway Function App (local/dev): `api/v0.3.0/api-gateway/`
+- Function entrypoint: `api/v0.3.0/api-gateway/function_app.py`
 
 ## CI/CD
 

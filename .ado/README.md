@@ -24,10 +24,10 @@ This folder contains Cloudfolio’s Azure DevOps (ADO) pipeline definitions and 
 ## How the Function CI/CD works
 
 - CI (`ci-functions.yml`) runs on changes under:
-  - `api/v0.2.0/api-gateway/**`
-  - `api/v0.2.0/sync-worker/**`
-  - `api/v0.2.0/merge-worker/**`
-  - `api/v0.2.0/shared/**`
+  - `api/v0.3.0/api-gateway/**`
+  - `api/v0.3.0/sync-worker/**`
+  - `api/v0.3.0/merge-worker/**`
+  - `api/v0.3.0/shared/**`
 - CI publishes artifacts per function using the naming pattern:
   - `api-gateway-$(Build.BuildId)`
   - `sync-worker-$(Build.BuildId)`

@@ -25,7 +25,7 @@ Cloud-native personal portfolio platform that ingests GitHub activity, enriches 
 4. **Training Worker** – Builds/updates semantic models used by the assistant.
 5. **Angular UI** – Reads cached bundles and renders projects/skills + assistant UI.
 
-Shared logic lives under `api/v0.2.0/shared/` and is imported by all backend services.
+Shared logic lives under `api/v0.3.0/shared/` and is imported by all backend services.
 
 ## Quick Start (Local Dev)
 
@@ -47,14 +47,14 @@ Common options:
 Create the backend virtualenv and install all backend deps (shared + workers):
 
 ```bash
-cd api/v0.2.0
+cd api/v0.3.0
 ./setup-dev.sh
 ```
 
 Run the backend tests:
 
 ```bash
-cd api/v0.2.0/tests
+cd api/v0.3.0/tests
 ./run_tests.sh
 ```
 

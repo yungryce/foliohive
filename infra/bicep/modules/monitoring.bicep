@@ -15,7 +15,7 @@ param uamiPrincipalId string
 var workspaceName = '${namePrefix}-law-${uniqueSuffix}'
 var appInsightsName = '${namePrefix}-appi-${uniqueSuffix}'
 
-resource workspace 'Microsoft.OperationalInsights/workspaces@2025-02-01' = {
+resource workspace 'Microsoft.OperationalInsights/workspaces@2025-07-01' = {
   name: workspaceName
   location: location
   tags: tags

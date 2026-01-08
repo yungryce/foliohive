@@ -112,6 +112,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     publicNetworkAccess: 'Enabled'
     virtualNetworkSubnetId: functionsSubnetId
     siteConfig: {
+      alwaysOn: false
       minTlsVersion: '1.2'
       linuxFxVersion: 'Python|3.13'
       ftpsState: 'Disabled'
