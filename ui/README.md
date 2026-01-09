@@ -41,8 +41,9 @@ If you need to point the UI at a different backend (deployed Function App), upda
 
 ## Backend pointers
 
-- API Gateway Function App (local/dev): `api/v0.3.0/api-gateway/`
-- Function entrypoint: `api/v0.3.0/api-gateway/function_app.py`
+- Backend (v0.3.0): `api/v0.3.0/`
+- Function App entrypoint: `api/v0.3.0/function-app/function_app.py`
+- HTTP + queue workers are registered via `api/v0.3.0/function-app/blueprints/`
 
 ## CI/CD
 

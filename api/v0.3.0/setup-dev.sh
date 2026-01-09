@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Setup development environment for Cloudfolio microservices
-# Creates a single consolidated virtual environment at apps/.venv
+# Setup development environment for Cloudfolio backend (v0.3.0)
+# Creates a single consolidated virtual environment at api/v0.3.0/.venv
 
 set -euo pipefail
 
@@ -20,8 +20,9 @@ readonly YELLOW='\033[1;33m'
 readonly BLUE='\033[0;34m'
 readonly NC='\033[0m'
 
-# Configuration - function apps to install requirements from
-readonly FUNCTION_APPS=("api-gateway" "sync-worker" "merge-worker")
+# Configuration - Function App(s) to install requirements from
+# v0.3.0 is consolidated into a single Function App hosting multiple blueprints.
+readonly FUNCTION_APPS=("function-app")
 
 # =============================================================================
 # Logging
@@ -147,7 +148,7 @@ Examples:
   ./setup-dev.sh --clean               # Clean reinstall
   ./setup-dev.sh --force               # Force reinstall packages
   ./setup-dev.sh --python-version 3.12 # Use Python 3.12
-  ./setup-dev.sh --app api-gateway     # Setup only api-gateway
+    ./setup-dev.sh --app function-app    # Setup only function-app
   ./setup-dev.sh --shared-only         # Setup only shared package
   ./setup-dev.sh --run-tests           # Setup and run full test suite
 EOF
@@ -360,15 +361,15 @@ print_success() {
     echo ""
     echo -e "${GREEN}✅ Development environment setup complete!${NC}"
     echo ""
-    echo "Consolidated virtual environment: apps/.venv"
+    echo "Consolidated virtual environment: $VENV_DIR"
     echo ""
     echo "To activate:"
-    echo "  source apps/.venv/bin/activate"
+    echo "  source $VENV_DIR/bin/activate"
     echo ""
     echo "To run tests:"
-    echo "  source apps/.venv/bin/activate && python -m pytest -c tests/pytest.ini"
+    echo "  source $VENV_DIR/bin/activate && python -m pytest -c tests/pytest.ini"
     echo ""
-    echo "To run full workflow with workers:"
+    echo "To run full local workflow (Azurite + Functions + UI):"
     echo "  ./run-dev-session.sh"
 }
 
@@ -393,7 +394,7 @@ main() {
         echo ""
         echo -e "${GREEN}✅ Shared package setup complete!${NC}"
         echo ""
-        echo "To activate: source apps/.venv/bin/activate"
+        echo "To activate: source $VENV_DIR/bin/activate"
         exit 0
     fi
     

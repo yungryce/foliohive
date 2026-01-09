@@ -131,7 +131,7 @@ python -m pytest "${PYTEST_ARGS[@]}"
 RESULT=$?
 
 if [[ "$COVERAGE_FLAG" == "true" && $RESULT -eq 0 ]]; then
-    echo -e "${GREEN}Coverage report available at apps/htmlcov/index.html${NC}"
+    echo -e "${GREEN}Coverage report available at htmlcov/index.html${NC}"
 fi
 
 popd > /dev/null

@@ -1,15 +1,11 @@
-"""Cloudfolio shared modules for microservices architecture.
+"""Cloudfolio shared modules.
 
-This package provides reusable utilities for:
-- AI/ML: Assistant, scoring, type analysis, fine-tuning
-- Cache: Azure Blob storage management, fingerprinting
-- GitHub: API client, repository management
-- Queue: Azure Storage Queue operations
-- Linguist: Language detection based on GitHub Linguist
+The v0.3.0 backend is a single Azure Functions app with multiple blueprints.
+This package contains the reusable logic those blueprints depend on.
 
 Usage:
     from cloudfolio_shared import cache_manager, GitHubAPI, queue_manager
-    from cloudfolio_shared.ai import AIAssistant, RepoScoringService
+    from cloudfolio_shared import AIAssistant, RepoScoringService
 """
 
 __version__ = "1.0.0"
@@ -20,10 +16,8 @@ __version__ = "1.0.0"
 __all__ = [
     # Submodule names for explicit imports
     "ai",
-    "cache", 
+    "cache",
     "github",
-    "linguist",
-    "models",
     "queue",
     "table",
     # Version
@@ -33,7 +27,7 @@ __all__ = [
 
 def __getattr__(name: str):
     """Lazy loading of commonly used classes for convenience imports."""
-    
+
     # Cache utilities
     if name == "cache_manager":
         from cloudfolio_shared.cache.cache_manager import cache_manager

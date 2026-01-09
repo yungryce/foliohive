@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
-# Orchestrate full local development workflow for Cloudfolio.
-# Syncs the pilot branch, prepares the shared virtualenv, runs tests,
-# launches every Function App worker with log redirection, executes the
-# end-to-end curl suite, and monitors the workers for crashes.
+# Orchestrate full local development workflow for Cloudfolio (v0.3.0).
+# Prepares the consolidated backend virtualenv, starts Azurite,
+# launches the single Azure Functions app (multiple blueprints),
+# optionally runs the end-to-end curl suite, and starts the Angular UI.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
-readonly API_ROOT="$REPO_ROOT/api/v0.2.0"
-APPS_DIR="$API_ROOT"
-VENV_DIR="$APPS_DIR/.venv"
+readonly API_ROOT="$REPO_ROOT/api/v0.3.0"
+readonly FUNC_APP_DIR="$API_ROOT/function-app"
+VENV_DIR="$API_ROOT/.venv"
 LOG_DIR="$REPO_ROOT/logs"
 readonly AZURITE_HELPER="$API_ROOT/ensure-azurite.sh"
+readonly SETUP_HELPER="$API_ROOT/setup-dev.sh"
 readonly UI_DIR="$REPO_ROOT/ui"
+
+readonly LOCAL_SETTINGS_FILE="$FUNC_APP_DIR/local.settings.json"
+readonly LOCAL_SETTINGS_EXAMPLE="$FUNC_APP_DIR/local.settings.example.json"
 
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
@@ -22,12 +26,10 @@ readonly BLUE='\033[0;34m'
 readonly NC='\033[0m'
 
 declare -A WORKER_PORTS=(
-    [api-gateway]=7071
-    [sync-worker]=7072
-    [merge-worker]=7073
+    [function-app]=7071
     [ui]=4200
 )
-declare -a WORKER_SEQUENCE=("api-gateway" "sync-worker" "merge-worker")
+declare -a WORKER_SEQUENCE=("function-app")
 
 declare -a WORKER_PIDS=()
 declare -a WORKER_NAMES=()
@@ -57,9 +59,9 @@ Options:
 Additional options are forwarded to ./setup-dev.sh, e.g.:
     ./run-dev-session.sh -- --clean --python-version 3.12
 
-The script starts api-gateway, sync-worker, merge-worker using Azure Functions
-Core Tools (logs in api/v0.2.0/logs/<worker>.log) and the Angular UI on
-port 4200 (log in api/v0.2.0/logs/ui.log). Press Ctrl+C to stop all services.
+The script starts the consolidated Function App via Azure Functions Core Tools
+(logs in logs/function-app.log) and the Angular UI on port 4200
+(log in logs/ui.log). Press Ctrl+C to stop all services.
 EOF
 }
 
@@ -76,7 +78,7 @@ cleanup() {
     done
 
     # Kill any remaining func processes on our ports
-    for port in 7071 7072 7073; do
+    for port in 7071; do
         lsof -ti:$port | xargs kill -9 2>/dev/null || true
     done
     if [[ "$VENV_ACTIVE" == true ]]; then
@@ -119,8 +121,20 @@ parse_args() {
                 shift
                 continue
                 ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                usage
+                exit 1
+                ;;
         esac
     done
+
+    # Any remaining args are forwarded to setup-dev.sh
+    SETUP_ARGS=("$@")
 }
 
 require_command() {
@@ -166,6 +180,27 @@ ensure_dependencies() {
     require_command func
     require_command curl
     require_command jq
+}
+
+ensure_local_settings() {
+    if [[ -f "$LOCAL_SETTINGS_FILE" ]]; then
+        return 0
+    fi
+    if [[ -f "$LOCAL_SETTINGS_EXAMPLE" ]]; then
+        log_warn "Missing function-app/local.settings.json; creating from local.settings.example.json"
+        cp "$LOCAL_SETTINGS_EXAMPLE" "$LOCAL_SETTINGS_FILE"
+        log_warn "Edit $LOCAL_SETTINGS_FILE to add GITHUB_TOKEN"
+        return 0
+    fi
+    log_warn "Missing $LOCAL_SETTINGS_EXAMPLE; skipping local.settings bootstrap"
+}
+
+run_setup_if_needed() {
+    if [[ -d "$VENV_DIR" ]]; then
+        return 0
+    fi
+    log_step "Backend venv not found; running $SETUP_HELPER"
+    (cd "$API_ROOT" && bash "$SETUP_HELPER" "${SETUP_ARGS[@]:-}")
 }
 
 wait_for_worker_ready() {
@@ -222,13 +257,10 @@ start_log_tailers() {
 start_worker() {
     local name="$1"
     local port="$2"
-    local app_dir="$APPS_DIR/$name"
+    local app_dir="$FUNC_APP_DIR"
     local log_file="$LOG_DIR/${name}.log"
 
-    if [[ ! -d "$app_dir" ]]; then
-        log_error "Function app directory not found: $app_dir"
-        exit 1
-    fi
+    [[ -d "$app_dir" ]] || { log_error "Function app directory not found: $app_dir"; exit 1; }
 
     log_step "Starting $name on port $port"
     : > "$log_file"
@@ -256,7 +288,7 @@ start_worker() {
 run_e2e_tests() {
     if [[ "$RUN_E2E" == true ]]; then
         log_step "Running end-to-end curl suite"
-        (cd "$APPS_DIR" && ./tests/e2e_curl_tests.sh)
+        (cd "$API_ROOT" && ./tests/e2e_curl_tests.sh)
     else
         return 0
     fi
@@ -331,14 +363,17 @@ monitor_workers() {
 }
 
 main() {
+    SETUP_ARGS=()
     parse_args "$@"
     ensure_dependencies
-    
+
+    run_setup_if_needed
     activate_venv
     validate_env
     clean_logs
     prepare_logs
     bash "$AZURITE_HELPER"
+    ensure_local_settings
 
     for worker in "${WORKER_SEQUENCE[@]}"; do
         start_worker "$worker" "${WORKER_PORTS[$worker]}"

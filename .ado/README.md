@@ -57,7 +57,8 @@ Some pipelines also expect:
 ## Where infra lives
 
 - Core infra Bicep entrypoint: `infra/bicep/main.bicep`
-- Function Apps infra entrypoint: `infra/bicep/main.functions.bicep`
+- Function Apps infra entrypoint (Flex Consumption): `infra/bicep/main.functions.bicep`
+- Legacy Premium Function Apps entrypoint: `infra/bicep/main.functions-premium.bicep`
 - Static Web App infra entrypoint: `infra/bicep/main.staticwebapp.bicep`
 - Container infra entrypoint: `infra/bicep/main.container.bicep`
 
@@ -124,7 +125,8 @@ Some pipelines also expect:
 ## Where infra lives
 
 - Core infra Bicep entrypoint: `infra/bicep/main.bicep`
-- Function Apps infra entrypoint: `infra/bicep/main.functions.bicep`
+- Function Apps infra entrypoint (Flex Consumption): `infra/bicep/main.functions.bicep`
+- Legacy Premium Function Apps entrypoint: `infra/bicep/main.functions-premium.bicep`
 - Static Web App infra entrypoint: `infra/bicep/main.staticwebapp.bicep`
 - Container infra entrypoint: `infra/bicep/main.container.bicep`
 

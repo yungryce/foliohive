@@ -22,6 +22,9 @@ param functionsSubnetPrefix string = '10.20.1.0/24'
 @description('Subnet CIDR for Private Endpoints')
 param privateEndpointsSubnetPrefix string = '10.20.2.0/24'
 
+@description('Deploy shared Elastic Premium plan for legacy Function Apps')
+param deployPremiumPlan bool = true
+
 var uniqueSuffix = uniqueString(resourceGroup().id, namePrefix)
 
 module identity './modules/identity.bicep' = {
@@ -81,7 +84,7 @@ module storage './modules/storage.bicep' = {
 // App Service Plan (shared by all Function Apps)
 var appServicePlanName = '${namePrefix}-plan-${uniqueSuffix}'
 
-resource appServicePlan 'Microsoft.Web/serverfarms@2024-04-01' = {
+resource appServicePlan 'Microsoft.Web/serverfarms@2024-04-01' = if (deployPremiumPlan) {
   name: appServicePlanName
   location: location
   tags: tags
@@ -117,7 +120,7 @@ output privateDnsZoneAzureWebsitesId string = privateDns.outputs.privateDnsZoneA
 output storageAccountName string = storage.outputs.storageAccountName
 output storageAccountId string = storage.outputs.storageAccountId
 
-output appServicePlanId string = appServicePlan.id
-output appServicePlanName string = appServicePlan.name
+output appServicePlanId string = deployPremiumPlan ? appServicePlan.id : ''
+output appServicePlanName string = deployPremiumPlan ? appServicePlan.name : ''
 output namePrefixOut string = namePrefix
 output uniqueSuffixOut string = uniqueSuffix

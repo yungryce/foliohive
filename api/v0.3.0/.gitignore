@@ -32,3 +32,6 @@ htmlcov/
 
 # Local log output
 logs/
+
+# Azure Functions local settings
+function-app/local.settings.json
