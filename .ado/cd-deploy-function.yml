@@ -115,6 +115,8 @@ jobs:
           # Build environment-unique function app name
           FUNC_BASE="${{ parameters.functionName }}"
           FUNCTION_APP_NAME="$NAME_PREFIX-$FUNC_BASE-$UNIQUE_SUFFIX"
+          STATIC_WEB_APP_HOST="https://$NAME_PREFIX-swa-$UNIQUE_SUFFIX.azurestaticapps.net"
+          echo "##vso[task.setvariable variable=staticWebAppHost]$STATIC_WEB_APP_HOST"
           
           # Set as pipeline variables
           echo "##vso[task.setvariable variable=functionAppParameter]$FUNCTION_APP_NAME"
@@ -156,6 +158,7 @@ jobs:
             -privateDnsZoneAzureWebsitesId "$(privateDnsZoneAzureWebsitesId)"
             -storageAccountName "$(storageAccountName)"
             -deployPrivateEndpoint false
+            -corsAllowedOrigins '["$(staticWebAppHost)"]'
           deploymentMode: 'Incremental'
           deploymentName: '${{ parameters.functionName }}-infra'
 

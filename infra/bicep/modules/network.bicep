@@ -21,37 +21,37 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-07-01' = {
   tags: tags
   properties: {
     addressSpace: {
-      addressPrefixes: [
-        vnetAddressPrefix
-      ]
+      addressPrefixes: [ vnetAddressPrefix ]
     }
-  }
-}
 
-resource functionsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-07-01' = {
-  name: 'snet-functions'
-  parent: vnet
-  properties: {
-    addressPrefix: functionsSubnetPrefix
-    delegations: [
+    subnets: [
       {
-        name: 'delegation-appservice'
+        name: 'snet-functions'
         properties: {
-          serviceName: 'Microsoft.Web/serverFarms'
+          addressPrefix: functionsSubnetPrefix
+          delegations: [
+            {
+              name: 'functions-delegation'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ]
+        }
+      }
+      {
+        name: 'snet-private-endpoints'
+        properties: {
+          addressPrefix: privateEndpointsSubnetPrefix
+          privateEndpointNetworkPolicies: 'Disabled'
         }
       }
     ]
   }
 }
 
-resource privateEndpointsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-07-01' = {
-  name: 'snet-private-endpoints'
-  parent: vnet
-  properties: {
-    addressPrefix: privateEndpointsSubnetPrefix
-    privateEndpointNetworkPolicies: 'Disabled'
-  }
-}
+var functionsSubnet = vnet.properties.subnets[0]
+var privateEndpointsSubnet = vnet.properties.subnets[1]
 
 output vnetId string = vnet.id
 output functionsSubnetId string = functionsSubnet.id

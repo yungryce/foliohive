@@ -19,11 +19,11 @@ param uniqueSuffix string = uniqueString(resourceGroup().id, namePrefix)
 @description('GitHub repository URL for the Static Web App (required by Azure, even for manual deployments)')
 param repositoryUrl string = 'https://dev.azure.com/chxgbx/cloudfolio/_git/cloudfolio'
 
-@description('Resource ID of the api-gateway Function App (optional when SWA is standalone)')
-param apiGatewayId string = ''
+@description('Resource ID of the backend Function App (optional when SWA is standalone)')
+param backendFunctionAppId string = ''
 
-@description('Default hostname of the api-gateway Function App (optional when SWA is standalone)')
-param apiGatewayDefaultHostname string = ''
+@description('Default hostname of the backend Function App (optional when SWA is standalone)')
+param backendFunctionAppDefaultHostname string = ''
 
 @description('Whether to link SWA to the Function backend')
 param enableLinkedBackend bool = false
@@ -34,8 +34,8 @@ module staticWebApp './modules/staticWebApp.bicep' = {
     tags: tags
     namePrefix: namePrefix
     uniqueSuffix: uniqueSuffix
-    apiGatewayId: apiGatewayId
-    apiGatewayDefaultHostname: apiGatewayDefaultHostname
+    backendFunctionAppId: backendFunctionAppId
+    backendFunctionAppDefaultHostname: backendFunctionAppDefaultHostname
     enableLinkedBackend: enableLinkedBackend
     repositoryUrl: repositoryUrl
   }

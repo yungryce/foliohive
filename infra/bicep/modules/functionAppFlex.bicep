@@ -28,14 +28,8 @@ param uamiClientId string
 @description('Application Insights connection string')
 param appInsightsConnectionString string
 
-@description('Whether to deploy a private endpoint for this function app')
-param deployPrivateEndpoint bool = false
-
-@description('Subnet ID for Private Endpoints (required if deployPrivateEndpoint is true)')
-param privateEndpointsSubnetId string = ''
-
-@description('Private DNS Zone ID for AzureWebSites (required if deployPrivateEndpoint is true)')
-param privateDnsZoneAzureWebsitesId string = ''
+@description('Additional CORS origins (e.g. static web app hostname)')
+param corsAllowedOrigins array = []
 
 @description('Name of the Flex Consumption plan created for this app')
 param flexPlanName string = '${functionAppName}-flex-plan'
@@ -60,83 +54,20 @@ param httpPerInstanceConcurrency int = 20
 @maxValue(10)
 param flexAlwaysReadyInstanceCount int = 0
 
-@description('Public network access mode for the function app')
-@allowed([
-  'Enabled'
-  'Disabled'
-])
-param publicNetworkAccess string = 'Enabled'
-
-var baseAppSettings = [
-  {
-    name: 'FUNCTIONS_EXTENSION_VERSION'
-    value: '~4'
-  }
-  {
-    name: 'FUNCTIONS_WORKER_RUNTIME'
-    value: 'python'
-  }
-  {
-    name: 'WEBSITE_RUN_FROM_PACKAGE'
-    value: '1'
-  }
-  {
-    name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-    value: appInsightsConnectionString
-  }
-  {
-    name: 'APPLICATIONINSIGHTS_AUTHENTICATION_STRING'
-    value: 'ClientId=${uamiClientId};Authorization=AAD'
-  }
-  {
-    name: 'AzureWebJobsStorage__accountName'
-    value: storageAccountName
-  }
-  {
-    name: 'AzureWebJobsStorage__credential'
-    value: 'ManagedIdentity'
-  }
-  {
-    name: 'AzureWebJobsStorage__clientId'
-    value: uamiClientId
-  }
-  {
-    name: 'AZURE_CLIENT_ID'
-    value: uamiClientId
-  }
-  {
-    name: 'AzureWebJobsStorage__blobServiceUri'
-    value: 'https://${storageAccountName}.blob.${environment().suffixes.storage}/'
-  }
-  {
-    name: 'AzureWebJobsStorage__queueServiceUri'
-    value: 'https://${storageAccountName}.queue.${environment().suffixes.storage}/'
-  }
-  {
-    name: 'AzureWebJobsStorage__tableServiceUri'
-    value: 'https://${storageAccountName}.table.${environment().suffixes.storage}/'
-  }
-  {
-    name: 'WEBSITE_VNET_ROUTE_ALL'
-    value: '1'
-  }
-]
-
-var alwaysReadyConfig = flexAlwaysReadyInstanceCount > 0 ? [
-  {
-    name: 'global'
-    instanceCount: flexAlwaysReadyInstanceCount
-  }
-] : []
-
-resource flexPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
+resource flexPlan 'Microsoft.Web/serverfarms@2024-11-01' = {
   name: flexPlanName
   location: location
   tags: tags
-  kind: 'functionapp'
+  kind: 'functionapp,linux'
   sku: {
     name: 'FlexConsumption'
     tier: 'FlexConsumption'
+  }
+  properties: {
+    maximumElasticWorkerCount: flexMaximumInstanceCount
+    perSiteScaling: false
+    reserved: true
+    targetWorkerCount: flexAlwaysReadyInstanceCount
   }
 }
 
@@ -154,9 +85,28 @@ resource functionApp 'Microsoft.Web/sites@2025-03-01' = {
   properties: {
     serverFarmId: flexPlan.id
     httpsOnly: true
-    publicNetworkAccess: publicNetworkAccess
-    virtualNetworkSubnetId: functionsSubnetId
+
+    siteConfig: {
+      alwaysOn: false
+      minTlsVersion: '1.2'
+      ftpsState: 'Disabled'
+      cors: {
+        allowedOrigins: corsAllowedOrigins
+        supportCredentials: false
+      }
+    }
+
     functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: 'https://${storageAccountName}.blob.${environment().suffixes.storage}/function-deployments'
+          authentication: {
+            type: 'UserAssignedIdentity'
+            userAssignedIdentityResourceId: uamiId
+          }
+        }
+      }
       runtime: {
         name: 'python'
         version: '3.13'
@@ -169,52 +119,34 @@ resource functionApp 'Microsoft.Web/sites@2025-03-01' = {
             perInstanceConcurrency: httpPerInstanceConcurrency
           }
         }
-        alwaysReady: alwaysReadyConfig
       }
-    }
-    siteConfig: {
-      minTlsVersion: '1.2'
-      linuxFxVersion: 'Python|3.13'
-      ftpsState: 'Disabled'
-      appSettings: baseAppSettings
     }
   }
 }
 
-resource privateEndpoint 'Microsoft.Network/privateEndpoints@2024-10-01' = if (deployPrivateEndpoint) {
-  name: '${functionAppName}-pe'
-  location: location
-  tags: tags
+resource functionAppVnetIntegration 'Microsoft.Web/sites/networkConfig@2024-11-01' = {
+  parent: functionApp
+  name: 'virtualNetwork'
   properties: {
-    subnet: {
-      id: privateEndpointsSubnetId
-    }
-    privateLinkServiceConnections: [
-      {
-        name: 'sites'
-        properties: {
-          privateLinkServiceId: functionApp.id
-          groupIds: [
-            'sites'
-          ]
-        }
-      }
-    ]
+    subnetResourceId: functionsSubnetId
+    swiftSupported: true
   }
 }
 
-resource privateEndpointDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-10-01' = if (deployPrivateEndpoint) {
-  name: 'default'
-  parent: privateEndpoint
+resource functionAppAppSettings 'Microsoft.Web/sites/config@2024-11-01' = {
+  parent: functionApp
+  name: 'appsettings'
   properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'azurewebsites'
-        properties: {
-          privateDnsZoneId: privateDnsZoneAzureWebsitesId
-        }
-      }
-    ]
+    WEBSITE_VNET_ROUTE_ALL: '1'
+    APPLICATIONINSIGHTS_CONNECTION_STRING: appInsightsConnectionString
+    APPLICATIONINSIGHTS_AUTHENTICATION_STRING: 'ClientId=${uamiClientId};Authorization=AAD'
+    AzureWebJobsStorage__credential: 'managedidentity'
+    AzureWebJobsStorage__blobServiceUri: 'https://${storageAccountName}.blob.${environment().suffixes.storage}'
+    AzureWebJobsStorage__queueServiceUri: 'https://${storageAccountName}.queue.${environment().suffixes.storage}'
+    AzureWebJobsStorage__tableServiceUri: 'https://${storageAccountName}.table.${environment().suffixes.storage}'
+    AzureWebJobsStorage__ClientId: uamiClientId
+    AzureWebJobsStorage__accountName: storageAccountName
+    AZURE_CLIENT_ID: uamiClientId
   }
 }
 

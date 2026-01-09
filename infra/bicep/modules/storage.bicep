@@ -33,7 +33,6 @@ resource storage 'Microsoft.Storage/storageAccounts@2025-01-01' = {
     publicNetworkAccess: 'Disabled'
     allowBlobPublicAccess: false
     allowSharedKeyAccess: false
-    supportsHttpsTrafficOnly: true
     dnsEndpointType: 'Standard'
     minimumTlsVersion: 'TLS1_2'
     networkAcls: {

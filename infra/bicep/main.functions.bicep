@@ -67,6 +67,9 @@ param flexAlwaysReadyInstanceCount int = 0
 ])
 param publicNetworkAccess string = 'Enabled'
 
+@description('CORS origins to expose on the function app')
+param corsAllowedOrigins array = []
+
 module functionApp './modules/functionAppFlex.bicep' = {
   name: 'functionAppFlex'
   params: {
@@ -87,6 +90,7 @@ module functionApp './modules/functionAppFlex.bicep' = {
     httpPerInstanceConcurrency: httpPerInstanceConcurrency
     flexAlwaysReadyInstanceCount: flexAlwaysReadyInstanceCount
     publicNetworkAccess: publicNetworkAccess
+    corsAllowedOrigins: corsAllowedOrigins
   }
 }
 

@@ -89,7 +89,7 @@ stages:
           displayName: 'Set SWA artifact path'
 
         - task: AzureCLI@2
-          displayName: 'Query API Gateway function app details'
+          displayName: 'Query backend function app details'
           inputs:
             azureSubscription: '$(azureServiceConnection)'
             scriptType: bash
@@ -97,35 +97,34 @@ stages:
             inlineScript: |
               set -euo pipefail
               
-              echo "=== Querying API Gateway Function App ==="
+              echo "=== Querying Backend Function App ==="
               
               rg_name="$(resourceGroupName)"
               
-              # Query resource group for api-gateway function app
-              # Function app naming pattern: {namePrefix}-api-gateway-{uniqueSuffix}
-              api_gw_functions=$(az functionapp list -g "$rg_name" --query "[?contains(name, 'api-gateway')]" -o json)
+              # Query resource group for the function app (look for cloudfolio-function-app pattern)
+              backend_functions=$(az functionapp list -g "$rg_name" --query "[?contains(name, 'function-app')]" -o json)
               
-              if [ "$api_gw_functions" == "[]" ]; then
-                echo "##vso[task.logissue type=warning]API Gateway function app not found in resource group"
+              if [ "$backend_functions" == "[]" ]; then
+                echo "##vso[task.logissue type=warning]Backend function app not found in resource group"
                 echo "Proceeding with empty values - SWA will deploy without linked backend"
-                echo "##vso[task.setvariable variable=apiGatewayId]"
-                echo "##vso[task.setvariable variable=apiGatewayHostname]"
+                echo "##vso[task.setvariable variable=backendFunctionAppId]"
+                echo "##vso[task.setvariable variable=backendFunctionAppHostname]"
               else
-                api_gateway_id=$(echo "$api_gw_functions" | jq -r '.[0].id')
-                api_gateway_hostname=$(echo "$api_gw_functions" | jq -r '.[0].defaultHostName')
+                backend_id=$(echo "$backend_functions" | jq -r '.[0].id')
+                backend_hostname=$(echo "$backend_functions" | jq -r '.[0].defaultHostName')
                 
-                if [ -z "$api_gateway_id" ] || [ -z "$api_gateway_hostname" ]; then
-                  echo "##vso[task.logissue type=warning]Failed to extract API Gateway details from resource"
+                if [ -z "$backend_id" ] || [ -z "$backend_hostname" ]; then
+                  echo "##vso[task.logissue type=warning]Failed to extract backend function app details from resource"
                   echo "Proceeding with empty values"
-                  echo "##vso[task.setvariable variable=apiGatewayId]"
-                  echo "##vso[task.setvariable variable=apiGatewayHostname]"
+                  echo "##vso[task.setvariable variable=backendFunctionAppId]"
+                  echo "##vso[task.setvariable variable=backendFunctionAppHostname]"
                 else
-                  echo "##vso[task.setvariable variable=apiGatewayId]$api_gateway_id"
-                  echo "##vso[task.setvariable variable=apiGatewayHostname]$api_gateway_hostname"
+                  echo "##vso[task.setvariable variable=backendFunctionAppId]$backend_id"
+                  echo "##vso[task.setvariable variable=backendFunctionAppHostname]$backend_hostname"
                   
-                  echo "✓ API Gateway details found"
-                  echo "  ID: $api_gateway_id"
-                  echo "  Hostname: $api_gateway_hostname"
+                  echo "✓ Backend function app details found"
+                  echo "  ID: $backend_id"
+                  echo "  Hostname: $backend_hostname"
                 fi
               fi
 
@@ -144,8 +143,8 @@ stages:
               -location "$(location)"
               -namePrefix "$(namePrefix)"
               -repositoryUrl "$(repositoryUrl)"
-              -apiGatewayId "$(apiGatewayId)"
-              -apiGatewayDefaultHostname "$(apiGatewayHostname)"
+              -backendFunctionAppId "$(backendFunctionAppId)"
+              -backendFunctionAppDefaultHostname "$(backendFunctionAppHostname)"
               -enableLinkedBackend "$(enableLinkedBackend)"
             deploymentMode: Incremental
             deploymentName: 'swa-$(namePrefix)'

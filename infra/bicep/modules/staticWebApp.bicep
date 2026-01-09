@@ -12,11 +12,11 @@ param uniqueSuffix string
 @description('Whether to deploy SWA linked backend (Azure Functions integration). If false, SWA is standalone.')
 param enableLinkedBackend bool = true
 
-@description('Resource ID of the api-gateway Function App')
-param apiGatewayId string
+@description('Resource ID of the backend Function App')
+param backendFunctionAppId string
 
-@description('Default hostname of the api-gateway Function App, used to configure SWA API_BASE_URL')
-param apiGatewayDefaultHostname string
+@description('Default hostname of the backend Function App, used to configure SWA API_BASE_URL')
+param backendFunctionAppDefaultHostname string
 
 @description('GitHub repository URL for the Static Web App (required by Azure, even for manual deployments)')
 param repositoryUrl string = 'https://dev.azure.com/chxgbx/cloudfolio/_git/cloudfolio'
@@ -34,30 +34,31 @@ resource staticWebApp 'Microsoft.Web/staticSites@2024-11-01' = {
   properties: {
     repositoryUrl: repositoryUrl
     branch: 'main'
+    provider: 'AzureDevOps'
     buildProperties: {
-      appLocation: 'ui'  // Adjust to your SPA source folder (e.g., 'src', 'dist', 'ui')
-      apiLocation: ''  // Not used; API is external (api-gateway)
+      appLocation: 'ui'
+      apiLocation: ''
       outputLocation: 'dist/browser'
-      skipGithubActionWorkflowGeneration: true  // Use custom workflow or manual deploy
+      skipGithubActionWorkflowGeneration: true 
     }
   }
 }
 
-// Link the Function App Api Gateway to SWA
+// Link the Function App backend to SWA
 resource linkedBackend 'Microsoft.Web/staticSites/linkedBackends@2024-11-01' = if (enableLinkedBackend) {
-  name: 'api-gateway'
+  name: 'backend'
   parent: staticWebApp
   properties: {
-    backendResourceId: apiGatewayId
+    backendResourceId: backendFunctionAppId
     region: location
   }
 }
 
-resource staticWebAppConfig 'Microsoft.Web/staticSites/config@2024-11-01' = if (!empty(apiGatewayDefaultHostname)) {
+resource staticWebAppConfig 'Microsoft.Web/staticSites/config@2024-11-01' = if (!empty(backendFunctionAppDefaultHostname)) {
   parent: staticWebApp
   name: 'appsettings'
   properties: {
-    API_BASE_URL: 'https://${apiGatewayDefaultHostname}/api'
+    API_BASE_URL: 'https://${backendFunctionAppDefaultHostname}/api'
   }
 }
 
