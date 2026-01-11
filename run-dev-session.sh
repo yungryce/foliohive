@@ -16,9 +16,6 @@ readonly AZURITE_HELPER="$API_ROOT/ensure-azurite.sh"
 readonly SETUP_HELPER="$API_ROOT/setup-dev.sh"
 readonly UI_DIR="$REPO_ROOT/ui"
 
-readonly LOCAL_SETTINGS_FILE="$FUNC_APP_DIR/local.settings.json"
-readonly LOCAL_SETTINGS_EXAMPLE="$FUNC_APP_DIR/local.settings.example.json"
-
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
@@ -89,7 +86,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'log_warn "Interrupted; shutting down..."; exit 2' INT TERM
 
-parse_args() {
+parse_run_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -h|--help)
@@ -133,8 +130,7 @@ parse_args() {
         esac
     done
 
-    # Any remaining args are forwarded to setup-dev.sh
-    SETUP_ARGS=("$@")
+    SETUP_ARGS+=("$@")
 }
 
 require_command() {
@@ -182,25 +178,12 @@ ensure_dependencies() {
     require_command jq
 }
 
-ensure_local_settings() {
-    if [[ -f "$LOCAL_SETTINGS_FILE" ]]; then
-        return 0
-    fi
-    if [[ -f "$LOCAL_SETTINGS_EXAMPLE" ]]; then
-        log_warn "Missing function-app/local.settings.json; creating from local.settings.example.json"
-        cp "$LOCAL_SETTINGS_EXAMPLE" "$LOCAL_SETTINGS_FILE"
-        log_warn "Edit $LOCAL_SETTINGS_FILE to add GITHUB_TOKEN"
-        return 0
-    fi
-    log_warn "Missing $LOCAL_SETTINGS_EXAMPLE; skipping local.settings bootstrap"
-}
-
 run_setup_if_needed() {
-    if [[ -d "$VENV_DIR" ]]; then
-        return 0
+    local force="${1:-false}"
+    if [[ "$force" == true || ! -d "$VENV_DIR" ]]; then
+        log_step "Running $SETUP_HELPER${SETUP_ARGS:+ (${SETUP_ARGS[*]})}"
+        (cd "$API_ROOT" && bash "$SETUP_HELPER" "${SETUP_ARGS[@]}")
     fi
-    log_step "Backend venv not found; running $SETUP_HELPER"
-    (cd "$API_ROOT" && bash "$SETUP_HELPER" "${SETUP_ARGS[@]}")
 }
 
 wait_for_worker_ready() {
@@ -363,17 +346,31 @@ monitor_workers() {
 }
 
 main() {
+    local -a raw_args=("$@")
+    local -a run_args=()
     SETUP_ARGS=()
-    parse_args "$@"
-    ensure_dependencies
+    local forward=false
 
-    run_setup_if_needed
+    for arg in "${raw_args[@]}"; do
+        if [[ "$arg" == "--" ]]; then
+            forward=true
+            continue
+        fi
+        if [[ "$forward" == true ]]; then
+            SETUP_ARGS+=("$arg")
+        else
+            run_args+=("$arg")
+        fi
+    done
+
+    ensure_dependencies
+    run_setup_if_needed $([[ ${#SETUP_ARGS[@]} -gt 0 ]] && echo true || echo false)
+    parse_run_args "${run_args[@]}"
     activate_venv
     validate_env
     clean_logs
     prepare_logs
     bash "$AZURITE_HELPER"
-    ensure_local_settings
 
     for worker in "${WORKER_SEQUENCE[@]}"; do
         start_worker "$worker" "${WORKER_PORTS[$worker]}"

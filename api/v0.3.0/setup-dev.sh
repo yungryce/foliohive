@@ -353,8 +353,12 @@ run_tests() {
         bash "$AZURITE_HELPER"
     fi
     
-    # Run pytest from apps/ to preserve expected import paths
-    (cd "$APPS_DIR" && python -m pytest -c tests/pytest.ini) || return 1
+    # Run pytest in current shell to preserve venv activation
+    cd "$APPS_DIR"
+    python -m pytest -c tests/pytest.ini
+    local exit_code=$?
+    cd - >/dev/null
+    return $exit_code
 }
 
 print_success() {
