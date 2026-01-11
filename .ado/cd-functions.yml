@@ -38,15 +38,15 @@ stages:
         functionName: 'api-gateway'
         bicepFile: './infra/bicep/main.functions.bicep'
 
-    - template: cd-deploy-function.yml
-      parameters:
-        functionName: 'sync-worker'
-        bicepFile: './infra/bicep/main.functions.bicep'
+    # - template: cd-deploy-function.yml
+    #   parameters:
+    #     functionName: 'sync-worker'
+    #     bicepFile: './infra/bicep/main.functions.bicep'
 
-    - template: cd-deploy-function.yml
-      parameters:
-        functionName: 'merge-worker'
-        bicepFile: './infra/bicep/main.functions.bicep'
+    # - template: cd-deploy-function.yml
+    #   parameters:
+    #     functionName: 'merge-worker'
+    #     bicepFile: './infra/bicep/main.functions.bicep'
 
     - job: Capture_API_Gateway_Outputs
       displayName: 'Capture API Gateway outputs'
