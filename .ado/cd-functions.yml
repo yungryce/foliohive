@@ -51,8 +51,8 @@ stages:
     - job: Capture_API_Gateway_Outputs
       displayName: 'Capture API Gateway outputs'
       dependsOn:
-        - Deploy_api_gateway
-      condition: succeeded('Deploy_api_gateway')
+        - Deploy_flex_app
+      condition: succeeded('Deploy_flex_app')
       pool:
         vmImage: ubuntu-latest
       steps:
