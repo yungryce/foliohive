@@ -149,15 +149,11 @@ jobs:
           overrideParameters: >
             -location "$(location)"
             -functionAppName "$(functionAppParameter)"
-            -appServicePlanId "$(appServicePlanId)"
             -functionsSubnetId "$(functionsSubnetId)"
-            -privateEndpointsSubnetId "$(privateEndpointsSubnetId)"
             -uamiId "$(uamiId)"
             -uamiClientId "$(uamiClientId)"
             -appInsightsConnectionString "$(appInsightsConnectionString)"
-            -privateDnsZoneAzureWebsitesId "$(privateDnsZoneAzureWebsitesId)"
             -storageAccountName "$(storageAccountName)"
-            -deployPrivateEndpoint false
             -corsAllowedOrigins '["$(staticWebAppHost)"]'
           deploymentMode: 'Incremental'
           deploymentName: '${{ parameters.functionName }}-infra'
