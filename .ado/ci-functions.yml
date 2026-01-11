@@ -13,16 +13,14 @@ trigger:
       - build
   paths:
     include:
-      - api/v0.2.0/api-gateway/**
-      - api/v0.2.0/sync-worker/**
-      - api/v0.2.0/merge-worker/**
-      - api/v0.2.0/shared/**
+      - api/v0.3.0/function-app/**
+      - api/v0.3.0/shared/**
       - .ado/ci-functions.yml
       - .ado/ci-build-function.yml
       - .ado/detect-function-changes.yml
     exclude:
-      - api/v0.2.0/**/tests/**
-      - api/v0.2.0/**/__pycache__/**
+      - api/v0.3.0/**/tests/**
+      - api/v0.3.0/**/__pycache__/**
       - '**/*.pyc'
 
 variables:
@@ -40,24 +38,32 @@ stages:
   jobs:
     - template: ci-build-function.yml
       parameters:
-        functionName: 'api-gateway'
-        functionDir: 'api/v0.2.0/api-gateway'
-        sharedDir: 'api/v0.2.0/shared'
+        functionName: 'flex-app'
+        functionDir: 'api/v0.3.0/function-app'
+        sharedDir: 'api/v0.3.0/shared'
         pythonVersion: '$(pythonVersion)'
-        condition: eq(stageDependencies.Detect_Changes.Detect_Changes.outputs['DetectChanges.apiGatewayChanged'], 'true')
+        condition: eq(stageDependencies.Detect_Changes.Detect_Changes.outputs['DetectChanges.flexAppChanged'], 'true')
+        
+    # - template: ci-build-function.yml
+    #   parameters:
+    #     functionName: 'api-gateway'
+    #     functionDir: 'api/v0.2.0/api-gateway'
+    #     sharedDir: 'api/v0.2.0/shared'
+    #     pythonVersion: '$(pythonVersion)'
+    #     condition: eq(stageDependencies.Detect_Changes.Detect_Changes.outputs['DetectChanges.apiGatewayChanged'], 'true')
 
-    - template: ci-build-function.yml
-      parameters:
-        functionName: 'sync-worker'
-        functionDir: 'api/v0.2.0/sync-worker'
-        sharedDir: 'api/v0.2.0/shared'
-        pythonVersion: '$(pythonVersion)'
-        condition: eq(stageDependencies.Detect_Changes.Detect_Changes.outputs['DetectChanges.syncWorkerChanged'], 'true')
+    # - template: ci-build-function.yml
+    #   parameters:
+    #     functionName: 'sync-worker'
+    #     functionDir: 'api/v0.2.0/sync-worker'
+    #     sharedDir: 'api/v0.2.0/shared'
+    #     pythonVersion: '$(pythonVersion)'
+    #     condition: eq(stageDependencies.Detect_Changes.Detect_Changes.outputs['DetectChanges.syncWorkerChanged'], 'true')
 
-    - template: ci-build-function.yml
-      parameters:
-        functionName: 'merge-worker'
-        functionDir: 'api/v0.2.0/merge-worker'
-        sharedDir: 'api/v0.2.0/shared'
-        pythonVersion: '$(pythonVersion)'
-        condition: eq(stageDependencies.Detect_Changes.Detect_Changes.outputs['DetectChanges.mergeWorkerChanged'], 'true')
+    # - template: ci-build-function.yml
+    #   parameters:
+    #     functionName: 'merge-worker'
+    #     functionDir: 'api/v0.2.0/merge-worker'
+    #     sharedDir: 'api/v0.2.0/shared'
+    #     pythonVersion: '$(pythonVersion)'
+    #     condition: eq(stageDependencies.Detect_Changes.Detect_Changes.outputs['DetectChanges.mergeWorkerChanged'], 'true')

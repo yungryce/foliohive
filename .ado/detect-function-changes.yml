@@ -33,6 +33,7 @@ jobs:
             API_GATEWAY_CHANGED=true
             SYNC_WORKER_CHANGED=true
             MERGE_WORKER_CHANGED=true
+            FLEX_APP_CHANGED=true
           else
             echo "Changed files:"
             echo "$CHANGED_FILES"
@@ -42,6 +43,7 @@ jobs:
             API_GATEWAY_CHANGED=false
             SYNC_WORKER_CHANGED=false
             MERGE_WORKER_CHANGED=false
+            FLEX_APP_CHANGED=false
             
             if echo "$CHANGED_FILES" | grep -qE '^api/v0\.2\.0/(api-gateway|shared)/'; then
               API_GATEWAY_CHANGED=true
@@ -57,6 +59,11 @@ jobs:
               MERGE_WORKER_CHANGED=true
               echo "✓ merge-worker changed"
             fi
+
+            if echo "$CHANGED_FILES" | grep -qE '^api/v0\.3\.0/(function-app|shared)/'; then
+              FLEX_APP_CHANGED=true
+              echo "✓ flex-app changed"
+            fi
             
             # If CI/CD pipeline files changed, rebuild all
             if echo "$CHANGED_FILES" | grep -qE '^\.ado/(ci-|cd-|.*-function\.yml)'; then
@@ -64,6 +71,7 @@ jobs:
               API_GATEWAY_CHANGED=true
               SYNC_WORKER_CHANGED=true
               MERGE_WORKER_CHANGED=true
+              FLEX_APP_CHANGED=true
             fi
           fi
           
@@ -71,11 +79,13 @@ jobs:
           echo "##vso[task.setvariable variable=apiGatewayChanged;isOutput=true]$API_GATEWAY_CHANGED"
           echo "##vso[task.setvariable variable=syncWorkerChanged;isOutput=true]$SYNC_WORKER_CHANGED"
           echo "##vso[task.setvariable variable=mergeWorkerChanged;isOutput=true]$MERGE_WORKER_CHANGED"
+          echo "##vso[task.setvariable variable=flexAppChanged;isOutput=true]$FLEX_APP_CHANGED"
           
           echo ""
           echo "=== Change Detection Summary ==="
           echo "api-gateway: $API_GATEWAY_CHANGED"
           echo "sync-worker: $SYNC_WORKER_CHANGED"
           echo "merge-worker: $MERGE_WORKER_CHANGED"
+          echo "flex-app: $FLEX_APP_CHANGED"
         displayName: 'Detect function changes'
         name: DetectChanges

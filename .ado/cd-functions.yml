@@ -68,34 +68,34 @@ stages:
             inlineScript: |
               set -euo pipefail
               
-              echo "=== Reading API Gateway Deployment Outputs ==="
+              echo "=== Reading function app Deployment Outputs ==="
               
-              deployment_name="api-gateway-infra"
+              deployment_name="flex-app-infra"
               rg_name="$(resourceGroupName)"
               
               # Query deployment for function app details
-              api_gateway_id=$(az deployment group show \
+              flex_app_id=$(az deployment group show \
                 -g "$rg_name" \
                 -n "$deployment_name" \
                 --query "properties.outputs.functionAppId.value" \
                 -o tsv)
               
-              api_gateway_hostname=$(az deployment group show \
+              flex_app_hostname=$(az deployment group show \
                 -g "$rg_name" \
                 -n "$deployment_name" \
                 --query "properties.outputs.functionAppDefaultHostname.value" \
                 -o tsv)
               
-              if [ -z "$api_gateway_id" ] || [ -z "$api_gateway_hostname" ]; then
-                echo "##vso[task.logissue type=error]Failed to read API Gateway outputs"
-                echo "api_gateway_id: $api_gateway_id"
-                echo "api_gateway_hostname: $api_gateway_hostname"
+              if [ -z "$flex_app_id" ] || [ -z "$flex_app_hostname" ]; then
+                echo "##vso[task.logissue type=error]Failed to read function app outputs"
+                echo "flex_app_id: $flex_app_id"
+                echo "flex_app_hostname: $flex_app_hostname"
                 exit 1
               fi
               
-              echo "##vso[task.setvariable variable=apiGatewayId;isOutput=true]$api_gateway_id"
-              echo "##vso[task.setvariable variable=apiGatewayHostname;isOutput=true]$api_gateway_hostname"
+              echo "##vso[task.setvariable variable=flexAppId;isOutput=true]$flex_app_id"
+              echo "##vso[task.setvariable variable=flexAppHostname;isOutput=true]$flex_app_hostname"
               
-              echo "✓ API Gateway outputs captured"
-              echo "  ID: $api_gateway_id"
-              echo "  Hostname: $api_gateway_hostname"
+              echo "✓ function app outputs captured"
+              echo "  ID: $flex_app_id"
+              echo "  Hostname: $flex_app_hostname"
