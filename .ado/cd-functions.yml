@@ -35,7 +35,7 @@ stages:
   jobs:
     - template: cd-deploy-function.yml
       parameters:
-        functionName: 'api-gateway'
+        functionName: 'flex-app'
         bicepFile: './infra/bicep/main.functions.bicep'
 
     # - template: cd-deploy-function.yml
