@@ -10,6 +10,7 @@ trigger:
     include:
       - main
       - test
+      - build
   paths:
     include:
       - api/v0.2.0/api-gateway/**

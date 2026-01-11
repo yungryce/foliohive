@@ -9,6 +9,7 @@ trigger:
     include:
       - main
       - test
+      - build
   paths:
     include:
       - infra/bicep/**
