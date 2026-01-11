@@ -200,7 +200,7 @@ run_setup_if_needed() {
         return 0
     fi
     log_step "Backend venv not found; running $SETUP_HELPER"
-    (cd "$API_ROOT" && bash "$SETUP_HELPER" "${SETUP_ARGS[@]:-}")
+    (cd "$API_ROOT" && bash "$SETUP_HELPER" "${SETUP_ARGS[@]}")
 }
 
 wait_for_worker_ready() {
