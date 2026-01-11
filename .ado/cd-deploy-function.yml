@@ -154,7 +154,7 @@ jobs:
             -uamiClientId "$(uamiClientId)"
             -appInsightsConnectionString "$(appInsightsConnectionString)"
             -storageAccountName "$(storageAccountName)"
-            -corsAllowedOrigins '["$(staticWebAppHost)"]'
+            -corsAllowedOrigins ["$(staticWebAppHost)"]
           deploymentMode: 'Incremental'
           deploymentName: '${{ parameters.functionName }}-infra'
 
