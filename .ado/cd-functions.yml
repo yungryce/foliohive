@@ -22,6 +22,7 @@ trigger:
   paths:
     include:
       - .ado/cd-functions.yml
+      - .ado/cd-deploy-function.yml
       - infra/bicep/main.functions.bicep
       - infra/bicep/modules/functionApp.bicep
 
