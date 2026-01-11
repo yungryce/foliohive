@@ -34,10 +34,6 @@ param storageAccountName string
 @description('Log Analytics workspace ID for container logs')
 param logAnalyticsWorkspaceId string
 
-@secure()
-@description('Log Analytics workspace key for container logs')
-param logAnalyticsWorkspaceKey string
-
 @description('CPU cores for container instance (0.5 to 4.0)')
 param cpuCores string = '2.0'
 
@@ -71,7 +67,6 @@ module containerInstance './modules/containerInstance.bicep' = {
     uamiId: uamiId
     uamiClientId: uamiClientId
     logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
-    logAnalyticsWorkspaceKey: logAnalyticsWorkspaceKey
     cpuCores: cpuCores
     memoryGb: memoryGb
     restartPolicy: restartPolicy

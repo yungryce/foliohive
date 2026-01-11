@@ -21,7 +21,6 @@ parameters:
   uamiClientId: ''
   storageAccountName: ''
   logAnalyticsWorkspaceId: ''
-  logAnalyticsWorkspaceKey: ''
 
   # Image config (uses tag pushed by ci-container pipeline)
   dockerHubRepository: ''
@@ -81,7 +80,6 @@ stages:
               -uamiClientId "${{ parameters.uamiClientId }}"
               -storageAccountName "${{ parameters.storageAccountName }}"
               -logAnalyticsWorkspaceId "${{ parameters.logAnalyticsWorkspaceId }}"
-              -logAnalyticsWorkspaceKey "${{ parameters.logAnalyticsWorkspaceKey }}"
               -trainingMode "${{ parameters.trainingMode }}"
               -queueName "${{ parameters.queueName }}"
               -blobContainerName "${{ parameters.blobContainerName }}"

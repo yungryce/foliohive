@@ -23,7 +23,6 @@ parameters:
   uamiClientId: ''
   storageAccountName: ''
   logAnalyticsWorkspaceId: ''
-  logAnalyticsWorkspaceKey: ''
 
   # Container behavior
   trainingMode: 'serverless'

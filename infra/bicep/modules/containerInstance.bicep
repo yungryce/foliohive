@@ -27,9 +27,7 @@ param uamiClientId string
 @description('Log Analytics workspace ID for container logs')
 param logAnalyticsWorkspaceId string
 
-@secure()
-@description('Log Analytics workspace key for container logs')
-param logAnalyticsWorkspaceKey string
+var logAnalyticsWorkspaceKeys = listKeys(logAnalyticsWorkspaceId, '2021-12-01')
 
 @description('CPU cores for container instance (0.5 to 4.0)')
 param cpuCores string = '2.0'
@@ -68,7 +66,7 @@ resource containerInstance 'Microsoft.ContainerInstance/containerGroups@2024-05-
     diagnostics: {
       logAnalytics: {
         workspaceId: logAnalyticsWorkspaceId
-        workspaceKey: logAnalyticsWorkspaceKey
+        workspaceKey: logAnalyticsWorkspaceKeys.primarySharedKey
         logType: 'ContainerInstanceLogs'
       }
     }
