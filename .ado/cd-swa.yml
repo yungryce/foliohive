@@ -12,6 +12,9 @@ resources:
     - pipeline: swa_ci
       source: yungryce.cloudfolio.swa-ci
       trigger: true
+    - pipeline: functions_cd
+      source: yungryce.cloudfolio.cd-functions
+      trigger: false
 
 trigger:
   branches:
@@ -102,28 +105,27 @@ stages:
               
               rg_name="$(resourceGroupName)"
               
-              # Query resource group for the function app (look for cloudfolio-function-app pattern)
-              backend_functions=$(az functionapp list -g "$rg_name" --query "[?contains(name, 'function-app')]" -o json)
+              # Query resource group for the function app (look for flex-app pattern from v0.3.0)
+              backend_functions=$(az functionapp list -g "$rg_name" --query "[?contains(name, 'flex-app')]" -o json)
               
-              if [ "$backend_functions" == "[]" ]; then
-                echo "##vso[task.logissue type=warning]Backend function app not found in resource group"
-                echo "Proceeding with empty values - SWA will deploy without linked backend"
+              if [ "$backend_functions" == "[]" ] || [ -z "$backend_functions" ]; then
+                echo "##vso[task.logissue type=warning]Backend function app (flex-app) not found in resource group"
+                echo "Expected to find a function app with 'flex-app' in the name"
+                echo "Proceeding without linked backend"
                 echo "##vso[task.setvariable variable=backendFunctionAppId]"
                 echo "##vso[task.setvariable variable=backendFunctionAppHostname]"
               else
-                backend_id=$(echo "$backend_functions" | jq -r '.[0].id')
-                backend_hostname=$(echo "$backend_functions" | jq -r '.[0].defaultHostName')
+                backend_id=$(echo "$backend_functions" | jq -r '.[0].id // empty')
+                backend_hostname=$(echo "$backend_functions" | jq -r '.[0].defaultHostName // empty')
                 
                 if [ -z "$backend_id" ] || [ -z "$backend_hostname" ]; then
-                  echo "##vso[task.logissue type=warning]Failed to extract backend function app details from resource"
-                  echo "Proceeding with empty values"
+                  echo "##vso[task.logissue type=warning]Failed to extract backend function app details"
                   echo "##vso[task.setvariable variable=backendFunctionAppId]"
                   echo "##vso[task.setvariable variable=backendFunctionAppHostname]"
                 else
                   echo "##vso[task.setvariable variable=backendFunctionAppId]$backend_id"
                   echo "##vso[task.setvariable variable=backendFunctionAppHostname]$backend_hostname"
-                  
-                  echo "✓ Backend function app details found"
+                  echo "✓ Backend function app found"
                   echo "  ID: $backend_id"
                   echo "  Hostname: $backend_hostname"
                 fi
@@ -146,7 +148,7 @@ stages:
               -repositoryUrl "$(repositoryUrl)"
               -backendFunctionAppId "$(backendFunctionAppId)"
               -backendFunctionAppDefaultHostname "$(backendFunctionAppHostname)"
-              -enableLinkedBackend "$(enableLinkedBackend)"
+              -enableLinkedBackend "${{ if ne(variables['backendFunctionAppId'], '') }}true${{ else }}false${{ end }}"
             deploymentMode: Incremental
             deploymentName: 'swa-$(namePrefix)'
 

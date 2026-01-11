@@ -48,8 +48,8 @@ stages:
     #     functionName: 'merge-worker'
     #     bicepFile: './infra/bicep/main.functions.bicep'
 
-    - job: Capture_API_Gateway_Outputs
-      displayName: 'Capture API Gateway outputs'
+    - job: Capture_Function_App_Outputs
+      displayName: 'Capture Function App outputs'
       dependsOn:
         - Deploy_flex_app
       condition: succeeded('Deploy_flex_app')
