@@ -60,7 +60,8 @@ resource flexPlan 'Microsoft.Web/serverfarms@2024-11-01' = {
   tags: tags
   kind: 'functionapp,linux'
   sku: {
-    name: 'FlexConsumption'
+    // Flex Consumption SKU
+    name: 'FC1'
     tier: 'FlexConsumption'
   }
   properties: {
