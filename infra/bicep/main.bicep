@@ -115,7 +115,6 @@ output privateEndpointsSubnetId string = network.outputs.privateEndpointsSubnetI
 output privateDnsZoneBlobId string = privateDns.outputs.privateDnsZoneBlobId
 output privateDnsZoneQueueId string = privateDns.outputs.privateDnsZoneQueueId
 output privateDnsZoneTableId string = privateDns.outputs.privateDnsZoneTableId
-output privateDnsZoneAzureWebsitesId string = privateDns.outputs.privateDnsZoneAzureWebsitesId
 
 output storageAccountName string = storage.outputs.storageAccountName
 output storageAccountId string = storage.outputs.storageAccountId

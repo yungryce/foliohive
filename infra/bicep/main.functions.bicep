@@ -28,15 +28,6 @@ param uamiClientId string
 @description('Application Insights connection string')
 param appInsightsConnectionString string
 
-@description('Whether to deploy a private endpoint for this function app')
-param deployPrivateEndpoint bool = false
-
-@description('Subnet ID for Private Endpoints (required if deployPrivateEndpoint is true)')
-param privateEndpointsSubnetId string = ''
-
-@description('Private DNS Zone ID for AzureWebSites (required if deployPrivateEndpoint is true)')
-param privateDnsZoneAzureWebsitesId string = ''
-
 @description('Name of the Flex Consumption plan created for this app')
 param flexPlanName string = '${functionAppName}-flex-plan'
 
@@ -60,13 +51,6 @@ param httpPerInstanceConcurrency int = 20
 @maxValue(10)
 param flexAlwaysReadyInstanceCount int = 0
 
-@description('Public network access mode for the function app')
-@allowed([
-  'Enabled'
-  'Disabled'
-])
-param publicNetworkAccess string = 'Enabled'
-
 @description('CORS origins to expose on the function app')
 param corsAllowedOrigins array = []
 
@@ -81,15 +65,11 @@ module functionApp './modules/functionAppFlex.bicep' = {
     uamiId: uamiId
     uamiClientId: uamiClientId
     appInsightsConnectionString: appInsightsConnectionString
-    deployPrivateEndpoint: deployPrivateEndpoint
-    privateEndpointsSubnetId: privateEndpointsSubnetId
-    privateDnsZoneAzureWebsitesId: privateDnsZoneAzureWebsitesId
     flexPlanName: flexPlanName
     flexMaximumInstanceCount: flexMaximumInstanceCount
     flexInstanceMemoryMb: flexInstanceMemoryMb
     httpPerInstanceConcurrency: httpPerInstanceConcurrency
     flexAlwaysReadyInstanceCount: flexAlwaysReadyInstanceCount
-    publicNetworkAccess: publicNetworkAccess
     corsAllowedOrigins: corsAllowedOrigins
   }
 }
