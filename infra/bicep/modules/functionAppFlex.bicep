@@ -128,6 +128,9 @@ resource functionApp 'Microsoft.Web/sites@2025-03-01' = {
 resource functionAppVnetIntegration 'Microsoft.Web/sites/networkConfig@2024-11-01' = {
   parent: functionApp
   name: 'virtualNetwork'
+  dependsOn: [
+    functionAppAppSettings
+  ]
   properties: {
     subnetResourceId: functionsSubnetId
     swiftSupported: true
