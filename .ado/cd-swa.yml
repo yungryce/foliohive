@@ -38,22 +38,8 @@ variables:
     value: 'https://dev.azure.com/chxgbx/cloudfolio/_git/cloudfolio'
 
 stages:
-- stage: Ensure_Core_Infrastructure
-  displayName: 'Ensure Core Infrastructure'
-  jobs:
-    - template: deploy-core-infra.yml
-      parameters:
-        azureServiceConnection: $(azureServiceConnection)
-        subscriptionId: $(subscriptionId)
-        resourceGroupName: $(resourceGroupName)
-        location: $(location)
-        namePrefix: $(namePrefix)
-        bicepFile: './infra/bicep/main.bicep'
-        bicepParamFile: './infra/bicep/main.bicepparam'
-
 - stage: CD_SWA
   displayName: 'CD: Deploy Static Web App'
-  dependsOn: Ensure_Core_Infrastructure
   jobs:
     - job: Deploy_Infra
       displayName: 'Deploy SWA infrastructure'
