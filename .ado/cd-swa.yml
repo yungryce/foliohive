@@ -33,7 +33,7 @@ variables:
   - name: bicepFile
     value: './infra/bicep/main.staticwebapp.bicep'
   - name: enableLinkedBackend
-    value: 'true'
+    value: 'false'
   - name: repositoryUrl
     value: 'https://dev.azure.com/chxgbx/cloudfolio/_git/cloudfolio'
 
@@ -114,6 +114,7 @@ stages:
                 echo "Proceeding without linked backend"
                 echo "##vso[task.setvariable variable=backendFunctionAppId]"
                 echo "##vso[task.setvariable variable=backendFunctionAppHostname]"
+                echo "##vso[task.setvariable variable=enableLinkedBackend]false"
               else
                 backend_id=$(echo "$backend_functions" | jq -r '.[0].id // empty')
                 backend_hostname=$(echo "$backend_functions" | jq -r '.[0].defaultHostName // empty')
@@ -122,9 +123,11 @@ stages:
                   echo "##vso[task.logissue type=warning]Failed to extract backend function app details"
                   echo "##vso[task.setvariable variable=backendFunctionAppId]"
                   echo "##vso[task.setvariable variable=backendFunctionAppHostname]"
+                  echo "##vso[task.setvariable variable=enableLinkedBackend]false"
                 else
                   echo "##vso[task.setvariable variable=backendFunctionAppId]$backend_id"
                   echo "##vso[task.setvariable variable=backendFunctionAppHostname]$backend_hostname"
+                  echo "##vso[task.setvariable variable=enableLinkedBackend]true"
                   echo "✓ Backend function app found"
                   echo "  ID: $backend_id"
                   echo "  Hostname: $backend_hostname"
@@ -148,7 +151,7 @@ stages:
               -repositoryUrl "$(repositoryUrl)"
               -backendFunctionAppId "$(backendFunctionAppId)"
               -backendFunctionAppDefaultHostname "$(backendFunctionAppHostname)"
-              -enableLinkedBackend "${{ if ne(variables['backendFunctionAppId'], '') }}true${{ else }}false${{ end }}"
+              -enableLinkedBackend "$(enableLinkedBackend)"
             deploymentMode: Incremental
             deploymentName: 'swa-$(namePrefix)'
 
