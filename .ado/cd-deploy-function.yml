@@ -188,5 +188,8 @@ jobs:
           package: '$(Pipeline.Workspace)/functions_ci/${{ parameters.functionName }}-$(resources.pipeline.functions_ci.runID)/${{ parameters.functionName }}.zip'
           appSettings: |
             [
-              { "name": "GITHUB_TOKEN", "value": "$(GITHUB_TOKEN)" }
+              {
+                "name": "GITHUB_TOKEN",
+                "value": "$(GITHUB_TOKEN)"
+              }
             ]
