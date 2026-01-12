@@ -60,7 +60,7 @@ stages:
           displayName: 'Checkout source code'
 
         - task: AzureCLI@2
-          displayName: 'Read API Gateway deployment outputs'
+          displayName: 'Read flex-app deployment outputs'
           inputs:
             azureSubscription: '$(azureServiceConnection)'
             scriptType: bash
@@ -73,7 +73,6 @@ stages:
               deployment_name="flex-app-infra"
               rg_name="$(resourceGroupName)"
               
-              # Query deployment for function app details
               flex_app_id=$(az deployment group show \
                 -g "$rg_name" \
                 -n "$deployment_name" \
@@ -88,14 +87,25 @@ stages:
               
               if [ -z "$flex_app_id" ] || [ -z "$flex_app_hostname" ]; then
                 echo "##vso[task.logissue type=error]Failed to read function app outputs"
-                echo "flex_app_id: $flex_app_id"
-                echo "flex_app_hostname: $flex_app_hostname"
                 exit 1
               fi
-              
-              echo "##vso[task.setvariable variable=flexAppId;isOutput=true]$flex_app_id"
-              echo "##vso[task.setvariable variable=flexAppHostname;isOutput=true]$flex_app_hostname"
               
               echo "✓ function app outputs captured"
               echo "  ID: $flex_app_id"
               echo "  Hostname: $flex_app_hostname"
+              
+              # Write to JSON file for artifact publishing
+              mkdir -p "$(Build.ArtifactStagingDirectory)"
+              cat > "$(Build.ArtifactStagingDirectory)/function-outputs.json" <<EOF
+              {
+                "flexAppId": "$flex_app_id",
+                "flexAppHostname": "$flex_app_hostname"
+              }
+              EOF
+
+        - task: PublishPipelineArtifact@1
+          displayName: 'Publish function app outputs'
+          inputs:
+            targetPath: '$(Build.ArtifactStagingDirectory)/function-outputs.json'
+            artifact: 'function-outputs'
+            publishLocation: 'pipeline'

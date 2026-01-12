@@ -14,6 +14,7 @@ resources:
       trigger: true
     - pipeline: functions_cd
       source: yungryce.cloudfolio.cd-functions
+      trigger: false
 
 trigger:
   branches:
@@ -37,22 +38,8 @@ variables:
     value: 'https://dev.azure.com/chxgbx/cloudfolio/_git/cloudfolio'
 
 stages:
-# - stage: Ensure_Core_Infrastructure
-#   displayName: 'Ensure Core Infrastructure'
-#   jobs:
-#     - template: deploy-core-infra.yml
-#       parameters:
-#         azureServiceConnection: $(azureServiceConnection)
-#         subscriptionId: $(subscriptionId)
-#         resourceGroupName: $(resourceGroupName)
-#         location: $(location)
-#         namePrefix: $(namePrefix)
-#         bicepFile: './infra/bicep/main.bicep'
-#         bicepParamFile: './infra/bicep/main.bicepparam'
-
 - stage: CD_SWA
   displayName: 'CD: Deploy Static Web App'
-  dependsOn: Ensure_Core_Infrastructure
   jobs:
     - job: Deploy_Infra
       displayName: 'Deploy SWA infrastructure'
@@ -62,26 +49,19 @@ stages:
         - checkout: self
           displayName: 'Checkout source code'
 
-        # Download artifact from CI pipeline
         - download: swa_ci
           displayName: 'Download SWA artifact from CI'
           artifact: swa-artifact
 
         - bash: |
             set -euo pipefail
-            # Pipeline resource downloads land under: $(Pipeline.Workspace)/<pipelineAlias>/<artifactName>
             artifact_path="$(Pipeline.Workspace)/swa_ci/swa-artifact"
             echo "Artifact path: $artifact_path"
 
             if [ ! -d "$artifact_path" ]; then
               echo "##vso[task.logissue type=error]SWA artifact directory not found: $artifact_path"
-              echo "Pipeline workspace listing:"
-              ls -la "$(Pipeline.Workspace)" || true
               exit 1
             fi
-
-            echo "Artifact directory listing:"
-            ls -la "$artifact_path"
 
             if [ ! -f "$artifact_path/index.html" ] && [ ! -f "$artifact_path/Index.html" ]; then
               echo "##vso[task.logissue type=error]index.html not found in SWA artifact root: $artifact_path"
@@ -91,47 +71,46 @@ stages:
             echo "##vso[task.setvariable variable=artifactPath]$artifact_path"
           displayName: 'Set SWA artifact path'
 
-        - task: AzureCLI@2
-          displayName: 'Query backend function app details'
-          inputs:
-            azureSubscription: '$(azureServiceConnection)'
-            scriptType: bash
-            scriptLocation: inlineScript
-            inlineScript: |
-              set -euo pipefail
-              
-              echo "=== Querying Backend Function App ==="
-              
-              rg_name="$(resourceGroupName)"
-              
-              # Query resource group for the function app (look for flex-app pattern from v0.3.0)
-              backend_functions=$(az functionapp list -g "$rg_name" --query "[?contains(name, 'flex-app')]" -o json)
-              
-              if [ "$backend_functions" == "[]" ] || [ -z "$backend_functions" ]; then
-                echo "##vso[task.logissue type=warning]Backend function app (flex-app) not found in resource group"
-                echo "Expected to find a function app with 'flex-app' in the name"
-                echo "Proceeding without linked backend"
-                echo "##vso[task.setvariable variable=backendFunctionAppId]"
-                echo "##vso[task.setvariable variable=backendFunctionAppHostname]"
-                echo "##vso[task.setvariable variable=enableLinkedBackend]false"
-              else
-                backend_id=$(echo "$backend_functions" | jq -r '.[0].id // empty')
-                backend_hostname=$(echo "$backend_functions" | jq -r '.[0].defaultHostName // empty')
-                
-                if [ -z "$backend_id" ] || [ -z "$backend_hostname" ]; then
-                  echo "##vso[task.logissue type=warning]Failed to extract backend function app details"
-                  echo "##vso[task.setvariable variable=backendFunctionAppId]"
-                  echo "##vso[task.setvariable variable=backendFunctionAppHostname]"
-                  echo "##vso[task.setvariable variable=enableLinkedBackend]false"
-                else
-                  echo "##vso[task.setvariable variable=backendFunctionAppId]$backend_id"
-                  echo "##vso[task.setvariable variable=backendFunctionAppHostname]$backend_hostname"
-                  echo "##vso[task.setvariable variable=enableLinkedBackend]true"
-                  echo "✓ Backend function app found"
-                  echo "  ID: $backend_id"
-                  echo "  Hostname: $backend_hostname"
-                fi
-              fi
+        - download: functions_cd
+          displayName: 'Download function app outputs'
+          artifact: function-outputs
+          continueOnError: true
+
+        - bash: |
+            set -euo pipefail
+            
+            echo "=== Loading Function App Outputs ==="
+            
+            FUNC_FILE="$(Pipeline.Workspace)/functions_cd/function-outputs/function-outputs.json"
+            
+            if [ ! -f "$FUNC_FILE" ]; then
+              echo "##vso[task.logissue type=warning]Function app outputs not found; proceeding without linked backend"
+              echo "##vso[task.setvariable variable=backendFunctionAppId]"
+              echo "##vso[task.setvariable variable=backendFunctionAppHostname]"
+              echo "##vso[task.setvariable variable=enableLinkedBackend]false"
+              exit 0
+            fi
+            
+            echo "Reading outputs from: $FUNC_FILE"
+            cat "$FUNC_FILE"
+            
+            backend_id=$(jq -r '.flexAppId // empty' "$FUNC_FILE")
+            backend_hostname=$(jq -r '.flexAppHostname // empty' "$FUNC_FILE")
+            
+            if [ -z "$backend_id" ] || [ -z "$backend_hostname" ]; then
+              echo "##vso[task.logissue type=warning]Function app outputs incomplete"
+              echo "##vso[task.setvariable variable=backendFunctionAppId]"
+              echo "##vso[task.setvariable variable=backendFunctionAppHostname]"
+              echo "##vso[task.setvariable variable=enableLinkedBackend]false"
+            else
+              echo "##vso[task.setvariable variable=backendFunctionAppId]$backend_id"
+              echo "##vso[task.setvariable variable=backendFunctionAppHostname]$backend_hostname"
+              echo "##vso[task.setvariable variable=enableLinkedBackend]true"
+              echo "✓ Backend function app loaded"
+              echo "  ID: $backend_id"
+              echo "  Hostname: $backend_hostname"
+            fi
+          displayName: 'Load function app outputs'
 
         - task: AzureResourceManagerTemplateDeployment@3
           displayName: Deploy SWA (Incremental)
