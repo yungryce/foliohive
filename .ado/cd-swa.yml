@@ -13,7 +13,8 @@ resources:
       source: yungryce.cloudfolio.swa-ci
       trigger: true
     - pipeline: functions_cd
-      source: yungryce.cloudfolio.cd-functions
+      source: yungryce.cloudfolio.function-cd
+      trigger: true
 
 trigger:
   branches:
