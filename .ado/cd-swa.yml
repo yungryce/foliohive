@@ -14,7 +14,6 @@ resources:
       trigger: true
     - pipeline: functions_cd
       source: yungryce.cloudfolio.cd-functions
-      trigger: false
 
 trigger:
   branches:
