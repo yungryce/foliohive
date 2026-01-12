@@ -76,7 +76,13 @@ export class ProjectsComponent implements OnInit {
     this.building = true;
     this.buildMessage = 'Starting build… This may take a few minutes.';
     this.repoBundleService.startBuild(this.username, true).subscribe({
-      next: () => {
+      next: (resp) => {
+        const nextJobId = resp?.job_id as string | undefined;
+        if (nextJobId) {
+          this.jobId = nextJobId;
+          this.candidateContext.upsertCandidate({ username: this.username, jobId: nextJobId });
+        }
+
         // Begin a light polling loop to refresh the bundle for ~2 minutes
         timer(5000, 5000).pipe(
           takeWhile((_, i) => i < 24), // 24*5s ≈ 2 minutes

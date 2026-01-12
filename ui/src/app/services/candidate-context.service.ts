@@ -22,7 +22,7 @@ export class CandidateContextService {
   get activeCandidate(): CandidateContext | null {
     const username = this.activeUsername;
     if (!username) return null;
-    return this.candidatesSubject.value.find(c => c.username === username) ?? null;
+    return this.candidatesSubject.value.find((c: CandidateContext) => c.username === username) ?? null;
   }
 
   upsertCandidate(candidate: CandidateContext): void {
@@ -30,7 +30,7 @@ export class CandidateContextService {
     if (!username) return;
 
     const existing = this.candidatesSubject.value;
-    const idx = existing.findIndex(c => c.username === username);
+    const idx = existing.findIndex((c: CandidateContext) => c.username === username);
     const next = [...existing];
     if (idx >= 0) {
       next[idx] = { ...next[idx], ...candidate, username };
@@ -44,7 +44,7 @@ export class CandidateContextService {
   setActive(username: string): void {
     const normalized = (username || '').trim();
     if (!normalized) return;
-    const exists = this.candidatesSubject.value.some(c => c.username === normalized);
+    const exists = this.candidatesSubject.value.some((c: CandidateContext) => c.username === normalized);
     if (!exists) {
       this.upsertCandidate({ username: normalized });
       return;

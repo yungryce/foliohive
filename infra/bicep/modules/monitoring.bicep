@@ -40,8 +40,8 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
 var metricsPublisher = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '3913510d-42f4-4e42-8a64-420c390055eb')
 
 resource raMetricsPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(workspace.id, appInsights.id, metricsPublisher)
-  scope: workspace
+  name: guid(appInsights.id, uamiPrincipalId, metricsPublisher)
+  scope: appInsights
   properties: {
     roleDefinitionId: metricsPublisher
     principalId: uamiPrincipalId

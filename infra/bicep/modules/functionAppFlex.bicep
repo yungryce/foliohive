@@ -86,11 +86,15 @@ resource functionApp 'Microsoft.Web/sites@2025-03-01' = {
   properties: {
     serverFarmId: flexPlan.id
     httpsOnly: true
+    outboundVnetRouting: {
+      applicationTraffic: true
+    }
 
     siteConfig: {
       alwaysOn: false
       minTlsVersion: '1.2'
       ftpsState: 'Disabled'
+
       cors: {
         allowedOrigins: corsAllowedOrigins
         supportCredentials: false
@@ -141,7 +145,6 @@ resource functionAppAppSettings 'Microsoft.Web/sites/config@2024-11-01' = {
   parent: functionApp
   name: 'appsettings'
   properties: {
-    WEBSITE_VNET_ROUTE_ALL: '1'
     APPLICATIONINSIGHTS_CONNECTION_STRING: appInsightsConnectionString
     APPLICATIONINSIGHTS_AUTHENTICATION_STRING: 'ClientId=${uamiClientId};Authorization=AAD'
     AzureWebJobsStorage__credential: 'managedidentity'

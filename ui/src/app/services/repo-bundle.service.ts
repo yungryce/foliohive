@@ -71,8 +71,8 @@ export class RepoBundleService {
         if (res?.status === 'success' && res?.data) return res.data as JobStatusResponse;
         return res as JobStatusResponse;
       }),
-      catchError(err => {
-        console.error('getJobStatus error:', err);
+      catchError((err: any) => {
+        if (err?.status !== 404) console.error('getJobStatus error:', err);
         return of(null);
       })
     );
@@ -100,8 +100,10 @@ export class RepoBundleService {
         this.cache.set(cacheKey, payload, 1000 * 60 * 5);
         return payload;
       }),
-      catchError(err => {
-        console.error('getUserBundle error:', err);
+      catchError((err: any) => {
+        // v0.3.0 returns 404 while a job is still building or when no bundle exists yet.
+        // Treat this as a normal empty state (avoid noisy console errors in the UI).
+        if (err?.status !== 404) console.error('getUserBundle error:', err);
         return of({ username, data: [] } as RepoBundleResponse);
       })
     );
@@ -129,8 +131,8 @@ export class RepoBundleService {
         this.cache.set(cacheKey, payload, 1000 * 60 * 5);
         return payload;
       }),
-      catchError(err => {
-        console.error('getUserSingleRepoBundle error:', err);
+      catchError((err: any) => {
+        if (err?.status !== 404) console.error('getUserSingleRepoBundle error:', err);
         return of({ username, repo, data: null } as SingleRepoBundleResponse);
       })
     );
