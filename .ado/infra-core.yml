@@ -12,7 +12,6 @@ trigger:
       - build
   paths:
     include:
-      - infra/bicep/**
       - .ado/infra-core.yml
       - .ado/deploy-core-infra.yml
 
