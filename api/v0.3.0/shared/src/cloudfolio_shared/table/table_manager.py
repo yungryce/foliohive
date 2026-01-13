@@ -187,7 +187,7 @@ class TableManager:
                 credential = DefaultAzureCredential()
                 self._init_diagnostics["table_auth_mode"] = "managed_identity"
                 logger.info("[TABLE_DEBUG] Initialising TableServiceClient via managed identity")
-                return TableServiceClient(account_url=account_url, credential=credential)
+                return TableServiceClient(endpoint=account_url, credential=credential)
             except (ClientAuthenticationError, HttpResponseError) as exc:
                 self._init_diagnostics["table_init_error"] = f"{type(exc).__name__}: {exc}"
                 logger.warning("[TABLE_DEBUG] Managed identity table auth failed: %s", exc, exc_info=True)
