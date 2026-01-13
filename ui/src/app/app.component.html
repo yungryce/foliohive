@@ -1,6 +1,9 @@
 <header class="navbar">
   <div class="container flex justify-between items-center py-4">
-    <a [routerLink]="['']" class="text-xl font-bold">Cloudfolio</a>
+    <a [routerLink]="['']" class="text-xl font-bold">
+      <img src="/graph_logo.png" alt="Cloudfolio" class="h-10 w-auto" />
+      <span class="sr-only">Cloudfolio</span>
+    </a>
     <nav class="flex items-center gap-4">
       <ul class="flex gap-6">
         <li><a [routerLink]="['']" routerLinkActive="active" [routerLinkActiveOptions]="{exact: true}">Home</a></li>

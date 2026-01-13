@@ -105,7 +105,6 @@
       }
     }
   },
-  "defaultProject": "cloudfolio-ui",
   "cli": {
     "analytics": false
   }
