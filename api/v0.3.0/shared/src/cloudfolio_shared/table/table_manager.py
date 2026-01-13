@@ -24,7 +24,8 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
+logger.setLevel(logging.INFO)
+logger.propagate = True
 
 @dataclass
 class TableNames:
