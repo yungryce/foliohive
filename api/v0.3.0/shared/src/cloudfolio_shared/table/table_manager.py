@@ -9,7 +9,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+from azure.core.exceptions import (
+    ClientAuthenticationError,
+    HttpResponseError,
+    ResourceExistsError,
+    ResourceNotFoundError,
+)
 from azure.data.tables import TableClient, TableServiceClient, UpdateMode
 from azure.identity import DefaultAzureCredential
 
@@ -146,6 +151,13 @@ class TableManager:
             repo_metadata=os.getenv("TABLE_REPO_METADATA", TableNames.repo_metadata),
             model_metadata=os.getenv("TABLE_MODEL_METADATA", TableNames.model_metadata),
         )
+
+        # Diagnostics captured during initialization for later troubleshooting.
+        # This helps when initialization happens early and logs are not emitted/visible.
+        self._init_diagnostics: Dict[str, Any] = {}
+        self._disabled_logged = False
+        self._enabled_logged = False
+
         self._service_client = table_service_client or self._create_service_client()
         self._tables: Dict[str, TableClient] = {}
         if self._service_client:
@@ -157,31 +169,48 @@ class TableManager:
     # Initialisation helpers
     # ------------------------------------------------------------------
     def _create_service_client(self) -> Optional[TableServiceClient]:
-        account_url = (
-            os.getenv("TABLE_SERVICE_URI")
-            or os.getenv("AzureWebJobsStorage__tableServiceUri")
-        )
-        connection_string = (
-            os.getenv("TABLE_STORAGE_CONNECTION_STRING")
-            or os.getenv("AzureWebJobsStorage")
+        account_url = os.getenv("TABLE_SERVICE_URI") or os.getenv("AzureWebJobsStorage__tableServiceUri")
+        connection_string = os.getenv("TABLE_STORAGE_CONNECTION_STRING") or os.getenv("AzureWebJobsStorage")
+
+        # Store presence flags (do NOT log secrets like connection strings).
+        self._init_diagnostics.update(
+            {
+                "table_service_uri_present": bool(account_url),
+                "table_storage_connection_string_present": bool(os.getenv("TABLE_STORAGE_CONNECTION_STRING")),
+                "azurewebjobsstorage_present": bool(os.getenv("AzureWebJobsStorage")),
+                "azurewebjobsstorage_table_uri_present": bool(os.getenv("AzureWebJobsStorage__tableServiceUri")),
+            }
         )
 
         if account_url:
             try:
                 credential = DefaultAzureCredential()
-                logger.info("Initialising TableServiceClient via managed identity")
+                self._init_diagnostics["table_auth_mode"] = "managed_identity"
+                logger.info("[TABLE_DEBUG] Initialising TableServiceClient via managed identity")
                 return TableServiceClient(account_url=account_url, credential=credential)
+            except (ClientAuthenticationError, HttpResponseError) as exc:
+                self._init_diagnostics["table_init_error"] = f"{type(exc).__name__}: {exc}"
+                logger.warning("[TABLE_DEBUG] Managed identity table auth failed: %s", exc, exc_info=True)
             except Exception as exc:  # pragma: no cover - fallback path
-                logger.warning("Managed identity table auth failed: %s", exc)
+                self._init_diagnostics["table_init_error"] = f"{type(exc).__name__}: {exc}"
+                logger.error("[TABLE_DEBUG] Unexpected table auth error: %s", exc, exc_info=True)
 
         if connection_string:
             try:
+                self._init_diagnostics["table_auth_mode"] = "connection_string"
                 logger.info("Initialising TableServiceClient via connection string")
                 return TableServiceClient.from_connection_string(connection_string)
             except Exception as exc:  # pragma: no cover - fallback path
+                self._init_diagnostics["table_init_error"] = f"{type(exc).__name__}: {exc}"
                 logger.error("TableServiceClient connection error: %s", exc)
 
-        logger.warning("Azure Table Service not configured")
+        if account_url or connection_string:
+            # Config appears present but client could not be created.
+            logger.warning(
+                "[TABLE_DEBUG] Azure Table Service configured but could not create client (auth failure?)"
+            )
+        else:
+            logger.warning("[TABLE_DEBUG] Azure Table Service not configured (missing URI/connection string)")
         return None
 
     def _ensure_tables_exist(self) -> None:
@@ -204,6 +233,8 @@ class TableManager:
 
     def _get_table_client(self, table_name: str) -> Optional[TableClient]:
         if not self._service_client:
+            # Emit a late diagnostic when tables are actually used.
+            self.is_enabled()
             return None
         client = self._tables.get(table_name)
         if client is None:
@@ -212,7 +243,21 @@ class TableManager:
         return client
 
     def is_enabled(self) -> bool:
-        return self._service_client is not None
+        enabled = self._service_client is not None
+        if enabled and not self._enabled_logged:
+            mode = self._init_diagnostics.get("table_auth_mode")
+            logger.info("[TABLE_DEBUG] TableManager enabled (auth_mode=%s)", mode or "unknown")
+            self._enabled_logged = True
+        if not enabled and not self._disabled_logged:
+            logger.warning(
+                "[TABLE_DEBUG] TableManager disabled: uri_present=%s azure_uri_present=%s conn_present=%s last_error=%s",
+                self._init_diagnostics.get("table_service_uri_present"),
+                self._init_diagnostics.get("azurewebjobsstorage_table_uri_present"),
+                self._init_diagnostics.get("azurewebjobsstorage_present"),
+                self._init_diagnostics.get("table_init_error"),
+            )
+            self._disabled_logged = True
+        return enabled
 
     # ------------------------------------------------------------------
     # Candidate sessions
