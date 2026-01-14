@@ -78,6 +78,18 @@ export class RepoBundleService {
     );
   }
 
+  /** GET /bundles/{username} - check if bundle exists (no cache) */
+  checkBundle(username: string): Observable<boolean> {
+    const url = `${this.config.apiUrl}/bundles/${encodeURIComponent(username)}`;
+    return this.http.get<any>(url).pipe(
+      map((res: any) => {
+        const payload = res?.status === 'success' && res?.data ? res.data : res;
+        return !!payload && Array.isArray(payload.data) && payload.data.length > 0;
+      }),
+      catchError((err: any) => of(false))
+    );
+  }
+
   /** GET /bundles/{username}?job_id=... */
   getUserBundle(username: string, jobId?: string, useCache = true): Observable<RepoBundleResponse> {
     const url = `${this.config.apiUrl}/bundles/${encodeURIComponent(username)}`;

@@ -18,6 +18,21 @@
 
 .navbar a.active { font-weight: 500; }
 
+.brand-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.brand-logo {
+  height: 64px;
+  max-height: 64px;
+  width: auto;
+  object-fit: contain;
+  display: block;
+}
+
 .theme-toggle {
   display: inline-flex;
   align-items: center;

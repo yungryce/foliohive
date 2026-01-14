@@ -18,8 +18,6 @@ export class LandingComponent {
   private candidateContext = inject(CandidateContextService);
 
   username = '';
-  skillsText = '';
-  notesText = '';
 
   loading = false;
   error = '';
@@ -33,18 +31,36 @@ export class LandingComponent {
     }
 
     this.loading = true;
-    this.repoService.startBuild(username, true).subscribe({
-      next: (res) => {
-        const jobId = res?.job_id;
-        this.candidateContext.upsertCandidate({ username, jobId: jobId || undefined, skillsText: this.skillsText || undefined });
-        this.router.navigate(['/ai'], { queryParams: { username, job_id: jobId || null } });
+
+    // Check if bundle already exists
+    this.repoService.checkBundle(username).subscribe({
+      next: (exists) => {
+        if (exists) {
+          // Bundle exists, navigate directly without forcing refresh
+          this.candidateContext.upsertCandidate({ username });
+          this.router.navigate(['/ai'], { queryParams: { username } });
+          this.loading = false;
+        } else {
+          // Bundle doesn't exist, trigger refresh
+          this.repoService.startBuild(username, true).subscribe({
+            next: (res) => {
+              const jobId = res?.job_id;
+              this.candidateContext.upsertCandidate({ username, jobId: jobId || undefined });
+              this.router.navigate(['/ai'], { queryParams: { username, job_id: jobId || null } });
+            },
+            error: () => {
+              this.loading = false;
+              this.error = 'Failed to start refresh. Is api-gateway running?';
+            },
+            complete: () => {
+              this.loading = false;
+            },
+          });
+        }
       },
       error: () => {
         this.loading = false;
-        this.error = 'Failed to start refresh. Is api-gateway running?';
-      },
-      complete: () => {
-        this.loading = false;
+        this.error = 'Failed to check bundle. Is api-gateway running?';
       },
     });
   }

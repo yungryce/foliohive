@@ -14,48 +14,49 @@
 }
 
 /* Global theme tokens */
+
 :root {
   /* Surfaces */
-  --bg: #f4f3f3;           /* light base */
-  --bg-soft: #E0EBDC;      /* soft background banding */
+  --bg: #f7f8fb;           /* light base */
+  --bg-soft: #eef2f7;      /* soft background banding */
   --card: #ffffff;         /* cards/surfaces */
-  --border: #dfdfdf;
+  --border: #d7dde6;
 
   /* Text */
-  --fg: #1A1A43;           /* primary text */
-  --muted: #a2a8d3;        /* secondary text */
-  --heading: #38598b;      /* headings */
+  --fg: #1a1f2e;           /* primary text */
+  --muted: #5f6b7a;        /* secondary text */
+  --heading: #1e2a4a;      /* headings */
 
   /* Accents */
-  --primary: #CA5C36;        /* buttons/primary accent (sparingly) */
-  --primary-foreground: #fff6f6;
-  --accent: #096B72;         /* secondary accent */
-  --accent-foreground: #fff6f6;
+  --primary: #00A9C6;        /* buttons/primary accent (sparingly) */
+  --primary-foreground: #ffffff;
+  --accent: #0f766e;         /* secondary accent */
+  --accent-foreground: #ecfeff;
 
   /* Chips, rings */
-  --chip-bg: #e7eaf6;
-  --chip-fg: #080829;
-  --ring: #A4B0F5;
+  --chip-bg: #e9edf7;
+  --chip-fg: #1f2a44;
+  --ring: #7aa2f7;
 }
 
 :root.dark {
-  --bg: #0a0b10;        /* darker, more neutral */
-  --bg-soft: #12131a;   /* subtle elevation */
-  --card: #151622;      /* neutral card surface */
-  --border: #26293a;    /* neutral border */
+  --bg: #0b0d14;        /* darker, more neutral */
+  --bg-soft: #121623;   /* subtle elevation */
+  --card: #171b2b;      /* neutral card surface */
+  --border: #2a3245;    /* neutral border */
 
-  --fg: #E0EBDC;
-  --muted: #a2a8d3;
-  --heading: #A4B0F5;
+  --fg: #e6ecf7;
+  --muted: #b0b8cc;
+  --heading: #c6d4ff;
 
-  --primary: #CA5C36;
-  --primary-foreground: #080829;
-  --accent: #297373;
-  --accent-foreground: #fff6f6;
+  --primary: #00A9C6;
+  --primary-foreground: #07121a;
+  --accent: #1aa39a;
+  --accent-foreground: #061111;
 
-  --chip-bg: #323262;
-  --chip-fg: #E0EBDC;
-  --ring: #A4B0F5;
+  --chip-bg: #22304a;
+  --chip-fg: #e6ecf7;
+  --ring: #7aa2f7;
 }
 
 /* Global primitives */
@@ -279,8 +280,8 @@ body {
 
 /* Navbar palette (intentionally not theme-toggled) */
 :root {
-  --color-github-dark: #0b0d14;   /* navbar bg */
-  --color-github-border: #26293a; /* navbar border */
-  --color-github-light: #E0EBDC;  /* active/hover link + focus ring */
-  --color-github-gray: #c3c8e6;   /* default link/icon in navbar */
+  --color-github-dark: #0b1020;   /* navbar bg */
+  --color-github-border: #1f2433; /* navbar border */
+  --color-github-light: #e6ecf7;  /* active/hover link + focus ring */
+  --color-github-gray: #b7c0d9;   /* default link/icon in navbar */
 }
