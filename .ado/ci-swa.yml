@@ -4,12 +4,10 @@
 # - Triggers on frontend code changes
 # - Standalone: No Azure dependency, triggered by code changes only
 
-trigger:
+pr:
   branches:
     include:
       - main
-      - test
-      - build
   paths:
     include:
       - ui/**

@@ -5,12 +5,10 @@
 # - Triggered by changes to any function or shared library
 # - Standalone: No Azure dependency, triggered by code changes only
 
-trigger:
+pr:
   branches:
     include:
       - main
-      - test
-      - build
   paths:
     include:
       - api/v0.3.0/function-app/**

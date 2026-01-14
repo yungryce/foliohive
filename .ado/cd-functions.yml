@@ -13,12 +13,10 @@ resources:
       source: yungryce.cloudfolio.infra
       trigger: true
 
-trigger:
+pr:
   branches:
     include:
       - main
-      - test
-      - build
   paths:
     include:
       - .ado/cd-functions.yml

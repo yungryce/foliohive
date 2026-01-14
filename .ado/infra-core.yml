@@ -4,16 +4,22 @@
 # - Safe to re-run anytime (idempotent)
 # - Must complete before any CD pipelines run
 
-trigger:
+pr:
   branches:
     include:
       - main
-      - test
-      - build
   paths:
     include:
       - .ado/infra-core.yml
       - .ado/deploy-core-infra.yml
+      - './infra/bicep/main.bicep'
+      - './infra/bicep/main.bicepparam'
+      - './infra/bicep/modules/**'
+    exclude:
+      - './infra/bicep/modules/functionApps.bicep'
+      - './infra/bicep/modules/functionAppFlex.bicep'
+      - './infra/bicep/modules/staticWebApp.bicep'
+      - './infra/bicep/modules/containerInstance.bicep'
 
 variables:
   - group: 'Cloudfolio-Vars'

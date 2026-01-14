@@ -16,12 +16,10 @@ resources:
       source: yungryce.cloudfolio.function-cd
       trigger: true
 
-trigger:
+pr:
   branches:
     include:
       - main
-      - test
-      - build
   paths:
     include:
       - .ado/cd-swa.yml

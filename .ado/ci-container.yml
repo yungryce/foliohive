@@ -4,12 +4,10 @@
 # - Triggers on training-worker code changes
 # - Requires: Docker Hub service connection for image push
 
-trigger:
+pr:
   branches:
     include:
       - main
-      - test
-      - build
   paths:
     include:
       - api/v0.2.0/training-worker/**
