@@ -12,158 +12,228 @@
   </ng-container>
 
   <ng-template #hasCandidate>
+    <div class="grid gap-8 lg:grid-cols-[minmax(0,280px)_1fr]">
+      <aside class="space-y-6">
+        <app-candidate-list heading="Candidates"></app-candidate-list>
+        <div class="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4 text-sm text-[var(--muted)]">
+          <p>Need to profile someone new? Head back to the home page and enter another username.</p>
+          <a
+            routerLink="/"
+            class="mt-3 inline-flex items-center justify-center rounded-md border border-transparent bg-[var(--soft)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)] hover:brightness-90"
+          >
+            Go to home
+          </a>
+        </div>
+      </aside>
 
-  <ng-container *ngIf="repoBundle$ | async as bundle; else loading">
-    <!-- Build-now banner when no data -->
-    <div *ngIf="(bundle?.data?.length || 0) === 0" class="p-4 rounded-lg border border-[var(--border)] bg-[var(--card)] mb-6">
-      <h2 class="text-lg font-semibold">Building your portfolio…</h2>
-      <p class="text-sm text-[var(--muted)]">
-        We’re fetching and analyzing your repositories. This can take a few minutes on the first run.
-      </p>
-      <div class="mt-3 flex gap-3">
-        <button (click)="triggerBuild()" [disabled]="building"
-                class="px-3 py-2 rounded bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-95">
-          {{ building ? 'Starting…' : 'Build repositories now' }}
-        </button>
-        <span class="text-xs text-[var(--muted)]">This may take several minutes.</span>
-      </div>
-      <p *ngIf="buildMessage" class="mt-2 text-sm text-[var(--muted)]">{{ buildMessage }}</p>
-    </div>
+      <section class="space-y-6">
+        <ng-container *ngIf="repoBundle$ | async as bundle; else loading">
 
-    <!-- Filters -->
-    <div class="p-4 rounded-lg shadow mb-6 border border-[var(--border)] bg-[var(--card)]">
-      <div class="flex items-center justify-between mb-3">
-        <h2 class="text-xl font-semibold">Filter Projects</h2>
-        <button (click)="triggerBuild()" [disabled]="building"
-                class="px-3 py-2 rounded border border-[var(--border)] bg-[var(--soft)] hover:brightness-95">
-          {{ building ? 'Starting…' : 'Rebuild portfolio' }}
-        </button>
-      </div>
-
-      <div class="overflow-x-auto">
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-          <div>
-            <label for="search" class="block text-sm font-medium text-[var(--muted)] mb-1">Search</label>
-            <input id="search" [(ngModel)]="searchTerm" placeholder="Search projects..."
-                   class="w-full px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--fg)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]">
+          <!-- Build-now / empty state -->
+          <div *ngIf="bundleEmpty" class="p-4 rounded-lg border border-[var(--border)] bg-[var(--card)]">
+            <h2 class="text-lg font-semibold">{{ building ? 'Building your portfolio…' : 'No repositories found' }}</h2>
+            <p class="text-sm text-[var(--muted)]">
+              {{ building
+                ? 'We’re fetching and analyzing your repositories. This can take a few minutes on the first run.'
+                : 'We couldn’t find any repositories for this candidate. Try another username or remove this candidate.' }}
+            </p>
+            <div class="mt-3 flex flex-wrap gap-3">
+              <button
+                (click)="triggerBuild()"
+                [disabled]="building"
+                class="px-3 py-2 rounded bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-95"
+              >
+                {{ building ? 'Starting…' : 'Build repositories now' }}
+              </button>
+              <button
+                *ngIf="!building"
+                (click)="removeActiveCandidate()"
+                class="px-3 py-2 rounded border border-[var(--border)] bg-[var(--soft)] hover:brightness-95"
+              >
+                Remove candidate
+              </button>
+              <span *ngIf="building" class="text-xs text-[var(--muted)]">This may take several minutes.</span>
+            </div>
+            <p *ngIf="buildMessage" class="mt-2 text-sm text-[var(--muted)]">{{ buildMessage }}</p>
           </div>
 
-          <div>
-            <label for="language" class="block text-sm font-medium text-[var(--muted)] mb-1">Language</label>
-            <select id="language" [(ngModel)]="selectedLanguage"
-                    class="w-full px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--fg)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]">
-              <option value="">All Languages</option>
-              <option *ngFor="let lang of allLanguages" [value]="lang">{{ lang }}</option>
-            </select>
-          </div>
+          <!-- Filters -->
+          <div class="p-4 rounded-lg shadow mb-6 border border-[var(--border)] bg-[var(--card)]">
+            <div class="flex items-center justify-between mb-3">
+              <h2 class="text-xl font-semibold">Filter Projects</h2>
+              <button
+                (click)="triggerBuild()"
+                [disabled]="building"
+                class="px-3 py-2 rounded border border-[var(--border)] bg-[var(--soft)] hover:brightness-95"
+              >
+                {{ building ? 'Starting…' : 'Rebuild portfolio' }}
+              </button>
+            </div>
 
-          <div>
-            <label for="technology" class="block text-sm font-medium text-[var(--muted)] mb-1">Technology</label>
-            <select id="technology" [(ngModel)]="selectedTechnology"
-                    class="w-full px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--fg)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]">
-              <option value="">All Technologies</option>
-              <option *ngFor="let tech of allTechnologies" [value]="tech">{{ tech }}</option>
-            </select>
-          </div>
+            <div class="overflow-x-auto">
+              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+                <div>
+                  <label for="search" class="block text-sm font-medium text-[var(--muted)] mb-1">Search</label>
+                  <input
+                    id="search"
+                    [(ngModel)]="searchTerm"
+                    placeholder="Search projects..."
+                    class="w-full px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--fg)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                  />
+                </div>
 
-          <div>
-            <label for="sortBy" class="block text-sm font-medium text-[var(--muted)] mb-1">Sort By</label>
-            <div class="flex gap-2">
-              <select id="sortBy" [(ngModel)]="sortBy"
-                      class="flex-1 px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--fg)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]">
-                <option value="updated">Last Updated</option>
-                <option value="name">Name</option>
-              </select>
-              <button (click)="sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'"
+                <div>
+                  <label for="language" class="block text-sm font-medium text-[var(--muted)] mb-1">Language</label>
+                  <select
+                    id="language"
+                    [(ngModel)]="selectedLanguage"
+                    class="w-full px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--fg)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                  >
+                    <option value="">All Languages</option>
+                    <option *ngFor="let lang of allLanguages" [value]="lang">{{ lang }}</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label for="technology" class="block text-sm font-medium text-[var(--muted)] mb-1">Technology</label>
+                  <select
+                    id="technology"
+                    [(ngModel)]="selectedTechnology"
+                    class="w-full px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--fg)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                  >
+                    <option value="">All Technologies</option>
+                    <option *ngFor="let tech of allTechnologies" [value]="tech">{{ tech }}</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label for="sortBy" class="block text-sm font-medium text-[var(--muted)] mb-1">Sort By</label>
+                  <div class="flex gap-2">
+                    <select
+                      id="sortBy"
+                      [(ngModel)]="sortBy"
+                      class="flex-1 px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--fg)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                    >
+                      <option value="updated">Last Updated</option>
+                      <option value="name">Name</option>
+                    </select>
+                    <button
+                      (click)="sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'"
                       class="px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] hover:bg-[var(--soft)]"
-                      [attr.aria-label]="'Toggle sort direction to ' + (sortDirection === 'asc' ? 'descending' : 'ascending')">
-                <span *ngIf="sortDirection === 'asc'">↑</span>
-                <span *ngIf="sortDirection === 'desc'">↓</span>
+                      [attr.aria-label]="'Toggle sort direction to ' + (sortDirection === 'asc' ? 'descending' : 'ascending')"
+                    >
+                      <span *ngIf="sortDirection === 'asc'">↑</span>
+                      <span *ngIf="sortDirection === 'desc'">↓</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex justify-end gap-3">
+              <button
+                (click)="resetFilters()"
+                class="px-4 py-2 rounded bg-[var(--soft)] hover:brightness-95"
+              >
+                Reset
+              </button>
+              <button
+                (click)="applyFilters()"
+                class="px-4 py-2 rounded bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-95"
+              >
+                Apply
               </button>
             </div>
           </div>
-        </div>
-      </div>
 
-      <div class="flex justify-end gap-3">
-        <button (click)="resetFilters()" class="px-4 py-2 rounded bg-[var(--soft)] hover:brightness-95">Reset</button>
-        <button (click)="applyFilters()" class="px-4 py-2 rounded bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-95">Apply</button>
-      </div>
-    </div>
+          <!-- Projects List -->
+          <div *ngIf="filteredRepos$ | async as repos">
+            <p class="mb-4 text-[var(--muted)]">Showing {{ repos.length }} of {{ bundle?.data?.length || 0 }} repositories</p>
 
-    <!-- Projects List -->
-    <div *ngIf="filteredRepos$ | async as repos">
-      <p class="mb-4 text-[var(--muted)]">Showing {{ repos.length }} of {{ bundle?.data?.length || 0 }} repositories</p>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <article
+                *ngFor="let r of repos; trackBy: trackByName"
+                class="group rounded-xl overflow-hidden shadow border border-[var(--border)] bg-[var(--card)] hover:shadow-md transition-shadow cursor-pointer"
+                [routerLink]="['/projects', r.name]"
+                title="Open repository details"
+              >
+                <header class="p-4 border-b border-[var(--border)]">
+                  <div class="flex items-start justify-between">
+                    <h2 class="text-lg font-semibold leading-tight group-hover:underline">{{ r.name }}</h2>
+                    <time class="text-xs text-[var(--muted)]" [attr.datetime]="r.updatedAt">{{ r.updatedAt | date:'medium' }}</time>
+                  </div>
+                  <div class="mt-1 text-xs text-[var(--muted)]">{{ r.type }}</div>
+                </header>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <article *ngFor="let r of repos; trackBy: trackByName"
-                 class="group rounded-xl overflow-hidden shadow border border-[var(--border)] bg-[var(--card)] hover:shadow-md transition-shadow cursor-pointer"
-                 [routerLink]="['/projects', r.name]"
-                 title="Open repository details">
-          <header class="p-4 border-b border-[var(--border)]">
-            <div class="flex items-start justify-between">
-              <h2 class="text-lg font-semibold leading-tight group-hover:underline">{{ r.name }}</h2>
-              <time class="text-xs text-[var(--muted)]" [attr.datetime]="r.updatedAt">{{ r.updatedAt | date:'medium' }}</time>
+                <div class="px-4 pb-4 pt-3">
+                  <p class="repo-desc text-sm text-[var(--fg)]/80">{{ r.description }}</p>
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <span *ngFor="let tech of r.primaryStack" class="px-2 py-1 text-xs rounded bg-[var(--chip-bg)] text-[var(--chip-fg)]">
+                      {{ tech }}
+                    </span>
+                  </div>
+                  <div class="mt-4">
+                    <div class="lang-bar bg-[var(--soft)]" role="progressbar" aria-label="Languages distribution">
+                      <span
+                        *ngFor="let l of r.languagesPct; let i = index"
+                        class="lang-chunk"
+                        [style.width.%]="l.pct"
+                        [attr.data-i]="i"
+                        [title]="l.k + ' ' + l.pct + '%'"
+                        aria-hidden="true"
+                      ></span>
+                    </div>
+                    <div class="mt-2 flex flex-wrap gap-2 text-xs text-[var(--muted)]">
+                      <span *ngFor="let l of r.languagesPct | slice:0:3">{{ l.k }} {{ l.pct }}%</span>
+                    </div>
+                  </div>
+                </div>
+
+                <footer class="p-4 bg-[var(--soft)] flex justify-between items-center">
+                  <a
+                    *ngIf="r.htmlUrl"
+                    [href]="r.htmlUrl"
+                    target="_blank"
+                    rel="noopener"
+                    (click)="$event.stopPropagation()"
+                    class="inline-block px-3 py-1.5 rounded bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-95"
+                  >
+                    View on GitHub
+                  </a>
+                </footer>
+              </article>
             </div>
-            <div class="mt-1 text-xs text-[var(--muted)]">{{ r.type }}</div>
-          </header>
 
-          <div class="px-4 pb-4 pt-3">
-            <p class="repo-desc text-sm text-[var(--fg)]/80">{{ r.description }}</p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <span *ngFor="let tech of r.primaryStack" class="px-2 py-1 text-xs rounded bg-[var(--chip-bg)] text-[var(--chip-fg)]">
-                {{ tech }}
-              </span>
+            <!-- Empty states (kept) -->
+            <div *ngIf="bundleEmpty" class="text-center py-12">
+              <h3 class="text-lg font-medium mb-1">No repositories available</h3>
+              <p class="text-[var(--muted)]">Use another candidate or trigger a rebuild if you expect repositories.</p>
             </div>
-            <div class="mt-4">
-              <div class="lang-bar bg-[var(--soft)]" role="progressbar" aria-label="Languages distribution">
-                <span *ngFor="let l of r.languagesPct; let i = index" class="lang-chunk" [style.width.%]="l.pct" [attr.data-i]="i" [title]="l.k + ' ' + l.pct + '%'" aria-hidden="true"></span>
-              </div>
-              <div class="mt-2 flex flex-wrap gap-2 text-xs text-[var(--muted)]">
-                <span *ngFor="let l of r.languagesPct | slice:0:3">{{ l.k }} {{ l.pct }}%</span>
-              </div>
+
+            <div *ngIf="(bundle?.data?.length || 0) > 0 && repos.length === 0" class="text-center py-12">
+              <h3 class="text-lg font-medium mb-1">No projects match your filters</h3>
+              <p class="text-[var(--muted)]">Try adjusting your filters or search term.</p>
             </div>
           </div>
+        </ng-container>
 
-          <footer class="p-4 bg-[var(--soft)] flex justify-between items-center">
-            <a *ngIf="r.htmlUrl" [href]="r.htmlUrl" target="_blank" rel="noopener"
-               (click)="$event.stopPropagation()"
-               class="inline-block px-3 py-1.5 rounded bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-95">
-              View on GitHub
-            </a>
-          </footer>
-        </article>
-      </div>
-
-      <!-- Empty states (kept) -->
-      <div *ngIf="(bundle?.data?.length || 0) === 0" class="text-center py-12">
-        <h3 class="text-lg font-medium mb-1">Hang tight…</h3>
-        <p class="text-[var(--muted)]">We’re building your repositories. This may take a few minutes on the first run.</p>
-      </div>
-
-      <div *ngIf="(bundle?.data?.length || 0) > 0 && repos.length === 0" class="text-center py-12">
-        <h3 class="text-lg font-medium mb-1">No projects match your filters</h3>
-        <p class="text-[var(--muted)]">Try adjusting your filters or search term.</p>
-      </div>
+        <ng-template #loading>
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div *ngFor="let i of [0,1,2,3,4,5]" class="rounded-xl overflow-hidden shadow border border-[var(--border)] bg-[var(--card)] p-4 animate-pulse">
+              <div class="h-6 w-2/3 rounded bg-[var(--soft)] mb-3"></div>
+              <div class="h-3 w-1/3 rounded bg-[var(--soft)] mb-4"></div>
+              <div class="h-4 w-full rounded bg-[var(--soft)] mb-2"></div>
+              <div class="h-4 w-5/6 rounded bg-[var(--soft)] mb-4"></div>
+              <div class="flex gap-2">
+                <div class="h-5 w-16 rounded bg-[var(--soft)]"></div>
+                <div class="h-5 w-16 rounded bg-[var(--soft)]"></div>
+                <div class="h-5 w-16 rounded bg-[var(--soft)]"></div>
+              </div>
+              <div class="mt-4 h-1.5 w-full rounded bg-[var(--soft)]"></div>
+            </div>
+          </div>
+        </ng-template>
+      </section>
     </div>
-  </ng-container>
-
-  <ng-template #loading>
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-      <div *ngFor="let i of [0,1,2,3,4,5]" class="rounded-xl overflow-hidden shadow border border-[var(--border)] bg-[var(--card)] p-4 animate-pulse">
-        <div class="h-6 w-2/3 rounded bg-[var(--soft)] mb-3"></div>
-        <div class="h-3 w-1/3 rounded bg-[var(--soft)] mb-4"></div>
-        <div class="h-4 w-full rounded bg-[var(--soft)] mb-2"></div>
-        <div class="h-4 w-5/6 rounded bg-[var(--soft)] mb-4"></div>
-        <div class="flex gap-2">
-          <div class="h-5 w-16 rounded bg-[var(--soft)]"></div>
-          <div class="h-5 w-16 rounded bg-[var(--soft)]"></div>
-          <div class="h-5 w-16 rounded bg-[var(--soft)]"></div>
-        </div>
-        <div class="mt-4 h-1.5 w-full rounded bg-[var(--soft)]"></div>
-      </div>
-    </div>
-  </ng-template>
-
   </ng-template>
 </div>

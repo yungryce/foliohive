@@ -1,18 +1,19 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { RepoBundleService } from '../services/repo-bundle.service';
+import { CandidateListComponent } from '../shared/candidate-list.component';
 
 @Component({
   selector: 'app-landing',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, CandidateListComponent],
   templateUrl: './landing.component.html',
   styleUrls: ['./landing.component.css'],
 })
-export class LandingComponent {
+export class LandingComponent implements OnInit {
   private router = inject(Router);
   private repoService = inject(RepoBundleService);
   private candidateContext = inject(CandidateContextService);
@@ -62,6 +63,27 @@ export class LandingComponent {
         this.loading = false;
         this.error = 'Failed to check bundle. Is api-gateway running?';
       },
+    });
+  }
+
+  ngOnInit(): void {
+    this.restoreStoredCandidates();
+  }
+
+  private restoreStoredCandidates(): void {
+    const candidates = this.candidateContext.storedCandidates.slice(0, 5);
+    if (!candidates.length) return;
+
+    if (!this.candidateContext.activeUsername) {
+      this.candidateContext.setActive(candidates[0].username);
+    }
+
+    candidates.forEach(candidate => {
+      this.repoService.checkBundle(candidate.username).subscribe((exists) => {
+        if (!exists) {
+          this.candidateContext.removeCandidate(candidate.username);
+        }
+      });
     });
   }
 }

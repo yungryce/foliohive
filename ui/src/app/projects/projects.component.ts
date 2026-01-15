@@ -1,10 +1,11 @@
-import { Component, OnInit, inject } from '@angular/core';
+import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterModule } from '@angular/router';
 import { RepoBundleService, RepoBundleResponse } from '../services/repo-bundle.service';
-import { Observable, map, timer, switchMap, takeWhile, of } from 'rxjs';
 import { CandidateContextService } from '../services/candidate-context.service';
+import { CandidateListComponent } from '../shared/candidate-list.component';
+import { Observable, map, of, Subject, switchMap, takeUntil, takeWhile, tap, timer } from 'rxjs';
 
 interface RepoCardVM {
   name: string;
@@ -21,13 +22,14 @@ interface RepoCardVM {
 @Component({
   selector: 'app-projects',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterModule],
+  imports: [CommonModule, FormsModule, RouterModule, CandidateListComponent],
   templateUrl: './projects.component.html',
   styleUrls: ['./projects.component.css']
 })
-export class ProjectsComponent implements OnInit {
+export class ProjectsComponent implements OnInit, OnDestroy {
   private repoBundleService = inject(RepoBundleService);
   private candidateContext = inject(CandidateContextService);
+  private readonly destroy$ = new Subject<void>();
   repoBundle$!: Observable<RepoBundleResponse>;
   filteredRepos$!: Observable<RepoCardVM[]>;
   filterByDocumentation = false; 
@@ -56,19 +58,30 @@ export class ProjectsComponent implements OnInit {
   // Building state
   building = false;
   buildMessage = '';
+  bundleEmpty = false;
 
   ngOnInit(): void {
-    const active = this.candidateContext.activeCandidate;
-    if (!active?.username) {
-      this.missingCandidate = true;
-      this.repoBundle$ = of({ username: '', data: [] });
-      this.filteredRepos$ = of([]);
-      return;
-    }
+    this.candidateContext.activeUsername$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((username) => {
+        if (!username) {
+          this.missingCandidate = true;
+          this.repoBundle$ = of({ username: '', data: [] });
+          this.filteredRepos$ = of([]);
+          return;
+        }
 
-    this.username = active.username;
-    this.jobId = active.jobId;
-    this.loadRepoBundle();
+        const active = this.candidateContext.activeCandidate;
+        this.missingCandidate = false;
+        this.username = username;
+        this.jobId = active?.jobId;
+        this.loadRepoBundle();
+      });
+  }
+
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
   }
 
   triggerBuild(): void {
@@ -109,7 +122,11 @@ export class ProjectsComponent implements OnInit {
   }
 
   loadRepoBundle(): void {
-    this.repoBundle$ = this.repoBundleService.getUserBundle(this.username, this.jobId);
+    this.repoBundle$ = this.repoBundleService.getUserBundle(this.username, this.jobId).pipe(
+      tap(bundle => {
+        this.bundleEmpty = !(Array.isArray(bundle?.data) && bundle.data.length > 0);
+      })
+    );
     this.filteredRepos$ = this.repoBundle$.pipe(
       map(bundle => {
         const vms = (bundle?.data ?? [])
@@ -217,4 +234,9 @@ export class ProjectsComponent implements OnInit {
   }
 
   trackByName = (_: number, vm: RepoCardVM) => vm.name;
+
+  removeActiveCandidate(): void {
+    if (!this.username) return;
+    this.candidateContext.removeCandidate(this.username);
+  }
 }
