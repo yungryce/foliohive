@@ -10,6 +10,7 @@ import { AIAssistantService, AIAssistantResponse } from '../services/assistant.s
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import { CandidateListComponent } from '../shared/candidate-list.component';
 
 interface SuggestedRepo {
   name: string;
@@ -19,7 +20,7 @@ interface SuggestedRepo {
 @Component({
   selector: 'app-ai',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterModule],
+  imports: [CommonModule, FormsModule, RouterModule, CandidateListComponent],
   templateUrl: './ai.component.html',
   styleUrls: ['./ai.component.css'],
 })
@@ -41,6 +42,7 @@ export class AiComponent implements OnInit, OnDestroy {
   polling = false;
 
   suggested: SuggestedRepo[] = [];
+  noRepositories = false;
 
   query = '';
   loadingAnswer = false;
@@ -58,6 +60,7 @@ export class AiComponent implements OnInit, OnDestroy {
     }
     this.syncActiveFromContext();
     this.startPollingIfPossible();
+    this.checkBundleStatusIfReady();
   }
 
   ngOnDestroy(): void {
@@ -74,12 +77,14 @@ export class AiComponent implements OnInit, OnDestroy {
   selectCandidate(username: string): void {
     this.candidateContext.setActive(username);
     this.syncActiveFromContext();
+    this.noRepositories = false;
     this.router.navigate([], {
       relativeTo: this.route,
       queryParams: { username: this.activeUsername, job_id: this.activeJobId || null },
       queryParamsHandling: 'merge',
     });
     this.startPollingIfPossible();
+    this.checkBundleStatusIfReady();
     this.suggested = [];
     this.answerHtml = null;
     this.repositoriesUsed = [];
@@ -104,8 +109,26 @@ export class AiComponent implements OnInit, OnDestroy {
           this.polling = false;
           this.pollSub?.unsubscribe();
           this.loadSuggestions();
+          this.checkBundleStatusIfReady(true);
         }
       });
+  }
+
+  private checkBundleStatusIfReady(force = false): void {
+    const username = this.activeUsername;
+    if (!username) return;
+    if (this.polling && !force) return;
+
+    const jobId = this.activeJobId || undefined;
+    this.repoService.getUserBundle(username, jobId, true).subscribe(bundle => {
+      const hasRepos = Array.isArray(bundle?.data) && bundle.data.length > 0;
+      this.noRepositories = !hasRepos;
+      if (!hasRepos) {
+        this.suggested = [];
+        this.answerHtml = null;
+        this.repositoriesUsed = [];
+      }
+    });
   }
 
   private loadSuggestions(): void {
@@ -153,6 +176,10 @@ export class AiComponent implements OnInit, OnDestroy {
       this.error = 'Select a candidate first.';
       return;
     }
+    if (this.noRepositories) {
+      this.error = 'No repositories found for this candidate.';
+      return;
+    }
     if (!q) {
       this.error = 'Enter a question.';
       return;
@@ -175,5 +202,25 @@ export class AiComponent implements OnInit, OnDestroy {
         this.error = 'Failed to get response.';
       }
     });
+  }
+
+  removeActiveCandidate(): void {
+    if (!this.activeUsername) return;
+    this.candidateContext.removeCandidate(this.activeUsername);
+    this.syncActiveFromContext();
+    this.noRepositories = false;
+
+    if (!this.activeUsername) {
+      this.router.navigate(['/']);
+      return;
+    }
+
+    this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { username: this.activeUsername, job_id: this.activeJobId || null },
+      queryParamsHandling: 'merge',
+    });
+    this.startPollingIfPossible();
+    this.checkBundleStatusIfReady();
   }
 }
