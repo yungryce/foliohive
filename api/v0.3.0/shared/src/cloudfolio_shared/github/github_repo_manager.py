@@ -92,6 +92,51 @@ class GitHubRepoManager:
             return self.api.decode_file_content(file_data)
         return None
 
+    @cache_manager.cache_decorator(
+        cache_key_func=lambda username, repo, ref=None, **kwargs: f"repo_path_index:{username}:{repo}:{ref or 'default'}",
+        ttl=900,
+    )
+    def get_repo_path_index(
+        self,
+        username: Optional[str],
+        repo: str,
+        *,
+        ref: Optional[str] = None,
+    ) -> Set[str]:
+        """Return a set of file paths for the repo using the Git tree API."""
+        username = username or self.username
+        if not username:
+            raise ValueError(USERNAME_REQUIRED_ERROR)
+
+        resolved_ref = ref
+        if not resolved_ref:
+            try:
+                repo_metadata = self.get_repo_metadata(username=username, repo=repo)
+            except Exception as exc:
+                logger.debug("Unable to resolve default branch for %s/%s: %s", username, repo, exc)
+                repo_metadata = {}
+            resolved_ref = repo_metadata.get("default_branch") or "HEAD"
+
+        endpoint = f"repos/{username}/{repo}/git/trees/{resolved_ref}"
+        tree_data = self.api.make_request('GET', endpoint, params={"recursive": 1})
+        if not isinstance(tree_data, dict):
+            return set()
+
+        tree_items = tree_data.get("tree", [])
+        if not isinstance(tree_items, list):
+            return set()
+
+        paths: Set[str] = set()
+        for item in tree_items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "blob":
+                continue
+            path = item.get("path")
+            if path:
+                paths.add(path)
+        return paths
+
     def get_standard_config_files(
         self,
         username: Optional[str],
@@ -105,6 +150,8 @@ class GitHubRepoManager:
         if not username:
             raise ValueError(USERNAME_REQUIRED_ERROR)
 
+        api_call_estimate = 0
+
         try:
             candidates = get_standard_config_file_candidates(limit=limit)
         except Exception as exc:
@@ -116,18 +163,39 @@ class GitHubRepoManager:
             )
             return {}
 
+        path_index = self.get_repo_path_index(username=username, repo=repo)
+        api_call_estimate += 1
+        readme_exists = bool(path_index and "README.md" in path_index)
+        if not path_index:
+            logger.debug("Empty path index for %s/%s; falling back to candidate probes.", username, repo)
+
         result: Dict[str, str] = {}
         for path in candidates:
             if path.lower() == "readme.md":
+                if path_index and path not in path_index:
+                    continue
+                continue
+            if path_index and path not in path_index:
                 continue
             try:
                 content = self.get_file_content(username=username, repo=repo, path=path)
+                api_call_estimate += 1
             except Exception as exc:  # pragma: no cover - defensive guard
                 logger.debug("Skipping config fetch for %s/%s path=%s: %s", username, repo, path, exc)
                 continue
             if not content:
                 continue
             result[path] = content[:max_chars]
+
+        logger.info(
+            "Standard config fetch for %s/%s candidates=%d found=%d api_calls_estimated=%d readme_exists=%s",
+            username,
+            repo,
+            len(candidates),
+            len(result),
+            api_call_estimate,
+            readme_exists,
+        )
         return result
 
     def get_repository_tree(self, repo_name: str, username: Optional[str] = None, recursive: bool = False) -> List[str]:
