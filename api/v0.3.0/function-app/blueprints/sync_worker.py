@@ -35,6 +35,7 @@ JOB_METADATA_TTL_SECONDS = 4 * 3600
 READ_ME_EXCERPT_MAX_CHARS = 4096
 STANDARD_CONFIG_FETCH_LIMIT = 20
 STANDARD_CONFIG_MAX_CHARS = 4000
+CONFIG_DISCOVERY_MODE_DEFAULT = "rest"
 
 
 def _get_repo_manager(username: str) -> GitHubRepoManager:
@@ -84,18 +85,56 @@ def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: 
 
     resolved_fingerprint = fingerprint or FingerprintManager.generate_metadata_fingerprint(repo_metadata)
 
-    try:
-        readme_content = repo_manager.get_file_content(username=username, repo=repo_name, path="README.md") or ""
-    except Exception as exc:  # pragma: no cover
-        logger.warning("Failed to fetch README for %s/%s: %s", username, repo_name, exc)
-        readme_content = ""
+    mode = os.getenv("CONFIG_DISCOVERY_MODE", CONFIG_DISCOVERY_MODE_DEFAULT).lower()
+    enable_rest = os.getenv("ENABLE_CONFIG_DISCOVERY_REST", "true").lower() == "true"
+    enable_graphql = os.getenv("ENABLE_CONFIG_DISCOVERY_GRAPHQL", "false").lower() == "true"
 
-    config_files = repo_manager.get_standard_config_files(
-        username=username,
-        repo=repo_name,
-        limit=STANDARD_CONFIG_FETCH_LIMIT,
-        max_chars=STANDARD_CONFIG_MAX_CHARS,
-    )
+    if mode == "rest" and not enable_rest:
+        logger.warning("REST config discovery disabled; falling back to legacy fetch.")
+        mode = "legacy"
+    if mode == "graphql" and not enable_graphql:
+        logger.warning("GraphQL config discovery disabled; falling back to REST.")
+        mode = "rest" if enable_rest else "legacy"
+
+    if mode in {"rest", "graphql"}:
+        logger.info(
+            "[CONFIG_DISCOVERY] repo=%s job=%s - Using %s mode for config discovery",
+            repo_name,
+            job_id,
+            mode.upper(),
+        )
+        discovery = repo_manager.discover_repo_files(
+            username=username,
+            repo=repo_name,
+            mode=mode,
+            limit=STANDARD_CONFIG_FETCH_LIMIT,
+            max_chars=STANDARD_CONFIG_MAX_CHARS,
+            readme_max_chars=READ_ME_EXCERPT_MAX_CHARS,
+        )
+        config_files = discovery.get("config_files", {})
+        readme_files = discovery.get("readme_files", {})
+        readme_content = discovery.get("primary_readme", "")
+        config_usage = discovery.get("api_usage")
+        logger.info(
+            "[CONFIG_USAGE] repo=%s job=%s - Config discovery API usage: %s",
+            repo_name,
+            job_id,
+            config_usage.to_dict() if config_usage else "none",
+        )
+    else:
+        config_usage = None
+        try:
+            readme_content = repo_manager.get_file_content(username=username, repo=repo_name, path="README.md") or ""
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Failed to fetch README for %s/%s: %s", username, repo_name, exc)
+            readme_content = ""
+        config_files = repo_manager.get_standard_config_files(
+            username=username,
+            repo=repo_name,
+            limit=STANDARD_CONFIG_FETCH_LIMIT,
+            max_chars=STANDARD_CONFIG_MAX_CHARS,
+        )
+        readme_files = {}
 
     languages_data = repo_metadata.get("languages", {})
     logger.info(
@@ -112,12 +151,14 @@ def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: 
         "name": repo_name,
         "metadata": repo_metadata,
         "readme": readme_content,
+        "readme_files": readme_files,
         "config_files": config_files,
         "file_types": file_types,
         "categorized_types": categorized_types,
         "fingerprint": resolved_fingerprint,
         "languages": repo_metadata.get("languages", {}),
         "has_documentation": bool(readme_content),
+        "api_usage": {"config_discovery": config_usage.to_dict() if config_usage else "none"} if config_usage else {},
     }
 
     logger.info(
@@ -161,6 +202,7 @@ def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, A
         "categorized_types": repo_payload.get("categorized_types"),
         "fingerprint": repo_payload.get("fingerprint"),
         "has_documentation": repo_payload.get("has_documentation"),
+        "api_usage": repo_payload.get("api_usage"),
     }
 
     row = RepoMetadataRow(

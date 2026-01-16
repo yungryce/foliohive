@@ -238,7 +238,13 @@ class CacheManager:
     # ------------------------------------------------------------------
     # Decorator helper used by GitHub client
     # ------------------------------------------------------------------
-    def cache_decorator(self, cache_key_func: Callable, ttl: Optional[int] = None):
+    def cache_decorator(
+        self,
+        cache_key_func: Callable,
+        ttl: Optional[int] = None,
+        *,
+        on_cache_hit: Optional[Callable[[dict], None]] = None,
+    ):
         def decorator(func: Callable):
             signature = inspect.signature(func)
             resolve_key = self._build_cache_key_resolver(cache_key_func)
@@ -258,6 +264,11 @@ class CacheManager:
 
                 cached = self.get(cache_key)
                 if cached.get("status") == "valid":
+                    if on_cache_hit:
+                        try:
+                            on_cache_hit(bound)
+                        except Exception as exc:  # pragma: no cover - defensive
+                            logger.debug("cache-manager: cache hit hook failed for %s: %s", func.__name__, exc)
                     return cached.get("data")
 
                 result = func(*args, **kwargs)

@@ -160,15 +160,6 @@ technical_terms_structured = {
 # - Keep this list short and generic; avoid user-maintained custom docs.
 
 STANDARD_CONFIG_FILE_CANDIDATES: Sequence[str] = (
-    # Core
-    "README.md",
-    "LICENSE",
-    ".gitignore",
-    ".dockerignore",
-    "Makefile",
-    "Justfile",
-    ".editorconfig",
-
     # Docker / Compose
     "Dockerfile",
     "docker-compose.yml",

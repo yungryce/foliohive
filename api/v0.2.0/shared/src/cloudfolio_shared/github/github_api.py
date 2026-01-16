@@ -33,8 +33,8 @@ class GitHubAPI:
         token_preview = f"{self.token[:12]}..." if self.token and len(self.token) > 12 else 'N/A'
         logger.info(
             "[GITHUB_API_INIT] username=%s token_status=%s token_preview=%s base_url=%s",
-            self.username, token_status, token_preview, self.base_url
-        )
+            self.username, token_status, token_preview, self.base_url 
+        ) # we dont need to log this. we just need to capture when api token is missing and inform frontend
 
     def _build_session(self) -> requests.Session:
         """Create a shared session with retries and connection pooling to reduce SNAT usage."""
