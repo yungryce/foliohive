@@ -13,6 +13,18 @@ logger = logging.getLogger(__name__)
 
 USERNAME_REQUIRED_ERROR = "Username is required"
 
+_NON_BUNDLE_CACHE_PREFIXES = (
+    "repo_metadata:",
+    "repos_metadata:",
+    "file_content:",
+    "repo_path_index:",
+)
+
+
+def get_non_bundle_cache_prefixes() -> List[str]:
+    """Return cache key prefixes for non-bundled blob cleanup."""
+    return list(_NON_BUNDLE_CACHE_PREFIXES)
+
 
 def _record_file_content_cache_hit(bound: Dict[str, Any]) -> None:
     usage = bound.get("usage")
@@ -163,8 +175,8 @@ class GitHubRepoManager:
         *,
         ref: Optional[str] = None,
         usage: Optional[ApiUsageTracker] = None,
-    ) -> Set[str]:
-        """Return a set of file paths for the repo using the Git tree API."""
+    ) -> List[str]:
+        """Return a stable list of file paths for the repo using the Git tree API."""
         username = username or self.username
         if not username:
             raise ValueError(USERNAME_REQUIRED_ERROR)
@@ -187,11 +199,11 @@ class GitHubRepoManager:
             usage=usage,
         )
         if not isinstance(tree_data, dict):
-            return set()
+            return []
 
         tree_items = tree_data.get("tree", [])
         if not isinstance(tree_items, list):
-            return set()
+            return []
 
         paths: Set[str] = set()
         for item in tree_items:
@@ -202,7 +214,7 @@ class GitHubRepoManager:
             path = item.get("path")
             if path:
                 paths.add(path)
-        return paths
+        return sorted(paths)
 
     def discover_repo_files(
         self,
@@ -225,11 +237,12 @@ class GitHubRepoManager:
         readme_set = {name.lower() for name in readme_candidates}
 
         path_index = self.get_repo_path_index(username=username, repo=repo, usage=usage)
-        if not path_index:
+        path_index_set = set(path_index) if path_index else set()
+        if not path_index_set:
             logger.debug("Empty path index for %s/%s; falling back to candidate probes.", username, repo)
 
         target_paths = self._discover_file_target_paths_by_level(
-            path_index=path_index,
+            path_index=path_index_set,
             file_candidates=file_candidates,
             readme_candidates=readme_candidates,
             limit=limit,
@@ -305,18 +318,19 @@ class GitHubRepoManager:
             return {}
 
         path_index = self.get_repo_path_index(username=username, repo=repo)
+        path_index_set = set(path_index) if path_index else set()
         api_call_estimate += 1
-        readme_exists = bool(path_index and "README.md" in path_index)
-        if not path_index:
+        readme_exists = bool(path_index_set and "README.md" in path_index_set)
+        if not path_index_set:
             logger.debug("Empty path index for %s/%s; falling back to candidate probes.", username, repo)
 
         result: Dict[str, str] = {}
         for path in candidates:
             if path.lower() == "readme.md":
-                if path_index and path not in path_index:
+                if path_index_set and path not in path_index_set:
                     continue
                 continue
-            if path_index and path not in path_index:
+            if path_index_set and path not in path_index_set:
                 continue
             try:
                 content = self.get_file_content(username=username, repo=repo, path=path)

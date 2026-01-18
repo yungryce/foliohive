@@ -35,7 +35,10 @@ JOB_METADATA_TTL_SECONDS = 4 * 3600
 READ_ME_EXCERPT_MAX_CHARS = 4096
 STANDARD_CONFIG_FETCH_LIMIT = 20
 STANDARD_CONFIG_MAX_CHARS = 4000
-CONFIG_DISCOVERY_MODE_DEFAULT = "rest"
+
+
+def _job_cache_key(job_id: str) -> str:
+    return f"job:{job_id}"
 
 
 def _get_repo_manager(username: str) -> GitHubRepoManager:
@@ -85,56 +88,40 @@ def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: 
 
     resolved_fingerprint = fingerprint or FingerprintManager.generate_metadata_fingerprint(repo_metadata)
 
-    mode = os.getenv("CONFIG_DISCOVERY_MODE", CONFIG_DISCOVERY_MODE_DEFAULT).lower()
-    enable_rest = os.getenv("ENABLE_CONFIG_DISCOVERY_REST", "true").lower() == "true"
-    enable_graphql = os.getenv("ENABLE_CONFIG_DISCOVERY_GRAPHQL", "false").lower() == "true"
+    mode = "rest"
+    if os.getenv("ENABLE_CONFIG_DISCOVERY_GRAPHQL", "false").lower() == "true":
+        mode = "graphql"
 
-    if mode == "rest" and not enable_rest:
-        logger.warning("REST config discovery disabled; falling back to legacy fetch.")
-        mode = "legacy"
-    if mode == "graphql" and not enable_graphql:
-        logger.warning("GraphQL config discovery disabled; falling back to REST.")
-        mode = "rest" if enable_rest else "legacy"
+    usage_payload: Optional[Dict[str, Any]] = None
 
-    if mode in {"rest", "graphql"}:
-        logger.info(
-            "[CONFIG_DISCOVERY] repo=%s job=%s - Using %s mode for config discovery",
-            repo_name,
-            job_id,
-            mode.upper(),
-        )
-        discovery = repo_manager.discover_repo_files(
-            username=username,
-            repo=repo_name,
-            mode=mode,
-            limit=STANDARD_CONFIG_FETCH_LIMIT,
-            max_chars=STANDARD_CONFIG_MAX_CHARS,
-            readme_max_chars=READ_ME_EXCERPT_MAX_CHARS,
-        )
-        config_files = discovery.get("config_files", {})
-        readme_files = discovery.get("readme_files", {})
-        readme_content = discovery.get("primary_readme", "")
-        config_usage = discovery.get("api_usage")
-        logger.info(
-            "[CONFIG_USAGE] repo=%s job=%s - Config discovery API usage: %s",
-            repo_name,
-            job_id,
-            config_usage.to_dict() if config_usage else "none",
-        )
+    discovery = repo_manager.discover_repo_files(
+        username=username,
+        repo=repo_name,
+        mode=mode,
+        limit=STANDARD_CONFIG_FETCH_LIMIT,
+        max_chars=STANDARD_CONFIG_MAX_CHARS,
+        readme_max_chars=READ_ME_EXCERPT_MAX_CHARS,
+    )
+    config_files = discovery.get("config_files", {})
+    readme_files = discovery.get("readme_files", {})
+    readme_content = discovery.get("primary_readme", "")
+    config_usage = discovery.get("api_usage")
+    if config_usage:
+        if hasattr(config_usage, "to_dict"):
+            usage_payload = config_usage.to_dict()
+        elif isinstance(config_usage, dict):
+            usage_payload = config_usage
+        else:
+            usage_payload = {"raw": config_usage}
     else:
-        config_usage = None
-        try:
-            readme_content = repo_manager.get_file_content(username=username, repo=repo_name, path="README.md") or ""
-        except Exception as exc:  # pragma: no cover
-            logger.warning("Failed to fetch README for %s/%s: %s", username, repo_name, exc)
-            readme_content = ""
-        config_files = repo_manager.get_standard_config_files(
-            username=username,
-            repo=repo_name,
-            limit=STANDARD_CONFIG_FETCH_LIMIT,
-            max_chars=STANDARD_CONFIG_MAX_CHARS,
-        )
-        readme_files = {}
+        usage_payload = None
+
+    logger.info(
+        "[CONFIG_USAGE] repo=%s job=%s - Config discovery API usage: %s",
+        repo_name,
+        job_id,
+        usage_payload if usage_payload is not None else "none",
+    )
 
     languages_data = repo_metadata.get("languages", {})
     logger.info(
@@ -158,7 +145,7 @@ def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: 
         "fingerprint": resolved_fingerprint,
         "languages": repo_metadata.get("languages", {}),
         "has_documentation": bool(readme_content),
-        "api_usage": {"config_discovery": config_usage.to_dict() if config_usage else "none"} if config_usage else {},
+        "api_usage": {"config_discovery": usage_payload} if usage_payload is not None else {},
     }
 
     logger.info(
@@ -194,12 +181,10 @@ def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, A
         logger.warning("Cannot persist repo metadata without repo_name")
         return
 
+    # Keep Table document minimal: full payload (including config_files) lives in blob cache.
+    # Store only essential merge/query metadata. Training worker loads from blob, not Table.
     document = {
         "name": repo_name,
-        "metadata": repo_payload.get("metadata"),
-        "config_files": repo_payload.get("config_files", {}),
-        "file_types": repo_payload.get("file_types"),
-        "categorized_types": repo_payload.get("categorized_types"),
         "fingerprint": repo_payload.get("fingerprint"),
         "has_documentation": repo_payload.get("has_documentation"),
         "api_usage": repo_payload.get("api_usage"),
@@ -224,14 +209,13 @@ def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, A
 
 def _load_job_snapshot(job_id: str, username: str) -> Dict[str, Any]:
     if table_manager.is_enabled():
-        table_row = table_manager.get_candidate_session(username, job_id)
-        if table_row:
-            return dict(table_row)
+        session = table_manager.get_candidate_session(username, job_id)
+        if session:
+            return dict(session)
 
-    job_key = f"job:{job_id}"
-    job_entry = cache_manager.get(job_key)
-    if job_entry.get("status") == "valid" and isinstance(job_entry.get("data"), dict):
-        return dict(job_entry["data"])
+    cached = cache_manager.get(_job_cache_key(job_id))
+    if cached.get("status") == "valid" and isinstance(cached.get("data"), dict):
+        return dict(cached["data"])
 
     logger.warning("Job metadata missing for %s; initializing defaults", job_id)
     return {
@@ -259,18 +243,22 @@ def _update_job_progress(
     queued_repos = job_info.get("queued_repos") or []
     expected_repos = job_info.get("expected_repos") or []
 
+    status_value = "failed" if sync_failed else "synced"
+    status_rows = None
     if table_manager.is_enabled():
-        status_value = "failed" if sync_failed else "synced"
-        status_row = RepoSyncStatusRow(
-            job_id=job_id,
-            repo_name=repo_name,
-            username=username,
-            status=status_value,
-            message_uuid=message_uuid,
-            error=None,
+        table_manager.upsert_repo_status(
+            RepoSyncStatusRow(
+                job_id=job_id,
+                repo_name=repo_name,
+                username=username,
+                status=status_value,
+                message_uuid=message_uuid,
+                error=None,
+            )
         )
-        table_manager.upsert_repo_status(status_row)
         status_rows = table_manager.list_repo_statuses(job_id)
+
+    if status_rows:
         synced = {row["repo_name"] for row in status_rows if row.get("status") == "synced"}
         failed = {row["repo_name"] for row in status_rows if row.get("status") == "failed"}
     else:
@@ -342,11 +330,11 @@ def _update_job_progress(
 
     if table_manager.is_enabled():
         table_manager.update_candidate_session(username, job_id, updates)
-    else:
-        logger.warning(
-            "[JOB_NOT_PERSISTED] job=%s - table manager disabled. Job state will not be persisted beyond cache TTL.",
-            job_id,
-        )
+    elif cache_manager.use_cache and os.getenv("CF_BLOB_CACHE_ENABLED", "true").lower() == "true":
+        existing = _load_job_snapshot(job_id, username)
+        merged = dict(existing)
+        merged.update(updates)
+        cache_manager.save(_job_cache_key(job_id), merged, ttl=JOB_METADATA_TTL_SECONDS)
 
     logger.info(
         "Job %s progress: %s/%s (status=%s)",
@@ -358,13 +346,19 @@ def _update_job_progress(
 
     if should_merge:
         if queue_manager.is_enabled():
-            queue_manager.enqueue_merge_job(job_id, username, synced_list)
+            enqueued = queue_manager.enqueue_merge_job(job_id, username, synced_list)
             logger.info(
                 "[MERGE_ENQUEUED] job=%s with %d repos (skipped %d failed)",
                 job_id,
                 len(synced_list),
                 len(failed_list),
             )
+            if enqueued and table_manager.is_enabled():
+                table_manager.update_candidate_session(
+                    username,
+                    job_id,
+                    {"merge_enqueued_at": datetime.now(timezone.utc).isoformat()},
+                )
         else:
             logger.warning("Queue manager disabled; merge job not enqueued for %s", job_id)
 

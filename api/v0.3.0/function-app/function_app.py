@@ -13,6 +13,7 @@ import azure.functions as func
 
 from blueprints.api_gateway import bp as api_gateway_bp
 from blueprints.merge_worker import bp as merge_worker_bp
+from blueprints.reconciliation_worker import bp as reconciliation_worker_bp
 from blueprints.sync_worker import bp as sync_worker_bp
 
 app = func.FunctionApp()
@@ -24,3 +25,4 @@ if _register is None:  # pragma: no cover
 _register(api_gateway_bp)
 _register(sync_worker_bp)
 _register(merge_worker_bp)
+_register(reconciliation_worker_bp)

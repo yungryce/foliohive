@@ -16,15 +16,25 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterable, Optional
 
 from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient, ContentSettings
 
+from .hot_cache import create_default_hot_cache
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CONTAINER = "github-cache"
+_BUNDLE_CACHE_PREFIX = "repos_bundle_context_"
+_REPO_BUNDLE_PREFIX = "repo_level_bundle_"
+
+_HOT_CACHE = create_default_hot_cache()
+
+
+def _hot_cache_enabled() -> bool:
+    return os.getenv("CF_HOT_CACHE_ENABLED", "true").lower() == "true"
 
 
 def _utcnow() -> datetime:
@@ -34,12 +44,16 @@ def _utcnow() -> datetime:
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
+    text = value.rstrip("Z") + ("+00:00" if value.endswith("Z") else "")
     try:
-        text = value.rstrip("Z") + ("+00:00" if value.endswith("Z") else "")
         return datetime.fromisoformat(text)
     except ValueError:
         logger.debug("cache-manager: unable to parse iso timestamp %s", value)
         return None
+
+
+def _is_bundle_blob(name: str) -> bool:
+    return name.startswith(_BUNDLE_CACHE_PREFIX) or name.startswith(_REPO_BUNDLE_PREFIX)
 
 
 class CacheManager:
@@ -144,6 +158,16 @@ class CacheManager:
     # Core operations
     # ------------------------------------------------------------------
     def get(self, cache_key: str) -> Dict[str, Any]:
+        if _hot_cache_enabled():
+            cached_value = _HOT_CACHE.get(cache_key)
+            if cached_value is not None:
+                return {
+                    "status": "valid",
+                    "data": cached_value,
+                    "fingerprint": None,
+                    "last_modified": None,
+                    "size_bytes": None,
+                }
         self._ensure_initialized()
         if not self.use_cache or not self._blob_service_client:
             return {"status": "disabled", "data": None}
@@ -192,6 +216,9 @@ class CacheManager:
         *,
         fingerprint: Optional[str] = None,
     ) -> bool:
+        if _hot_cache_enabled():
+            hot_ttl = ttl if ttl is not None else self.default_ttl
+            _HOT_CACHE.set(cache_key, data, ttl=hot_ttl)
         self._ensure_initialized()
         if not self.use_cache or not self._blob_service_client:
             return False
@@ -225,7 +252,6 @@ class CacheManager:
         self._ensure_initialized()
         if not self.use_cache or not self._blob_service_client:
             return False
-
         blob_client = self._blob_service_client.get_blob_client(self.container_name, cache_key)
         try:
             if blob_client.exists():
@@ -234,6 +260,56 @@ class CacheManager:
         except Exception as exc:
             logger.warning("cache-manager: error deleting key %s: %s", cache_key, exc)
             return False
+
+    def cleanup_stale_non_bundle_blobs(
+        self,
+        prefixes: Iterable[str],
+        *,
+        max_age_hours: Optional[int] = None,
+    ) -> int:
+        """Delete expired or stale non-bundle blobs under the provided prefixes."""
+        self._ensure_initialized()
+        if not self.use_cache or not self._blob_service_client:
+            return 0
+
+        container_client = self._blob_service_client.get_container_client(self.container_name)
+        deleted = 0
+        now = _utcnow()
+        max_age_delta = timedelta(hours=max_age_hours) if max_age_hours else None
+
+        for prefix in prefixes:
+            if not prefix:
+                continue
+            try:
+                blobs = container_client.list_blobs(name_starts_with=prefix, include=["metadata"])
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("cache-manager: unable to list blobs for prefix %s: %s", prefix, exc)
+                continue
+            for blob in blobs:
+                name = getattr(blob, "name", "") or ""
+                if not name or _is_bundle_blob(name):
+                    continue
+
+                metadata = getattr(blob, "metadata", None) or {}
+                expires_at = metadata.get("expires_at")
+                parsed_expiry = _parse_iso(expires_at)
+                if parsed_expiry and now >= parsed_expiry:
+                    try:
+                        container_client.delete_blob(name)
+                        deleted += 1
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("cache-manager: failed to delete expired blob %s: %s", name, exc)
+                    continue
+
+                if max_age_delta:
+                    last_modified = getattr(blob, "last_modified", None)
+                    if last_modified and now - last_modified >= max_age_delta:
+                        try:
+                            container_client.delete_blob(name)
+                            deleted += 1
+                        except Exception as exc:  # pragma: no cover
+                            logger.warning("cache-manager: failed to delete stale blob %s: %s", name, exc)
+        return deleted
 
     # ------------------------------------------------------------------
     # Decorator helper used by GitHub client

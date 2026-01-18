@@ -59,6 +59,8 @@ class CandidateSessionRow:
     force_refresh: bool = False
     model_status: Optional[str] = None
     model_fingerprint: Optional[str] = None
+    merge_enqueued_at: Optional[str] = None
+    last_requeue_at: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -135,6 +137,26 @@ def _utcnow_iso() -> str:
 
 def _safe_json_dump(value: Any) -> str:
     return json.dumps({} if value is None else value, separators=(",", ":"))
+
+
+def _safe_json_dump_limited(value: Any, *, max_chars: int = 32000, label: str = "") -> str:
+    """Serialize JSON with a conservative size limit.
+
+    Azure Table Storage caps string properties at 64KB (UTF-16), which is roughly
+    32K characters. When exceeded, we drop the value to keep the write durable.
+    """
+
+    payload = {} if value is None else value
+    text = json.dumps(payload, separators=(",", ":"))
+    if len(text) <= max_chars:
+        return text
+    logger.warning(
+        "table-manager: dropping oversized JSON field %s (%d chars > %d)",
+        label or "<unknown>",
+        len(text),
+        max_chars,
+    )
+    return "{}"
 
 
 class TableManager:
@@ -277,6 +299,8 @@ class TableManager:
             "force_refresh": bool(row.force_refresh),
             "model_status": row.model_status or "",
             "model_fingerprint": row.model_fingerprint or "",
+            "merge_enqueued_at": row.merge_enqueued_at or "",
+            "last_requeue_at": row.last_requeue_at or "",
             "created_at": row.created_at or now,
             "updated_at": now,
         }
@@ -314,6 +338,26 @@ class TableManager:
         query = table.list_entities(filter=f"PartitionKey eq '{username}'")
         return [self._deserialize_candidate_session(e) for e in query]
 
+    def list_candidate_sessions_by_status(
+        self,
+        statuses: Iterable[str],
+        *,
+        updated_before: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        table = self._get_table_client(self.table_names.candidate_sessions)
+        if not table:
+            return []
+        status_list = [status for status in (statuses or []) if status]
+        if not status_list:
+            return []
+        status_filters = [f"status eq '{status}'" for status in status_list]
+        filters = [f"({' or '.join(status_filters)})"]
+        if updated_before:
+            filters.append(f"updated_at lt '{updated_before}'")
+        filter_str = " and ".join(filters)
+        query = table.list_entities(filter=filter_str)
+        return [self._deserialize_candidate_session(e) for e in query]
+
     def _deserialize_candidate_session(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
@@ -328,6 +372,8 @@ class TableManager:
         payload["bundle_fingerprint"] = payload.get("bundle_fingerprint") or None
         payload["model_fingerprint"] = payload.get("model_fingerprint") or None
         payload["model_status"] = payload.get("model_status") or None
+        payload["merge_enqueued_at"] = payload.get("merge_enqueued_at") or None
+        payload["last_requeue_at"] = payload.get("last_requeue_at") or None
         payload["force_refresh"] = bool(payload.get("force_refresh"))
         payload["total_repos"] = int(payload.get("total_repos", 0))
         payload["completed_repos"] = int(payload.get("completed_repos", 0))
@@ -374,7 +420,7 @@ class TableManager:
                 name_filters = [f"RowKey eq '{name}'" for name in names]
                 filters.append(f"({' or '.join(name_filters)})")
         filter_str = " and ".join(filters)
-        entities = table.list_entities(filter_str)
+        entities = table.list_entities(filter=filter_str)
         return [self._deserialize_repo_entity(e) for e in entities]
 
     def _serialize_repo_row(self, row: RepoMetadataRow) -> Dict[str, Any]:
@@ -392,7 +438,10 @@ class TableManager:
             "updated_at": row.updated_at or now,
         }
         for field_name in _JSON_FIELDS_REPO:
-            entity[field_name] = _safe_json_dump(getattr(row, field_name, {}))
+            entity[field_name] = _safe_json_dump_limited(
+                getattr(row, field_name, {}),
+                label=f"repo_metadata.{field_name}",
+            )
         return entity
 
     def _deserialize_repo_entity(self, entity: Dict[str, Any]) -> Dict[str, Any]:
@@ -502,7 +551,7 @@ class TableManager:
         table = self._get_table_client(self.table_names.model_metadata)
         if not table:
             return []
-        entities = table.list_entities(f"PartitionKey eq '{username}'")
+        entities = table.list_entities(filter=f"PartitionKey eq '{username}'")
         return [self._deserialize_model_entity(e) for e in entities]
 
     def _deserialize_model_entity(self, entity: Dict[str, Any]) -> Dict[str, Any]:

@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import azure.functions as func
 
-from cloudfolio_shared import cache_manager, FingerprintManager, queue_manager
+from cloudfolio_shared import cache_manager, FingerprintManager, queue_manager, table_manager
 
 logger = logging.getLogger("cloudfolio.merge")
 logger.setLevel(logging.INFO)
@@ -75,6 +75,44 @@ def _load_repos_from_cache(username: str, repo_names: Iterable[str], job_id: Opt
     return bundles
 
 
+def _load_repos_from_table(username: str, repo_names: Iterable[str], job_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    names = [name for name in repo_names if name]
+    if not names:
+        return []
+    if not table_manager.is_enabled():
+        return []
+
+    rows = table_manager.query_repo_metadata(username, job_id=job_id, repo_names=names)
+    documents: List[Dict[str, Any]] = []
+    for row in rows:
+        doc = row.get("document") if isinstance(row.get("document"), dict) else {}
+        repo_name = row.get("repo_name") or row.get("RowKey") or doc.get("name")
+        entry: Dict[str, Any] = dict(doc)
+        if repo_name and "name" not in entry:
+            entry["name"] = repo_name
+        if "fingerprint" not in entry and row.get("fingerprint"):
+            entry["fingerprint"] = row.get("fingerprint")
+
+        if "metadata" not in entry and isinstance(row.get("metadata"), dict):
+            entry["metadata"] = row.get("metadata")
+        if "languages" not in entry and isinstance(row.get("languages"), dict):
+            entry["languages"] = row.get("languages")
+        if "categorized_types" not in entry and isinstance(row.get("categorized_types"), dict):
+            entry["categorized_types"] = row.get("categorized_types")
+
+        if "has_documentation" not in entry and row.get("has_documentation") is not None:
+            entry["has_documentation"] = bool(row.get("has_documentation"))
+        if "readme_excerpt" not in entry and row.get("readme_excerpt"):
+            entry["readme_excerpt"] = row.get("readme_excerpt")
+        if "content_blob" not in entry and row.get("content_blob"):
+            entry["content_blob"] = row.get("content_blob")
+
+        documents.append(entry)
+    if documents:
+        return documents
+    return []
+
+
 def _merge_repos(fresh_repos: List[Dict[str, Any]], cached_bundle: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     merged: Dict[str, Dict[str, Any]] = {}
     for repo in cached_bundle:
@@ -104,24 +142,25 @@ def _save_bundle(username: str, bundle: List[Dict[str, Any]], fingerprint: str) 
 
 
 def _update_job_status(job_id: str, username: str, synced_repo_names: List[str], fingerprint: str) -> None:
-    job_key = f"job:{job_id}"
-    entry = cache_manager.get(job_key)
-    payload = entry.get("data") if isinstance(entry.get("data"), dict) else {}
     merged_count = len(synced_repo_names)
-    total_repos = payload.get("total_repos", merged_count)
-    payload.update(
-        {
-            "job_id": job_id,
-            "username": username,
-            "completed_repos": merged_count,
-            "total_repos": max(total_repos, merged_count),
-            "status": "completed",
-            "bundle_fingerprint": fingerprint,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
-            "synced_repos": list(synced_repo_names),
-        }
-    )
-    cache_manager.save(job_key, payload, ttl=BUNDLE_TTL_SECONDS)
+    now = datetime.now(timezone.utc).isoformat()
+
+    if table_manager.is_enabled():
+        existing = table_manager.get_candidate_session(username, job_id) or {}
+        total_repos = existing.get("total_repos", merged_count)
+        table_manager.update_candidate_session(
+            username,
+            job_id,
+            {
+                "completed_repos": merged_count,
+                "total_repos": max(int(total_repos or 0), merged_count),
+                "status": "completed",
+                "bundle_fingerprint": fingerprint,
+                "completed_at": now,
+                "synced_repos": list(synced_repo_names),
+            },
+        )
+        return
 
 
 def _enqueue_training_job(
@@ -158,14 +197,21 @@ def _resolve_fresh_repos(payload: Dict[str, Any], username: str, job_id: Optiona
     if isinstance(fresh, list) and fresh:
         return [repo for repo in fresh if isinstance(repo, dict)]
     repo_names: Iterable[str] = payload.get("synced_repos") or payload.get("repo_names") or []
-    return _load_repos_from_cache(username, repo_names, job_id)
+    if not repo_names:
+        status_rows = table_manager.list_repo_statuses(job_id) if (job_id and table_manager.is_enabled()) else []
+        if status_rows:
+            repo_names = [row.get("repo_name") for row in status_rows if row.get("status") == "synced"]
+    table_repos = _load_repos_from_table(username, repo_names, job_id)
+    if table_repos:
+        return table_repos
+    return []
 
 
 def _resolve_cached_bundle(payload: Dict[str, Any], username: str, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
     cached = payload.get("cached_bundle")
     if isinstance(cached, list) and cached:
         return [repo for repo in cached if isinstance(repo, dict)]
-    return _load_cached_bundle(username, job_id)
+    return []
 
 
 def _process_merge_payload(payload: Dict[str, Any]) -> bool:

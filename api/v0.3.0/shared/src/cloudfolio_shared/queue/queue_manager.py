@@ -110,8 +110,13 @@ class QueueManager:
         json_size = len(json_str.encode('utf-8'))
         
         # Log message size (Azure Queue 64KB limit for message)
-        repo_name = payload.get('repo_name', 'unknown')
-        job_id = payload.get('job_id', 'unknown')
+        repo_name = payload.get("repo_name")
+        if not repo_name:
+            repo_names = payload.get("repo_names")
+            if isinstance(repo_names, list) and repo_names:
+                repo_name = repo_names[0]
+        repo_name = repo_name or "n/a"
+        job_id = payload.get("job_id") or "n/a"
         logger.info(
             "Enqueued message to %s: json_size=%d bytes, repo_name=%s, job_id=%s",
             queue_alias,

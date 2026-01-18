@@ -102,7 +102,6 @@ def _get_github_repo_manager(username: str) -> GitHubRepoManager:
 def _job_cache_key(job_id: str) -> str:
     return f"job:{job_id}"
 
-
 def _table_enabled() -> bool:
     try:
         return table_manager.is_enabled()
@@ -422,8 +421,6 @@ def _persist_job_metadata(
         created_at=created_at,
     )
 
-    cache_manager.save(_job_cache_key(job_id), cache_payload, ttl=3600)
-
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -584,17 +581,16 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
         return _create_error_response("job_id query parameter required", 400)
 
     session = _fetch_candidate_session(username, job_id)
-    cache_result = cache_manager.get(_job_cache_key(job_id))
-    cache_data = cache_result.get("data") if cache_result.get("status") == "valid" else None
-
-    if not session and not cache_data:
-        return _create_error_response("Job not found or expired", 404)
+    cache_data: Optional[Dict[str, Any]] = None
 
     info: Dict[str, Any] = session or {}
     if session and cache_data:
         info = _merge_session_with_cache(session, cache_data)
-    elif not session and cache_data:
-        info = cache_data
+    elif not session:
+        info = cache_data or {}
+
+    if not info:
+        return _create_error_response("Job not found or expired", 404)
 
     total = info.get("total_repos", 0)
     completed = info.get("completed_repos", 0)
@@ -626,9 +622,12 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
     if not query or not username:
         return _create_error_response("Request body must contain 'query' and 'username'", 400)
 
-    bundle_cache_key = cache_manager.generate_cache_key(kind="bundle", username=username)
-    cached_results = cache_manager.get(bundle_cache_key)
-    repos_bundle = cached_results.get("data") if cached_results.get("status") == "valid" else None
+    repos_bundle = None
+    session = _fetch_candidate_session(username)
+    repo_rows = _query_repo_rows(username, session) if session else []
+    if session and repo_rows:
+        table_bundle = _bundle_from_table(username, session, repo_rows)
+        repos_bundle = table_bundle.get("data")
 
     if not repos_bundle:
         return _create_error_response("No repository bundle available. Trigger refresh first.", 400)
