@@ -17,12 +17,20 @@ class StubQueueClient:
         self.name = name
         self.created = False
         self.messages = []
+        self._counter = 0
 
     def create_queue(self) -> None:
         self.created = True
 
     def send_message(self, body: str) -> None:
         self.messages.append(body)
+
+        class _Result:
+            def __init__(self, message_id: str) -> None:
+                self.id = message_id
+
+        self._counter += 1
+        return _Result(f"{self.name}-msg-{self._counter}")
 
 
 class StubQueueServiceClient:
@@ -56,7 +64,7 @@ def test_send_message_returns_false_when_disabled(monkeypatch) -> None:
     manager = QueueManager(service_client=None)
     result = manager.send_message(SYNC_QUEUE, {"hello": "world"})
 
-    assert result is False
+    assert result is None
 
 
 def test_enqueue_sync_job_serializes_message(monkeypatch) -> None:
@@ -115,4 +123,4 @@ def test_unknown_queue_alias_returns_false(monkeypatch) -> None:
     manager = QueueManager(service_client=service, queue_names={})
 
     result = manager.send_message("nonexistent", {})
-    assert result is False
+    assert result is None

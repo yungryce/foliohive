@@ -238,6 +238,7 @@ def _update_job_progress(
     sync_failed: bool = False,
     *,
     message_uuid: Optional[str] = None,
+    trace_id: Optional[str] = None,
 ) -> None:
     job_info = _load_job_snapshot(job_id, username)
     queued_repos = job_info.get("queued_repos") or []
@@ -321,6 +322,10 @@ def _update_job_progress(
         "total_repos": total_target,
     }
 
+    queued_set = set(name for name in queued_repos if isinstance(name, str) and name)
+    processed = synced | failed
+    pending = queued_set - processed if queued_set else set()
+
     logger.info(
         "[JOB_PROGRESS_COMPUTED] job=%s user=%s completed=%d total=%d synced=%d failed=%d pending=%d",
         job_id,
@@ -331,10 +336,6 @@ def _update_job_progress(
         len(failed_list),
         len(pending),
     )
-
-    queued_set = set(name for name in queued_repos if isinstance(name, str) and name)
-    processed = synced | failed
-    pending = queued_set - processed if queued_set else set()
 
     has_synced_repos = len(synced_list) > 0
     has_pending = len(pending) > 0
@@ -405,7 +406,7 @@ def _update_job_progress(
 
     if should_merge:
         if queue_manager.is_enabled():
-            enqueued = queue_manager.enqueue_merge_job(job_id, username, synced_list)
+            enqueued = queue_manager.enqueue_merge_job(job_id, username, synced_list, trace_id=trace_id)
             logger.info(
                 "[MERGE_ENQUEUED] job=%s with %d repos (skipped %d failed)",
                 job_id,
@@ -428,6 +429,7 @@ def process_sync_job(msg: func.QueueMessage) -> None:
     username = None
     job_id = None
     repo_name = None
+    trace_id = None
 
     try:
         payload = _deserialize_message(msg)
@@ -436,13 +438,20 @@ def process_sync_job(msg: func.QueueMessage) -> None:
         repo_name = payload.get("repo_name")
         fingerprint = payload.get("fingerprint")
         message_uuid = payload.get("message_uuid")
+        trace_id = payload.get("trace_id")
+
+        queue_message_id = getattr(msg, "id", None)
+        dequeue_count = getattr(msg, "dequeue_count", None)
 
         logger.info(
-            "[SYNC_MESSAGE] job=%s user=%s repo=%s message_uuid=%s",
+            "[SYNC_MESSAGE] job=%s user=%s repo=%s trace_id=%s message_uuid=%s queue_message_id=%s dequeue_count=%s",
             job_id or "<unknown>",
             username or "<unknown>",
             repo_name or "<unknown>",
+            trace_id or "<none>",
             message_uuid or "<none>",
+            queue_message_id or "<unknown>",
+            dequeue_count if dequeue_count is not None else "<unknown>",
         )
 
         if not username or not job_id or not repo_name:
@@ -453,11 +462,25 @@ def process_sync_job(msg: func.QueueMessage) -> None:
         logger.info("[SYNC] Starting sync for job=%s repo=%s user=%s", job_id, repo_name, username)
         _fetch_repo_bundle(job_id, username, repo_name, fingerprint)
         logger.info("[SYNC] Completed sync for job=%s repo=%s", job_id, repo_name)
-        _update_job_progress(job_id, username, repo_name, sync_failed=False, message_uuid=message_uuid)
+        _update_job_progress(
+            job_id,
+            username,
+            repo_name,
+            sync_failed=False,
+            message_uuid=message_uuid,
+            trace_id=trace_id,
+        )
     except ValueError as ve:
         logger.error("[SYNC_ERROR] Validation error for repo=%s: %s", repo_name or "unknown", ve)
         if job_id and username and repo_name:
-            _update_job_progress(job_id, username, repo_name, sync_failed=True, message_uuid=message_uuid)
+            _update_job_progress(
+                job_id,
+                username,
+                repo_name,
+                sync_failed=True,
+                message_uuid=message_uuid,
+                trace_id=trace_id,
+            )
         raise
     except Exception as exc:
         logger.error(
@@ -468,5 +491,12 @@ def process_sync_job(msg: func.QueueMessage) -> None:
             exc_info=True,
         )
         if job_id and username and repo_name:
-            _update_job_progress(job_id, username, repo_name, sync_failed=True, message_uuid=message_uuid)
+            _update_job_progress(
+                job_id,
+                username,
+                repo_name,
+                sync_failed=True,
+                message_uuid=message_uuid,
+                trace_id=trace_id,
+            )
         raise

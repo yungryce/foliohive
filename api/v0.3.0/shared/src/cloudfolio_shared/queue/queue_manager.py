@@ -3,10 +3,13 @@ import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
 from azure.identity import DefaultAzureCredential
 from azure.storage.queue import QueueClient, QueueServiceClient
+
+from cloudfolio_shared.cache.cache_manager import cache_manager
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -20,6 +23,26 @@ JOB_STATUS_QUEUE = "job-status-updates"
 
 def _clean_queue_name(name: str) -> str:
     return name.strip().lower()
+
+
+def _trace_map_key(trace_id: str) -> str:
+    safe = str(trace_id).strip().replace(" ", "_")
+    return f"trace_queue_map:{safe}"
+
+
+def _extract_send_message_id(send_result: Any) -> Optional[str]:
+    if send_result is None:
+        return None
+    for attr in ("id", "message_id"):
+        value = getattr(send_result, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    if isinstance(send_result, dict):
+        for key in ("id", "message_id"):
+            value = send_result.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
 class QueueManager:
     """Wrapper around Azure Storage Queues used across workers."""
 
@@ -99,11 +122,14 @@ class QueueManager:
     def is_enabled(self) -> bool:
         return self.service_client is not None
 
-    def send_message(self, queue_alias: str, payload: Dict) -> bool:
+    def send_message(self, queue_alias: str, payload: Dict[str, Any]) -> Optional[str]:
         client = self._get_queue_client(queue_alias)
         if not client:
             logger.warning("Queue client unavailable for %s", queue_alias)
-            return False
+            return None
+
+        if "message_uuid" not in payload:
+            payload["message_uuid"] = str(uuid4())
 
         # client send message payload
         json_str = json.dumps(payload)
@@ -142,11 +168,72 @@ class QueueManager:
             logger.info("[SEND_DEBUG] repo=%s - Metadata keys: %s", 
                        repo_name, sorted(list(metadata.keys())))
         
-        client.send_message(json_str)
-        logger.info("[SEND_DEBUG] repo=%s job=%s - Message sent successfully", repo_name, job_id)
-        return True
+        send_result = client.send_message(json_str)
+        message_id = _extract_send_message_id(send_result)
 
-    def enqueue_sync_job(self, job_id: str, username: str, repo_name: str, fingerprint: Optional[str] = None) -> bool:
+        trace_id = payload.get("trace_id")
+        logger.info(
+            "[QUEUE_ENQUEUE] queue=%s trace_id=%s message_uuid=%s message_id=%s job_id=%s repo=%s size_bytes=%d",
+            queue_alias,
+            trace_id or "<none>",
+            payload.get("message_uuid") or "<none>",
+            message_id or "<unknown>",
+            job_id,
+            repo_name,
+            json_size,
+        )
+
+        if trace_id and cache_manager.use_cache and os.getenv("CF_BLOB_CACHE_ENABLED", "true").lower() == "true":
+            key = _trace_map_key(str(trace_id))
+            existing = cache_manager.get(key)
+            items: List[Dict[str, Any]] = []
+            if existing.get("status") == "valid" and isinstance(existing.get("data"), dict):
+                prior_items = existing["data"].get("messages")
+                if isinstance(prior_items, list):
+                    items = [x for x in prior_items if isinstance(x, dict)]
+            items.append(
+                {
+                    "queue": queue_alias,
+                    "message_id": message_id,
+                    "message_uuid": payload.get("message_uuid"),
+                    "job_id": payload.get("job_id"),
+                    "username": payload.get("username"),
+                    "repo_name": payload.get("repo_name"),
+                    "queued_at": payload.get("queued_at"),
+                }
+            )
+            if len(items) > 200:
+                items = items[-200:]
+            cache_manager.save(
+                key,
+                {
+                    "trace_id": str(trace_id),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "messages": items,
+                },
+                ttl=24 * 3600,
+            )
+            logger.info(
+                "[QUEUE_TRACE_MAP] trace_id=%s messages=%d key=%s",
+                trace_id,
+                len(items),
+                key,
+            )
+
+        logger.info("[SEND_DEBUG] repo=%s job=%s - Message sent successfully", repo_name, job_id)
+        return message_id
+
+    def enqueue_sync_job(
+        self,
+        job_id: str,
+        username: str,
+        repo_name: str,
+        fingerprint: Optional[str] = None,
+        *,
+        trace_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> bool:
         """Enqueue a sync job with minimal message payload.
         
         Args:
@@ -169,19 +256,35 @@ class QueueManager:
             "username": username,
             "repo_name": repo_name,
             "fingerprint": fingerprint,
+            "trace_id": trace_id,
+            "request_id": request_id,
+            "session_id": session_id,
             "queued_at": datetime.now(timezone.utc).isoformat(),
         }
-        
-        return self.send_message(SYNC_QUEUE, message)
 
-    def enqueue_merge_job(self, job_id: str, username: str, synced_repos: List[str]) -> bool:
+        return bool(self.send_message(SYNC_QUEUE, message))
+
+    def enqueue_merge_job(
+        self,
+        job_id: str,
+        username: str,
+        synced_repos: List[str],
+        *,
+        trace_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> bool:
         message = {
             "job_id": job_id,
             "username": username,
             "synced_repos": synced_repos,
-            "trigger_source": "sync_complete"
+            "trigger_source": "sync_complete",
+            "trace_id": trace_id,
+            "request_id": request_id,
+            "session_id": session_id,
+            "queued_at": datetime.now(timezone.utc).isoformat(),
         }
-        return self.send_message(MERGE_QUEUE, message)
+        return bool(self.send_message(MERGE_QUEUE, message))
 
     def enqueue_training_job(
         self,
@@ -193,6 +296,9 @@ class QueueManager:
         repo_names: Optional[List[str]] = None,
         bundle_fingerprint: Optional[str] = None,
         experiment_name: str = "default",
+        trace_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> bool:
         """Enqueue a training job without embedding large payloads.
 
@@ -208,9 +314,12 @@ class QueueManager:
             "bundle_fingerprint": bundle_fingerprint,
             "repo_names": repo_names or [],
             "training_params": training_params or {},
+            "trace_id": trace_id,
+            "request_id": request_id,
+            "session_id": session_id,
             "queued_at": datetime.now(timezone.utc).isoformat(),
         }
-        return self.send_message(TRAINING_QUEUE, message)
+        return bool(self.send_message(TRAINING_QUEUE, message))
 
     def enqueue_status_update(self, job_id: str, status: str, details: Optional[Dict] = None) -> bool:
         message = {
@@ -218,7 +327,7 @@ class QueueManager:
             "status": status,
             "details": details or {}
         }
-        return self.send_message(JOB_STATUS_QUEUE, message)
+        return bool(self.send_message(JOB_STATUS_QUEUE, message))
 
 
 queue_manager = QueueManager()

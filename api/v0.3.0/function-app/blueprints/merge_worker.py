@@ -182,6 +182,7 @@ def _enqueue_training_job(
     bundle_cache_key: str,
     repo_names: List[str],
     bundle_fingerprint: str,
+    trace_id: Optional[str] = None,
 ) -> None:
     if not bundle_cache_key:
         logger.info("Skip training enqueue for %s job=%s (missing bundle cache key)", username, job_id)
@@ -197,6 +198,7 @@ def _enqueue_training_job(
         repo_names=repo_names,
         bundle_fingerprint=bundle_fingerprint,
         experiment_name=os.getenv("TRAINING_EXPERIMENT", "default"),
+        trace_id=trace_id,
     )
     if queued:
         logger.info("Training job enqueued for %s job=%s", username, job_id)
@@ -235,6 +237,7 @@ def _resolve_cached_bundle(payload: Dict[str, Any], username: str, job_id: Optio
 def _process_merge_payload(payload: Dict[str, Any]) -> bool:
     username = payload.get("username")
     job_id = payload.get("job_id")
+    trace_id = payload.get("trace_id")
     if not username or not job_id:
         raise ValueError("username and job_id are required")
 
@@ -279,6 +282,7 @@ def _process_merge_payload(payload: Dict[str, Any]) -> bool:
         bundle_cache_key=bundle_cache_key,
         repo_names=synced_repo_names,
         bundle_fingerprint=fingerprint,
+        trace_id=trace_id,
     )
     return True
 
@@ -286,11 +290,17 @@ def _process_merge_payload(payload: Dict[str, Any]) -> bool:
 @bp.queue_trigger(arg_name="msg", queue_name="merge-results", connection="AzureWebJobsStorage")
 def process_merge_job(msg: func.QueueMessage) -> None:
     try:
+        queue_message_id = getattr(msg, "id", None)
+        dequeue_count = getattr(msg, "dequeue_count", None)
         payload = _deserialize_message(msg)
         logger.info(
-            "[MERGE_MESSAGE] job=%s user=%s keys=%s",
+            "[MERGE_MESSAGE] job=%s user=%s trace_id=%s message_uuid=%s queue_message_id=%s dequeue_count=%s keys=%s",
             payload.get("job_id") or "<unknown>",
             payload.get("username") or "<unknown>",
+            payload.get("trace_id") or "<none>",
+            payload.get("message_uuid") or "<none>",
+            queue_message_id or "<unknown>",
+            dequeue_count if dequeue_count is not None else "<unknown>",
             sorted(list(payload.keys())),
         )
         _process_merge_payload(payload)

@@ -96,6 +96,7 @@ def _collect_job_sets(job_id: str, repo_names: Iterable[str]) -> Tuple[Set[str],
 def _reconcile_session(session: Dict[str, Any]) -> None:
     job_id = session.get("job_id")
     username = session.get("username")
+    trace_id = session.get("trace_id")
     if not job_id or not username:
         return
 
@@ -129,7 +130,7 @@ def _reconcile_session(session: Dict[str, Any]) -> None:
     if missing and can_requeue and queue_manager.is_enabled():
         requeued: List[str] = []
         for repo_name in sorted(missing):
-            if queue_manager.enqueue_sync_job(job_id, username, repo_name):
+            if queue_manager.enqueue_sync_job(job_id, username, repo_name, trace_id=trace_id):
                 requeued.append(repo_name)
         if requeued:
             table_manager.update_candidate_session(
@@ -147,7 +148,7 @@ def _reconcile_session(session: Dict[str, Any]) -> None:
         if session.get("merge_enqueued_at"):
             return
         if queue_manager.is_enabled():
-            queued = queue_manager.enqueue_merge_job(job_id, username, sorted(synced))
+            queued = queue_manager.enqueue_merge_job(job_id, username, sorted(synced), trace_id=trace_id)
             if queued:
                 table_manager.update_candidate_session(
                     username,

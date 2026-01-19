@@ -58,10 +58,14 @@ def _get_trace_context(req: func.HttpRequest) -> Dict[str, str]:
         or ""
     )
     if not request_id:
+        logger.info("Generating new request ID for trace context")
         request_id = str(uuid.uuid4())
+
+    trace_id = headers.get("X-Trace-Id") or headers.get("x-trace-id") or request_id
     return {
         "request_id": request_id,
         "session_id": session_id,
+        "trace_id": trace_id,
     }
 
 
@@ -402,6 +406,9 @@ def _upsert_candidate_session_row(
     force_refresh: bool,
     synced_repos: Optional[List[str]],
     created_at: str,
+    trace_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> None:
     if not _table_enabled():
         return
@@ -424,6 +431,9 @@ def _upsert_candidate_session_row(
         model_fingerprint=(existing.get("model_fingerprint") if existing else None),
         created_at=(existing.get("created_at") if existing else created_at) or created_at,
         updated_at=existing.get("updated_at") if existing else None,
+        trace_id=trace_id if not existing else (existing.get("trace_id") or trace_id),
+        request_id=request_id if not existing else (existing.get("request_id") or request_id),
+        session_id=session_id if not existing else (existing.get("session_id") or session_id),
     )
     table_manager.upsert_candidate_session(row)
 
@@ -438,6 +448,9 @@ def _persist_job_metadata(
     status: str = "queued",
     force_refresh: bool = False,
     synced_repos: Optional[List[str]] = None,
+    trace_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> None:
     queued = queued_repo_names if queued_repo_names is not None else list(expected_repo_names)
     resolved_total = total_repos if total_repos is not None else len(queued)
@@ -453,6 +466,9 @@ def _persist_job_metadata(
         "status": status,
         "created_at": created_at,
         "force_refresh": force_refresh,
+        "trace_id": trace_id,
+        "request_id": request_id,
+        "session_id": session_id,
     }
 
     _upsert_candidate_session_row(
@@ -465,6 +481,9 @@ def _persist_job_metadata(
         force_refresh=force_refresh,
         synced_repos=list(synced_repos) if synced_repos is not None else None,
         created_at=created_at,
+        trace_id=trace_id,
+        request_id=request_id,
+        session_id=session_id,
     )
 
 
@@ -639,7 +658,15 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         len(expected_repo_names),
     )
 
-    _persist_job_metadata(job_id, username, expected_repo_names, force_refresh=force_refresh)
+    _persist_job_metadata(
+        job_id,
+        username,
+        expected_repo_names,
+        force_refresh=force_refresh,
+        trace_id=trace.get("trace_id"),
+        request_id=trace.get("request_id"),
+        session_id=trace.get("session_id"),
+    )
 
     enqueued = 0
     enqueued_names: List[str] = []
@@ -649,7 +676,15 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
             continue
 
         repo_fingerprint = repo_metadata.get("fingerprint")
-        if queue_manager.enqueue_sync_job(job_id, username, repo_name, repo_fingerprint):
+        if queue_manager.enqueue_sync_job(
+            job_id,
+            username,
+            repo_name,
+            repo_fingerprint,
+            trace_id=trace.get("trace_id"),
+            request_id=trace.get("request_id"),
+            session_id=trace.get("session_id"),
+        ):
             enqueued += 1
             enqueued_names.append(repo_name)
 
@@ -669,7 +704,16 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
     )
 
     if enqueued == 0:
-        _persist_job_metadata(job_id, username, [], queued_repo_names=[], total_repos=0)
+        _persist_job_metadata(
+            job_id,
+            username,
+            [],
+            queued_repo_names=[],
+            total_repos=0,
+            trace_id=trace.get("trace_id"),
+            request_id=trace.get("request_id"),
+            session_id=trace.get("session_id"),
+        )
         return _create_error_response("Failed to enqueue sync jobs", 502)
 
     if enqueued != len(expected_repo_names):
@@ -682,6 +726,9 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         queued_repo_names=enqueued_names,
         total_repos=enqueued,
         force_refresh=force_refresh,
+        trace_id=trace.get("trace_id"),
+        request_id=trace.get("request_id"),
+        session_id=trace.get("session_id"),
     )
     response = {
         "status": "processing",

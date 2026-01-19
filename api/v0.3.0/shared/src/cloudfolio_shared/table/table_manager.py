@@ -61,6 +61,9 @@ class CandidateSessionRow:
     model_fingerprint: Optional[str] = None
     merge_enqueued_at: Optional[str] = None
     last_requeue_at: Optional[str] = None
+    trace_id: Optional[str] = None
+    request_id: Optional[str] = None
+    session_id: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
