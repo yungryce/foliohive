@@ -3,7 +3,6 @@ import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
 from azure.identity import DefaultAzureCredential
@@ -128,9 +127,6 @@ class QueueManager:
             logger.warning("Queue client unavailable for %s", queue_alias)
             return None
 
-        if "message_uuid" not in payload:
-            payload["message_uuid"] = str(uuid4())
-
         # client send message payload
         json_str = json.dumps(payload)
         json_size = len(json_str.encode('utf-8'))
@@ -157,10 +153,9 @@ class QueueManager:
         trace_id = payload.get("trace_id")
         session_id = payload.get("session_id")
         logger.info(
-            "[QUEUE_ENQUEUE] queue=%s trace_id=%s message_uuid=%s message_id=%s job_id=%s repo=%s size_bytes=%d session_id=%s",
+            "[QUEUE_ENQUEUE] queue=%s trace_id=%s message_id=%s job_id=%s repo=%s size_bytes=%d session_id=%s",
             queue_alias,
             trace_id or "<none>",
-            payload.get("message_uuid") or "<none>",
             message_id or "<unknown>",
             job_id,
             repo_name,
@@ -168,7 +163,7 @@ class QueueManager:
             session_id or "<none>",
         )
 
-        logger.info("[SEND_DEBUG] repo=%s job=%s - Message sent successfully", repo_name, job_id)
+        logger.info("[SEND_DEBUG] repo=%s job=%s message_id=%s - Message sent successfully", repo_name, job_id, message_id)
         return message_id
 
     def enqueue_sync_job(

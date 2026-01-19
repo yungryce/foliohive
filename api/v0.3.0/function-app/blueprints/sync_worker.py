@@ -237,7 +237,7 @@ def _update_job_progress(
     repo_name: str,
     sync_failed: bool = False,
     *,
-    message_uuid: Optional[str] = None,
+    message_id: Optional[str] = None,
     trace_id: Optional[str] = None,
 ) -> None:
     job_info = _load_job_snapshot(job_id, username)
@@ -250,12 +250,12 @@ def _update_job_progress(
         expected_repos = []
 
     logger.info(
-        "[JOB_PROGRESS_START] job=%s user=%s repo=%s sync_failed=%s message_uuid=%s queued=%d expected=%d prior_completed=%s prior_total=%s",
+        "[JOB_PROGRESS_START] job=%s user=%s repo=%s sync_failed=%s message_id=%s queued=%d expected=%d prior_completed=%s prior_total=%s",
         job_id,
         username,
         repo_name,
         sync_failed,
-        message_uuid or "<none>",
+        message_id or "<none>",
         len([x for x in queued_repos if isinstance(x, str) and x]),
         len([x for x in expected_repos if isinstance(x, str) and x]),
         job_info.get("completed_repos"),
@@ -276,7 +276,7 @@ def _update_job_progress(
                 repo_name=repo_name,
                 username=username,
                 status=status_value,
-                message_uuid=message_uuid,
+                message_id=message_id,
                 error=None,
             )
         )
@@ -430,6 +430,7 @@ def process_sync_job(msg: func.QueueMessage) -> None:
     job_id = None
     repo_name = None
     trace_id = None
+    message_id = None
 
     try:
         payload = _deserialize_message(msg)
@@ -437,19 +438,19 @@ def process_sync_job(msg: func.QueueMessage) -> None:
         job_id = payload.get("job_id")
         repo_name = payload.get("repo_name")
         fingerprint = payload.get("fingerprint")
-        message_uuid = payload.get("message_uuid")
         trace_id = payload.get("trace_id")
 
         queue_message_id = getattr(msg, "id", None)
+        message_id = queue_message_id
         dequeue_count = getattr(msg, "dequeue_count", None)
 
         logger.info(
-            "[SYNC_MESSAGE] job=%s user=%s repo=%s trace_id=%s message_uuid=%s queue_message_id=%s dequeue_count=%s",
+            "[SYNC_MESSAGE] job=%s user=%s repo=%s trace_id=%s message_id=%s queue_message_id=%s dequeue_count=%s",
             job_id or "<unknown>",
             username or "<unknown>",
             repo_name or "<unknown>",
             trace_id or "<none>",
-            message_uuid or "<none>",
+            message_id or "<unknown>",
             queue_message_id or "<unknown>",
             dequeue_count if dequeue_count is not None else "<unknown>",
         )
@@ -467,7 +468,7 @@ def process_sync_job(msg: func.QueueMessage) -> None:
             username,
             repo_name,
             sync_failed=False,
-            message_uuid=message_uuid,
+            message_id=message_id,
             trace_id=trace_id,
         )
     except ValueError as ve:
@@ -478,7 +479,7 @@ def process_sync_job(msg: func.QueueMessage) -> None:
                 username,
                 repo_name,
                 sync_failed=True,
-                message_uuid=message_uuid,
+                message_id=message_id,
                 trace_id=trace_id,
             )
         raise
@@ -496,7 +497,7 @@ def process_sync_job(msg: func.QueueMessage) -> None:
                 username,
                 repo_name,
                 sync_failed=True,
-                message_uuid=message_uuid,
+                message_id=message_id,
                 trace_id=trace_id,
             )
         raise

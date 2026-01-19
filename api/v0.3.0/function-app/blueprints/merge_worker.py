@@ -294,11 +294,11 @@ def process_merge_job(msg: func.QueueMessage) -> None:
         dequeue_count = getattr(msg, "dequeue_count", None)
         payload = _deserialize_message(msg)
         logger.info(
-            "[MERGE_MESSAGE] job=%s user=%s trace_id=%s message_uuid=%s queue_message_id=%s dequeue_count=%s keys=%s",
+            "[MERGE_MESSAGE] job=%s user=%s trace_id=%s message_id=%s queue_message_id=%s dequeue_count=%s keys=%s",
             payload.get("job_id") or "<unknown>",
             payload.get("username") or "<unknown>",
             payload.get("trace_id") or "<none>",
-            payload.get("message_uuid") or "<none>",
+            queue_message_id or "<unknown>",
             queue_message_id or "<unknown>",
             dequeue_count if dequeue_count is not None else "<unknown>",
             sorted(list(payload.keys())),

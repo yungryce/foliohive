@@ -96,7 +96,7 @@ class RepoSyncStatusRow:
     repo_name: str
     username: str
     status: str  # synced | failed | pending
-    message_uuid: Optional[str] = None
+    message_id: Optional[str] = None
     error: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -525,7 +525,7 @@ class TableManager:
             "RowKey": row.repo_name,
             "username": row.username,
             "status": status,
-            "message_uuid": row.message_uuid or "",
+            "message_id": row.message_id or "",
             "error": row.error or "",
             "updated_at": row.updated_at or now,
         }
@@ -575,7 +575,7 @@ class TableManager:
         payload["repo_name"] = payload.get("RowKey")
         payload["username"] = payload.get("username") or None
         payload["status"] = (payload.get("status") or "").lower() or None
-        payload["message_uuid"] = payload.get("message_uuid") or None
+        payload["message_id"] = payload.get("message_id") or None
         payload["error"] = payload.get("error") or None
         payload["updated_at"] = payload.get("updated_at") or None
         return payload

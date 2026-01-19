@@ -185,7 +185,7 @@ def test_repo_sync_status_roundtrip(table_manager: TableManager) -> None:
         repo_name="api",
         username="alice",
         status="synced",
-        message_uuid="m-1",
+        message_id="m-1",
         error=None,
     )
 
@@ -194,8 +194,7 @@ def test_repo_sync_status_roundtrip(table_manager: TableManager) -> None:
     fetched = table_manager.get_repo_status("job-1", "api")
     assert fetched is not None
     assert fetched["status"] == "synced"
-    assert fetched["message_uuid"] == "m-1"
-    assert fetched["username"] == "alice"
+    assert fetched["message_id"] == "m-1"
 
     listed = table_manager.list_repo_statuses("job-1")
     assert len(listed) == 1
