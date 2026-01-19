@@ -21,7 +21,12 @@ class GitHubAPI:
     def __init__(self, token: Optional[str] = None, username: Optional[str] = None,
                  base_url: str = DEFAULT_BASE_URL) -> None:
         """Initialise the client and require an explicit GitHub username."""
+
         self.token = token or os.getenv('GITHUB_TOKEN')
+        if not self.token:
+            logger.warning("GitHub API token is missing; unauthenticated requests may be rate-limited")
+            raise ValueError("GitHub API token is required")
+
         resolved_username = username or os.getenv('GITHUB_USERNAME')
         if not resolved_username:
             raise ValueError("GitHub username is required")
@@ -29,14 +34,7 @@ class GitHubAPI:
         self.base_url = base_url.rstrip('/')
         self.headers = {'Authorization': f'token {self.token}'} if self.token else {}
         self.session = self._build_session()
-        
-        # Log token availability for debugging
-        token_status = 'present' if self.token else 'MISSING'
-        token_preview = f"{self.token[:12]}..." if self.token and len(self.token) > 12 else 'N/A'
-        logger.info(
-            "[GITHUB_API_INIT] username=%s token_status=%s token_preview=%s base_url=%s",
-            self.username, token_status, token_preview, self.base_url
-        ) # we dont need to log this. we just need to capture when api token is missing and inform frontend
+
 
     def _build_session(self) -> requests.Session:
         """Create a shared session with retries and connection pooling to reduce SNAT usage."""

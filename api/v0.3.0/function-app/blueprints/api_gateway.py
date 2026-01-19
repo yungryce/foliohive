@@ -323,8 +323,9 @@ def _identify_repo_freshness(username: str) -> Dict[str, Any]:
     cached_bundle = cache_manager.get(bundle_cache_key)
 
     logger.info(
-        "[API_GATEWAY_FRESHNESS] user=%s - Fetching all repos metadata with languages (1 + N API calls)",
+        "[API_GATEWAY_FRESHNESS] user=%s with cache-key=%s - Fetching all repos metadata with languages (1 + N API calls)",
         username,
+        bundle_cache_key,
     )
 
     all_repos = repo_manager.get_all_repos_metadata(username=username, include_languages=True)

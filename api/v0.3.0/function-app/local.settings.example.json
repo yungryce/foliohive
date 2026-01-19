@@ -1,0 +1,40 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsFeatureFlags": "EnableWorkerIndexing",
+
+    "GITHUB_TOKEN": "<your-github-personal-access-token>",
+    "GITHUB_USERNAME": "<your-github-username>",
+
+    "ENABLE_QUEUE_MODE": "true",
+    "ENABLE_CONFIG_DISCOVERY_GRAPHQL": "false",
+    "CF_HOT_CACHE_ENABLED": "true",
+
+    "AZURE_STORAGE_ACCOUNT_URL": "http://127.0.0.1:10000/devstoreaccount1",
+    "AZURE_STORAGE_QUEUE_URL": "http://127.0.0.1:10001/devstoreaccount1",
+    "AZURE_TABLES_ENDPOINT": "http://127.0.0.1:10002/devstoreaccount1",
+
+    "BLOB_SERVICE_URI": "http://127.0.0.1:10000/devstoreaccount1",
+    "AzureWebJobsStorage__blobServiceUri": "http://127.0.0.1:10000/devstoreaccount1",
+    "AzureWebJobsStorage__queueServiceUri": "http://127.0.0.1:10001/devstoreaccount1",
+    "AzureWebJobsStorage__tableServiceUri": "http://127.0.0.1:10002/devstoreaccount1",
+
+    "TABLE_CANDIDATE_SESSIONS": "CandidateSessions",
+    "TABLE_REPO_METADATA": "RepoMetadata",
+    "TABLE_MODEL_METADATA": "ModelMetadata",
+    "TABLE_SERVICE_URI": "http://127.0.0.1:10002/devstoreaccount1",
+    "TABLE_STORAGE_CONNECTION_STRING": "UseDevelopmentStorage=true",
+
+    "GROQ_API_KEY": "<your-groq-api-key>",
+    "TRAINING_EXPERIMENT": "default",
+
+    "CF_RECONCILE_REQUEUE_COOLDOWN_SECONDS": "600",
+    "CF_RECONCILE_MIN_AGE_SECONDS": "180",
+    "CF_CACHE_CLEANUP_ENABLED": "true",
+    "CF_CACHE_CLEANUP_MAX_AGE_HOURS": "24",
+
+    "BUILD_BUILDNUMBER": "dev"
+  }
+}

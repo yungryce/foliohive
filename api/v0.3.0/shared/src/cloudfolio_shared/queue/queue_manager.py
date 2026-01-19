@@ -151,29 +151,13 @@ class QueueManager:
             job_id
         )
         
-        # Debug: Log message structure for investigation
-        logger.info("[SEND_DEBUG] repo=%s job=%s - Top-level keys: %s", 
-                    repo_name, job_id, sorted(list(payload.keys())))
-        logger.info("[SEND_DEBUG] repo=%s - schema=%s, username=%s, has_metadata=%s", 
-                    repo_name, 
-                    payload.get('schema_version', 'missing'),
-                    payload.get('username', 'missing'),
-                    'metadata' in payload and isinstance(payload['metadata'], dict))
-        
-        if "metadata" in payload and isinstance(payload["metadata"], dict):
-            metadata = payload["metadata"]
-            metadata_json_size = len(json.dumps(metadata).encode('utf-8'))
-            logger.info("[SEND_DEBUG] repo=%s - Metadata has %d keys, size=%d bytes", 
-                       repo_name, len(metadata), metadata_json_size)
-            logger.info("[SEND_DEBUG] repo=%s - Metadata keys: %s", 
-                       repo_name, sorted(list(metadata.keys())))
-        
         send_result = client.send_message(json_str)
         message_id = _extract_send_message_id(send_result)
 
         trace_id = payload.get("trace_id")
+        session_id = payload.get("session_id")
         logger.info(
-            "[QUEUE_ENQUEUE] queue=%s trace_id=%s message_uuid=%s message_id=%s job_id=%s repo=%s size_bytes=%d",
+            "[QUEUE_ENQUEUE] queue=%s trace_id=%s message_uuid=%s message_id=%s job_id=%s repo=%s size_bytes=%d session_id=%s",
             queue_alias,
             trace_id or "<none>",
             payload.get("message_uuid") or "<none>",
@@ -181,44 +165,8 @@ class QueueManager:
             job_id,
             repo_name,
             json_size,
+            session_id or "<none>",
         )
-
-        if trace_id and cache_manager.use_cache and os.getenv("CF_BLOB_CACHE_ENABLED", "true").lower() == "true":
-            key = _trace_map_key(str(trace_id))
-            existing = cache_manager.get(key)
-            items: List[Dict[str, Any]] = []
-            if existing.get("status") == "valid" and isinstance(existing.get("data"), dict):
-                prior_items = existing["data"].get("messages")
-                if isinstance(prior_items, list):
-                    items = [x for x in prior_items if isinstance(x, dict)]
-            items.append(
-                {
-                    "queue": queue_alias,
-                    "message_id": message_id,
-                    "message_uuid": payload.get("message_uuid"),
-                    "job_id": payload.get("job_id"),
-                    "username": payload.get("username"),
-                    "repo_name": payload.get("repo_name"),
-                    "queued_at": payload.get("queued_at"),
-                }
-            )
-            if len(items) > 200:
-                items = items[-200:]
-            cache_manager.save(
-                key,
-                {
-                    "trace_id": str(trace_id),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "messages": items,
-                },
-                ttl=24 * 3600,
-            )
-            logger.info(
-                "[QUEUE_TRACE_MAP] trace_id=%s messages=%d key=%s",
-                trace_id,
-                len(items),
-                key,
-            )
 
         logger.info("[SEND_DEBUG] repo=%s job=%s - Message sent successfully", repo_name, job_id)
         return message_id
@@ -320,14 +268,6 @@ class QueueManager:
             "queued_at": datetime.now(timezone.utc).isoformat(),
         }
         return bool(self.send_message(TRAINING_QUEUE, message))
-
-    def enqueue_status_update(self, job_id: str, status: str, details: Optional[Dict] = None) -> bool:
-        message = {
-            "job_id": job_id,
-            "status": status,
-            "details": details or {}
-        }
-        return bool(self.send_message(JOB_STATUS_QUEUE, message))
 
 
 queue_manager = QueueManager()

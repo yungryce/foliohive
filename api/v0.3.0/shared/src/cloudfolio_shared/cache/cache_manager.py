@@ -169,6 +169,8 @@ class CacheManager:
                     "last_modified": None,
                     "size_bytes": None,
                 }
+            else:
+                logger.info("cache-manager: hot cache miss key=%s", cache_key)
         self._ensure_initialized()
         if not self.use_cache or not self._blob_service_client:
             return {"status": "disabled", "data": None}

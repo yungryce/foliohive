@@ -42,6 +42,15 @@ are_azurite_ports_ready() {
     return 0
 }
 
+are_azurite_ports_bound() {
+    for port in "${AZURITE_PORTS[@]}"; do
+        if lsof -iTCP -sTCP:LISTEN -P | grep -q ":$port "; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 start_azurite() {
     require_command azurite
     mkdir -p "$AZURITE_LOG_DIR" "$AZURITE_LOCATION"
