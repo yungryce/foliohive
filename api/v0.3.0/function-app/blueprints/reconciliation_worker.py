@@ -78,12 +78,18 @@ def _should_requeue(last_requeue_at: Optional[str], cooldown_seconds: int) -> bo
     return _utcnow() - last_time >= timedelta(seconds=cooldown_seconds)
 
 
-def _collect_job_sets(job_id: str) -> Tuple[Set[str], Set[str]]:
-    status_rows = table_manager.list_repo_statuses(job_id)
-    synced = {row.get("repo_name") for row in status_rows if row.get("status") == "synced"}
-    failed = {row.get("repo_name") for row in status_rows if row.get("status") == "failed"}
-    synced.discard(None)
-    failed.discard(None)
+def _collect_job_sets(job_id: str, repo_names: Iterable[str]) -> Tuple[Set[str], Set[str]]:
+    synced: Set[str] = set()
+    failed: Set[str] = set()
+    for repo_name in repo_names:
+        if not repo_name:
+            continue
+        row = table_manager.get_repo_status(job_id, repo_name)
+        status = (row or {}).get("status")
+        if status == "synced":
+            synced.add(repo_name)
+        elif status == "failed":
+            failed.add(repo_name)
     return synced, failed
 
 
@@ -97,8 +103,25 @@ def _reconcile_session(session: Dict[str, Any]) -> None:
     if not expected:
         return
 
-    synced, failed = _collect_job_sets(job_id)
+    logger.info(
+        "[RECONCILE_CHECK] job=%s user=%s status=%s expected=%d",
+        job_id,
+        username,
+        session.get("status") or "<unknown>",
+        len(expected) if isinstance(expected, list) else 0,
+    )
+
+    synced, failed = _collect_job_sets(job_id, expected)
     missing = _compute_missing_repos(expected, synced, failed)
+
+    logger.info(
+        "[RECONCILE_SETS] job=%s user=%s synced=%d failed=%d missing=%d",
+        job_id,
+        username,
+        len(synced),
+        len(failed),
+        len(missing),
+    )
 
     requeue_cooldown = _env_int("CF_RECONCILE_REQUEUE_COOLDOWN_SECONDS", 600)
     can_requeue = _should_requeue(session.get("last_requeue_at"), requeue_cooldown)

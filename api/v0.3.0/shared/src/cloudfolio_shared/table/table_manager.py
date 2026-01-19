@@ -288,6 +288,17 @@ class TableManager:
         table = self._get_table_client(self.table_names.candidate_sessions)
         if not table:
             return
+        logger.info(
+            "[TABLE_UPSERT_SESSION] user=%s job=%s status=%s total=%s completed=%s expected=%d queued=%d synced=%d",
+            row.username,
+            row.job_id,
+            row.status,
+            row.total_repos,
+            row.completed_repos,
+            len(row.expected_repos or []),
+            len(row.queued_repos or []),
+            len(row.synced_repos or []),
+        )
         now = _utcnow_iso()
         entity = {
             "PartitionKey": row.username,
@@ -312,6 +323,12 @@ class TableManager:
         table = self._get_table_client(self.table_names.candidate_sessions)
         if not table or not updates:
             return
+        logger.info(
+            "[TABLE_UPDATE_SESSION] user=%s job=%s keys=%s",
+            username,
+            job_id,
+            sorted(list(updates.keys())),
+        )
         entity: Dict[str, Any] = {"PartitionKey": username, "RowKey": job_id, "updated_at": _utcnow_iso()}
         for key, value in updates.items():
             if key in _JSON_LIST_FIELDS:
@@ -328,6 +345,7 @@ class TableManager:
             entity = table.get_entity(partition_key=username, row_key=job_id)
         except ResourceNotFoundError:
             return None
+        logger.info("[TABLE_GET_SESSION] user=%s job=%s found=true", username, job_id)
         return self._deserialize_candidate_session(entity)
 
     def list_candidate_sessions(self, username: str) -> List[Dict[str, Any]]:
@@ -336,7 +354,18 @@ class TableManager:
             return []
         # query = table.list_entities(f"PartitionKey eq '{username}'")
         query = table.list_entities(filter=f"PartitionKey eq '{username}'")
-        return [self._deserialize_candidate_session(e) for e in query]
+        sessions = [self._deserialize_candidate_session(e) for e in query]
+
+        # Defense-in-depth: if an emulator/provider ignores filters, avoid leaking other users' sessions.
+        filtered = [session for session in sessions if session.get("username") == username]
+        if sessions and len(filtered) != len(sessions):
+            logger.warning(
+                "table-manager: list_candidate_sessions filter mismatch (requested=%s returned=%d kept=%d)",
+                username,
+                len(sessions),
+                len(filtered),
+            )
+        return filtered
 
     def list_candidate_sessions_by_status(
         self,
@@ -421,7 +450,21 @@ class TableManager:
                 filters.append(f"({' or '.join(name_filters)})")
         filter_str = " and ".join(filters)
         entities = table.list_entities(filter=filter_str)
-        return [self._deserialize_repo_entity(e) for e in entities]
+        rows = [self._deserialize_repo_entity(e) for e in entities]
+
+        # Defense-in-depth: ensure results match the requested username/job_id even if filters are ignored.
+        filtered = [row for row in rows if row.get("username") == username]
+        if job_id:
+            filtered = [row for row in filtered if row.get("job_id") == job_id]
+        if rows and len(filtered) != len(rows):
+            logger.warning(
+                "table-manager: query_repo_metadata filter mismatch (requested=%s job_id=%s returned=%d kept=%d)",
+                username,
+                job_id or "<none>",
+                len(rows),
+                len(filtered),
+            )
+        return filtered
 
     def _serialize_repo_row(self, row: RepoMetadataRow) -> Dict[str, Any]:
         now = _utcnow_iso()
@@ -484,6 +527,13 @@ class TableManager:
             "updated_at": row.updated_at or now,
         }
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
+        logger.info(
+            "[TABLE_UPSERT_REPO_STATUS] job=%s user=%s repo=%s status=%s",
+            row.job_id,
+            row.username,
+            row.repo_name,
+            status,
+        )
 
     def get_repo_status(self, job_id: str, repo_name: str) -> Optional[Dict[str, Any]]:
         table = self._get_table_client(self.table_names.repo_sync_status)
@@ -493,6 +543,7 @@ class TableManager:
             entity = table.get_entity(partition_key=job_id, row_key=repo_name)
         except ResourceNotFoundError:
             return None
+        logger.info("[TABLE_GET_REPO_STATUS] job=%s repo=%s found=true", job_id, repo_name)
         return self._deserialize_repo_status(entity)
 
     def list_repo_statuses(self, job_id: str) -> List[Dict[str, Any]]:
@@ -500,7 +551,18 @@ class TableManager:
         if not table:
             return []
         query = table.list_entities(filter=f"PartitionKey eq '{job_id}'")
-        return [self._deserialize_repo_status(e) for e in query]
+        rows = [self._deserialize_repo_status(e) for e in query]
+
+        # Defense-in-depth: if an emulator/provider ignores filters, avoid cross-job leakage.
+        filtered = [row for row in rows if row.get("job_id") == job_id]
+        if rows and len(filtered) != len(rows):
+            logger.warning(
+                "table-manager: list_repo_statuses filter mismatch (requested=%s returned=%d kept=%d)",
+                job_id,
+                len(rows),
+                len(filtered),
+            )
+        return filtered
 
     def _deserialize_repo_status(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)

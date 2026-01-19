@@ -39,22 +39,20 @@ export class LandingComponent implements OnInit {
         if (exists) {
           // Bundle exists, navigate directly without forcing refresh
           this.candidateContext.upsertCandidate({ username });
-          this.router.navigate(['/ai'], { queryParams: { username } });
           this.loading = false;
+          this.router.navigate(['/ai'], { queryParams: { username } });
         } else {
           // Bundle doesn't exist, trigger refresh
           this.repoService.startBuild(username, true).subscribe({
             next: (res) => {
               const jobId = res?.job_id;
               this.candidateContext.upsertCandidate({ username, jobId: jobId || undefined });
+              this.loading = false;
               this.router.navigate(['/ai'], { queryParams: { username, job_id: jobId || null } });
             },
             error: () => {
               this.loading = false;
               this.error = 'Failed to start refresh. Is api-gateway running?';
-            },
-            complete: () => {
-              this.loading = false;
             },
           });
         }

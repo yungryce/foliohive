@@ -54,8 +54,10 @@ export class RepoBundleService {
   /** POST /bundles/{username}/refresh */
   startBuild(username: string, force = true): Observable<RefreshResponse> {
     const url = `${this.config.apiUrl}/bundles/${encodeURIComponent(username)}/refresh`;
+    console.debug('[startBuild] request', { username, force, url });
     return this.http.post<any>(url, { force_refresh: force }).pipe(
       map((res: any) => {
+        console.debug('[startBuild] response', { username, force, res });
         if (res?.status === 'success' && res?.data) return res.data as RefreshResponse;
         return res as RefreshResponse;
       })
@@ -81,8 +83,10 @@ export class RepoBundleService {
   /** GET /bundles/{username} - check if bundle exists (no cache) */
   checkBundle(username: string): Observable<boolean> {
     const url = `${this.config.apiUrl}/bundles/${encodeURIComponent(username)}`;
+    console.debug('[checkBundle] request', { username, url });
     return this.http.get<any>(url).pipe(
       map((res: any) => {
+        console.debug('[checkBundle] response', { username, res });
         const payload = res?.status === 'success' && res?.data ? res.data : res;
         return !!payload && Array.isArray(payload.data) && payload.data.length > 0;
       }),

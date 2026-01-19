@@ -42,6 +42,29 @@ bp = func.Blueprint()
 USERNAME_REQUIRED_MESSAGE = "Username required"
 
 
+def _get_trace_context(req: func.HttpRequest) -> Dict[str, str]:
+    """Build a small correlation context for logs.
+
+    Avoid logging secrets. Keep values small and stable for tracing.
+    """
+
+    headers = getattr(req, "headers", {}) or {}
+    session_id = headers.get("X-Session-Id") or headers.get("x-session-id") or ""
+    request_id = (
+        headers.get("X-Request-Id")
+        or headers.get("x-request-id")
+        or headers.get("X-Ms-Client-Request-Id")
+        or headers.get("x-ms-client-request-id")
+        or ""
+    )
+    if not request_id:
+        request_id = str(uuid.uuid4())
+    return {
+        "request_id": request_id,
+        "session_id": session_id,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Helper responses
 # ---------------------------------------------------------------------------
@@ -128,8 +151,30 @@ def _normalize_candidate_session(
     if not payload:
         return None
     session = dict(payload)
-    session["username"] = username or session.get("PartitionKey")
-    session["job_id"] = job_id or session.get("RowKey") or session.get("job_id")
+    # Prefer server-provided keys; do not overwrite with request values.
+    # This prevents cross-candidate leakage if a storage provider ignores filters.
+    resolved_username = session.get("PartitionKey") or session.get("username")
+    resolved_job_id = session.get("RowKey") or session.get("job_id")
+
+    if resolved_username and username and resolved_username != username:
+        logger.warning(
+            "Discarding mismatched candidate session (requested=%s, found=%s, job_id=%s)",
+            username,
+            resolved_username,
+            resolved_job_id or "<unknown>",
+        )
+        return None
+    if resolved_job_id and job_id and resolved_job_id != job_id:
+        logger.warning(
+            "Discarding mismatched candidate session job_id (requested=%s, found=%s, username=%s)",
+            job_id,
+            resolved_job_id,
+            resolved_username or "<unknown>",
+        )
+        return None
+
+    session["username"] = resolved_username or username
+    session["job_id"] = resolved_job_id or job_id
     session.pop("PartitionKey", None)
     session.pop("RowKey", None)
     return session
@@ -140,6 +185,7 @@ def _fetch_candidate_session(username: str, job_id: Optional[str] = None) -> Opt
         return None
     if job_id:
         session = table_manager.get_candidate_session(username, job_id)
+        logger.info("Fetched candidate session for user=%s job_id=%s: %s", username, job_id, "found" if session else "not found")
         return _normalize_candidate_session(session, username, job_id)
 
     sessions = table_manager.list_candidate_sessions(username)
@@ -444,16 +490,38 @@ def get_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
     if not username:
         return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
 
+    trace = _get_trace_context(req)
     requested_job_id = req.params.get("job_id")
+    logger.info(
+        "[BUNDLE_REQUEST] request_id=%s session_id=%s username=%s job_id=%s",
+        trace["request_id"],
+        trace["session_id"],
+        username,
+        requested_job_id or "<latest>",
+    )
     session = _fetch_candidate_session(username, requested_job_id)
     repo_rows = _query_repo_rows(username, session)
 
     if session and repo_rows:
+        logger.info(
+            "[BUNDLE_RESPONSE] request_id=%s username=%s job_id=%s source=table repos=%d",
+            trace["request_id"],
+            username,
+            (session.get("job_id") or requested_job_id or "<unknown>"),
+            len(repo_rows),
+        )
         payload = _bundle_from_table(username, session, repo_rows)
         return _create_success_response(payload)
 
     cache_payload = _bundle_from_cache(username)
     if cache_payload:
+        logger.info(
+            "[BUNDLE_RESPONSE] request_id=%s username=%s job_id=%s source=cache repos=%d",
+            trace["request_id"],
+            username,
+            (cache_payload.get("job_id") or requested_job_id or "<latest>"),
+            len(cache_payload.get("data") or []),
+        )
         return _create_success_response(cache_payload)
 
     if session:
@@ -469,11 +537,26 @@ def get_single_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
     if not username or not repo:
         return _create_error_response("Username and repository name are required", 400)
 
+    trace = _get_trace_context(req)
     requested_job_id = req.params.get("job_id")
+    logger.info(
+        "[REPO_REQUEST] request_id=%s session_id=%s username=%s job_id=%s repo=%s",
+        trace["request_id"],
+        trace["session_id"],
+        username,
+        requested_job_id or "<latest>",
+        repo,
+    )
     session = _fetch_candidate_session(username, requested_job_id)
     repo_rows = _query_repo_rows(username, session, repo_names=[repo])
 
     if session and repo_rows:
+        logger.info(
+            "[REPO_RESPONSE] request_id=%s username=%s job_id=%s source=table",
+            trace["request_id"],
+            username,
+            (session.get("job_id") or requested_job_id or "<unknown>"),
+        )
         entry = _repo_row_to_bundle_entry(repo_rows[0])
         payload = {
             "username": username,
@@ -487,6 +570,12 @@ def get_single_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
 
     cache_payload = _repo_bundle_from_cache(username, repo)
     if cache_payload:
+        logger.info(
+            "[REPO_RESPONSE] request_id=%s username=%s job_id=%s source=cache",
+            trace["request_id"],
+            username,
+            (cache_payload.get("job_id") or requested_job_id or "<latest>"),
+        )
         return _create_success_response(cache_payload)
 
     if session:
@@ -501,8 +590,18 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
     if not username:
         return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
 
+    trace = _get_trace_context(req)
+
     body = _parse_json(req)
     force_refresh = bool(body.get("force_refresh", False))
+
+    logger.info(
+        "[REFRESH_REQUEST] request_id=%s session_id=%s username=%s force_refresh=%s",
+        trace["request_id"],
+        trace["session_id"],
+        username,
+        force_refresh,
+    )
 
     if not _queue_mode_enabled():
         return _create_error_response("Queue mode disabled or queue manager unavailable", 503)
@@ -517,6 +616,12 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
     cached_repos = freshness["cached_bundle"]
 
     if not stale_repos and not force_refresh:
+        logger.info(
+            "[REFRESH_RESPONSE] request_id=%s username=%s status=cached repos=%d",
+            trace["request_id"],
+            username,
+            len(cached_repos),
+        )
         return _create_success_response({"status": "cached", "repos_count": len(cached_repos)})
 
     repos_to_queue = stale_repos + cached_repos if force_refresh else stale_repos
@@ -525,6 +630,14 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
 
     job_id = str(uuid.uuid4())
     expected_repo_names = [repo.get("name") for repo in repos_to_queue if repo.get("name")]
+
+    logger.info(
+        "[REFRESH_JOB_CREATED] request_id=%s username=%s job_id=%s expected_repos=%d",
+        trace["request_id"],
+        username,
+        job_id,
+        len(expected_repo_names),
+    )
 
     _persist_job_metadata(job_id, username, expected_repo_names, force_refresh=force_refresh)
 
@@ -545,6 +658,14 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         enqueued,
         len(expected_repo_names),
         job_id,
+    )
+
+    logger.info(
+        "[REFRESH_ENQUEUED] request_id=%s username=%s job_id=%s enqueued=%d",
+        trace["request_id"],
+        username,
+        job_id,
+        enqueued,
     )
 
     if enqueued == 0:
@@ -580,6 +701,15 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
     if not job_id:
         return _create_error_response("job_id query parameter required", 400)
 
+    trace = _get_trace_context(req)
+    logger.info(
+        "[STATUS_REQUEST] request_id=%s session_id=%s username=%s job_id=%s",
+        trace["request_id"],
+        trace["session_id"],
+        username,
+        job_id,
+    )
+
     session = _fetch_candidate_session(username, job_id)
     cache_data: Optional[Dict[str, Any]] = None
 
@@ -611,6 +741,15 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
         "queued_repos": info.get("queued_repos", []),
         "synced_repos": info.get("synced_repos", []),
     }
+    logger.info(
+        "[STATUS_RESPONSE] request_id=%s username=%s job_id=%s status=%s completed=%s total=%s",
+        trace["request_id"],
+        username,
+        job_id,
+        payload.get("status"),
+        completed,
+        total,
+    )
     return _create_success_response(payload, cache_control="no-cache")
 
 

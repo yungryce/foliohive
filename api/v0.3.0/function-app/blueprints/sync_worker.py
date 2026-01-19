@@ -243,8 +243,31 @@ def _update_job_progress(
     queued_repos = job_info.get("queued_repos") or []
     expected_repos = job_info.get("expected_repos") or []
 
+    if not isinstance(queued_repos, list):
+        queued_repos = []
+    if not isinstance(expected_repos, list):
+        expected_repos = []
+
+    logger.info(
+        "[JOB_PROGRESS_START] job=%s user=%s repo=%s sync_failed=%s message_uuid=%s queued=%d expected=%d prior_completed=%s prior_total=%s",
+        job_id,
+        username,
+        repo_name,
+        sync_failed,
+        message_uuid or "<none>",
+        len([x for x in queued_repos if isinstance(x, str) and x]),
+        len([x for x in expected_repos if isinstance(x, str) and x]),
+        job_info.get("completed_repos"),
+        job_info.get("total_repos"),
+    )
+
     status_value = "failed" if sync_failed else "synced"
-    status_rows = None
+
+    # IMPORTANT: Avoid relying on list queries against RepoSyncStatus.
+    # Some emulators/providers can behave unexpectedly for filtered list operations,
+    # which can inflate progress by mixing status rows from other jobs/candidates.
+    # Instead, treat RepoSyncStatus as the source of truth and read per-repo via point reads
+    # for just the repos in this job.
     if table_manager.is_enabled():
         table_manager.upsert_repo_status(
             RepoSyncStatusRow(
@@ -256,14 +279,24 @@ def _update_job_progress(
                 error=None,
             )
         )
-        status_rows = table_manager.list_repo_statuses(job_id)
 
-    if status_rows:
-        synced = {row["repo_name"] for row in status_rows if row.get("status") == "synced"}
-        failed = {row["repo_name"] for row in status_rows if row.get("status") == "failed"}
+        tracked = queued_repos or expected_repos
+        tracked = [name for name in tracked if isinstance(name, str) and name]
+        if not tracked and repo_name:
+            tracked = [repo_name]
+
+        synced: set[str] = set()
+        failed: set[str] = set()
+        for name in tracked:
+            row = table_manager.get_repo_status(job_id, name)
+            status = (row or {}).get("status")
+            if status == "synced":
+                synced.add(name)
+            elif status == "failed":
+                failed.add(name)
     else:
-        synced = set(job_info.get("synced_repos", []))
-        failed = set(job_info.get("failed_repos", []))
+        synced = set(job_info.get("synced_repos", []) or [])
+        failed = set(job_info.get("failed_repos", []) or [])
         if repo_name:
             if sync_failed:
                 failed.add(repo_name)
@@ -275,8 +308,11 @@ def _update_job_progress(
     synced_list = sorted(synced)
     failed_list = sorted(failed)
     completed = len(synced_list)
-    inferred_total = len(queued_repos) or len(expected_repos) or completed
-    total_target = max(job_info.get("total_repos", 0), inferred_total, completed)
+
+    tracked_total = len([name for name in (queued_repos or expected_repos) if isinstance(name, str) and name])
+    inferred_total = tracked_total or completed
+    processed_count = len(synced | failed)
+    total_target = max(job_info.get("total_repos", 0), inferred_total, processed_count, completed)
 
     updates = {
         "synced_repos": synced_list,
@@ -285,7 +321,18 @@ def _update_job_progress(
         "total_repos": total_target,
     }
 
-    queued_set = set(queued_repos)
+    logger.info(
+        "[JOB_PROGRESS_COMPUTED] job=%s user=%s completed=%d total=%d synced=%d failed=%d pending=%d",
+        job_id,
+        username,
+        updates.get("completed_repos"),
+        updates.get("total_repos"),
+        len(synced_list),
+        len(failed_list),
+        len(pending),
+    )
+
+    queued_set = set(name for name in queued_repos if isinstance(name, str) and name)
     processed = synced | failed
     pending = queued_set - processed if queued_set else set()
 
@@ -330,11 +377,23 @@ def _update_job_progress(
 
     if table_manager.is_enabled():
         table_manager.update_candidate_session(username, job_id, updates)
+        logger.info(
+            "[JOB_SESSION_UPDATED] job=%s user=%s status=%s",
+            job_id,
+            username,
+            updates.get("status") or "<unchanged>",
+        )
     elif cache_manager.use_cache and os.getenv("CF_BLOB_CACHE_ENABLED", "true").lower() == "true":
         existing = _load_job_snapshot(job_id, username)
         merged = dict(existing)
         merged.update(updates)
         cache_manager.save(_job_cache_key(job_id), merged, ttl=JOB_METADATA_TTL_SECONDS)
+        logger.info(
+            "[JOB_CACHE_UPDATED] job=%s user=%s status=%s",
+            job_id,
+            username,
+            updates.get("status") or "<unchanged>",
+        )
 
     logger.info(
         "Job %s progress: %s/%s (status=%s)",
@@ -377,6 +436,14 @@ def process_sync_job(msg: func.QueueMessage) -> None:
         repo_name = payload.get("repo_name")
         fingerprint = payload.get("fingerprint")
         message_uuid = payload.get("message_uuid")
+
+        logger.info(
+            "[SYNC_MESSAGE] job=%s user=%s repo=%s message_uuid=%s",
+            job_id or "<unknown>",
+            username or "<unknown>",
+            repo_name or "<unknown>",
+            message_uuid or "<none>",
+        )
 
         if not username or not job_id or not repo_name:
             raise ValueError(

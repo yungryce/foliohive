@@ -56,6 +56,12 @@ def _load_cached_bundle(username: str, job_id: Optional[str] = None) -> List[Dic
     bundle_key = cache_manager.generate_cache_key(kind="bundle", username=username)
     result = cache_manager.get(bundle_key)
     if result.get("status") == "valid" and isinstance(result.get("data"), list):
+        logger.info(
+            "[MERGE_LOAD] user=%s job=%s source=bundle_cache repos=%d",
+            username,
+            job_id or "<unknown>",
+            len(result.get("data") or []),
+        )
         return list(result["data"])
     return []
 
@@ -109,6 +115,12 @@ def _load_repos_from_table(username: str, repo_names: Iterable[str], job_id: Opt
 
         documents.append(entry)
     if documents:
+        logger.info(
+            "[MERGE_LOAD] user=%s job=%s source=repo_table repos=%d",
+            username,
+            job_id or "<unknown>",
+            len(documents),
+        )
         return documents
     return []
 
@@ -198,9 +210,15 @@ def _resolve_fresh_repos(payload: Dict[str, Any], username: str, job_id: Optiona
         return [repo for repo in fresh if isinstance(repo, dict)]
     repo_names: Iterable[str] = payload.get("synced_repos") or payload.get("repo_names") or []
     if not repo_names:
-        status_rows = table_manager.list_repo_statuses(job_id) if (job_id and table_manager.is_enabled()) else []
-        if status_rows:
-            repo_names = [row.get("repo_name") for row in status_rows if row.get("status") == "synced"]
+        if job_id and table_manager.is_enabled():
+            session = table_manager.get_candidate_session(username, job_id) or {}
+            session_synced = session.get("synced_repos") or []
+            if isinstance(session_synced, list) and session_synced:
+                repo_names = session_synced
+            else:
+                status_rows = table_manager.list_repo_statuses(job_id)
+                if status_rows:
+                    repo_names = [row.get("repo_name") for row in status_rows if row.get("status") == "synced"]
     table_repos = _load_repos_from_table(username, repo_names, job_id)
     if table_repos:
         return table_repos
@@ -220,6 +238,16 @@ def _process_merge_payload(payload: Dict[str, Any]) -> bool:
     if not username or not job_id:
         raise ValueError("username and job_id are required")
 
+    repo_names_hint = payload.get("repo_names") or payload.get("synced_repos") or []
+    logger.info(
+        "[MERGE_START] job=%s user=%s repo_names_hint=%d has_fresh=%s has_cached=%s",
+        job_id,
+        username,
+        len(repo_names_hint) if isinstance(repo_names_hint, list) else 0,
+        bool(payload.get("fresh_repos")),
+        bool(payload.get("cached_bundle")),
+    )
+
     fresh_repos = _resolve_fresh_repos(payload, username, job_id)
     cached_bundle = _resolve_cached_bundle(payload, username, job_id)
     if not fresh_repos and not cached_bundle:
@@ -227,9 +255,23 @@ def _process_merge_payload(payload: Dict[str, Any]) -> bool:
         return False
 
     merged_bundle = _merge_repos(fresh_repos, cached_bundle)
+    logger.info(
+        "[MERGE_COMBINED] job=%s user=%s fresh=%d cached=%d merged=%d",
+        job_id,
+        username,
+        len(fresh_repos),
+        len(cached_bundle),
+        len(merged_bundle),
+    )
     fingerprint = _calculate_bundle_fingerprint(merged_bundle)
     bundle_cache_key = _save_bundle(username, merged_bundle, fingerprint)
     synced_repo_names = [name for name in (_extract_repo_name(repo) for repo in merged_bundle) if name]
+    logger.info(
+        "[MERGE_SAVE] job=%s user=%s synced_repos=%d",
+        job_id,
+        username,
+        len(synced_repo_names),
+    )
     _update_job_status(job_id, username, synced_repo_names, fingerprint)
     _enqueue_training_job(
         username=username,
@@ -245,6 +287,12 @@ def _process_merge_payload(payload: Dict[str, Any]) -> bool:
 def process_merge_job(msg: func.QueueMessage) -> None:
     try:
         payload = _deserialize_message(msg)
+        logger.info(
+            "[MERGE_MESSAGE] job=%s user=%s keys=%s",
+            payload.get("job_id") or "<unknown>",
+            payload.get("username") or "<unknown>",
+            sorted(list(payload.keys())),
+        )
         _process_merge_payload(payload)
     except Exception as exc:  # pragma: no cover
         logger.error("Merge worker failure: %s", exc, exc_info=True)

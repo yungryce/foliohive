@@ -161,6 +161,7 @@ class CacheManager:
         if _hot_cache_enabled():
             cached_value = _HOT_CACHE.get(cache_key)
             if cached_value is not None:
+                logger.info("cache-manager: hot cache hit key=%s", cache_key)
                 return {
                     "status": "valid",
                     "data": cached_value,
@@ -175,6 +176,7 @@ class CacheManager:
         blob_client = self._blob_service_client.get_blob_client(self.container_name, cache_key)
         try:
             if not blob_client.exists():
+                logger.info("cache-manager: blob miss key=%s", cache_key)
                 return {"status": "missing", "data": None}
 
             properties = blob_client.get_blob_properties()
@@ -197,6 +199,11 @@ class CacheManager:
 
             raw_payload = blob_client.download_blob().readall()
             payload = json.loads(raw_payload)
+            logger.info(
+                "cache-manager: blob hit key=%s size=%s",
+                cache_key,
+                properties.size,
+            )
             return {
                 "status": "valid",
                 "data": payload.get("data"),
@@ -219,6 +226,7 @@ class CacheManager:
         if _hot_cache_enabled():
             hot_ttl = ttl if ttl is not None else self.default_ttl
             _HOT_CACHE.set(cache_key, data, ttl=hot_ttl)
+            logger.info("cache-manager: hot cache set key=%s ttl=%s", cache_key, hot_ttl)
         self._ensure_initialized()
         if not self.use_cache or not self._blob_service_client:
             return False
@@ -242,6 +250,12 @@ class CacheManager:
                 overwrite=True,
                 content_settings=ContentSettings(content_type="application/json", content_encoding="utf-8"),
                 metadata=metadata,
+            )
+            logger.info(
+                "cache-manager: blob save key=%s expires_at=%s fingerprint=%s",
+                cache_key,
+                metadata.get("expires_at"),
+                metadata.get("fingerprint") or "<none>",
             )
             return True
         except Exception as exc:
