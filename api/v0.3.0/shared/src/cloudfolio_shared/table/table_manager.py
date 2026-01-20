@@ -397,7 +397,7 @@ class TableManager:
                 entity[key] = value if value is not None else ""
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
 
-    def get_candidate_session(self, username: str, job_id: str) -> Optional[Dict[str, Any]]:
+    def get_job_session(self, username: str, job_id: str) -> Optional[Dict[str, Any]]:
         table = self._get_table_client(self.table_names.job_sessions)
         if not table:
             return None
@@ -405,29 +405,29 @@ class TableManager:
             entity = table.get_entity(partition_key=username, row_key=job_id)
         except ResourceNotFoundError:
             return None
-        logger.info("[TABLE_GET_SESSION] user=%s job=%s found=true", username, job_id)
-        return self._deserialize_candidate_session(entity)
+        logger.info("[TABLE_GET_JOB_SESSION] user=%s job=%s found=true", username, job_id)
+        return self._deserialize_job_session(entity)
 
-    def list_candidate_sessions(self, username: str) -> List[Dict[str, Any]]:
+    def list_job_sessions(self, username: str) -> List[Dict[str, Any]]:
         table = self._get_table_client(self.table_names.job_sessions)
         if not table:
             return []
         # query = table.list_entities(f"PartitionKey eq '{username}'")
         query = table.list_entities(filter=f"PartitionKey eq '{username}'")
-        sessions = [self._deserialize_candidate_session(e) for e in query]
+        sessions = [self._deserialize_job_session(e) for e in query]
 
         # Defense-in-depth: if an emulator/provider ignores filters, avoid leaking other users' sessions.
         filtered = [session for session in sessions if session.get("username") == username]
         if sessions and len(filtered) != len(sessions):
             logger.warning(
-                "table-manager: list_candidate_sessions filter mismatch (requested=%s returned=%d kept=%d)",
+                "table-manager: list_job_sessions filter mismatch (requested=%s returned=%d kept=%d)",
                 username,
                 len(sessions),
                 len(filtered),
             )
         return filtered
 
-    def list_candidate_sessions_by_status(
+    def list_job_sessions_by_status(
         self,
         statuses: Iterable[str],
         *,
@@ -445,9 +445,9 @@ class TableManager:
             filters.append(f"updated_at lt '{updated_before}'")
         filter_str = " and ".join(filters)
         query = table.list_entities(filter=filter_str)
-        return [self._deserialize_candidate_session(e) for e in query]
+        return [self._deserialize_job_session(e) for e in query]
 
-    def _deserialize_candidate_session(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+    def _deserialize_job_session(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)

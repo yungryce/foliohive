@@ -209,7 +209,7 @@ def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, A
 
 def _load_job_snapshot(job_id: str, username: str) -> Dict[str, Any]:
     if table_manager.is_enabled():
-        session = table_manager.get_candidate_session(username, job_id)
+        session = table_manager.get_job_session(username, job_id)
         if session:
             return dict(session)
 

@@ -47,10 +47,10 @@ def mock_table_manager():
             'updated_at': datetime.now(timezone.utc).isoformat(),
         }
     
-    def get_candidate_session(username: str, job_id: str):
+    def get_job_session(username: str, job_id: str):
         return job_sessions.get((username, job_id))
     
-    def list_candidate_sessions(username: str):
+    def list_job_sessions(username: str):
         return [s for key, s in job_sessions.items() if key[0] == username]
     
     def update_candidate_session(username: str, job_id: str, updates: Dict[str, Any]):
@@ -106,8 +106,8 @@ def mock_table_manager():
         return model_metadata.get((username, fingerprint))
     
     manager.upsert_job_session = upsert_job_session
-    manager.get_candidate_session = get_candidate_session
-    manager.list_candidate_sessions = list_candidate_sessions
+    manager.get_job_session = get_job_session
+    manager.list_job_sessions = list_job_sessions
     manager.update_candidate_session = update_candidate_session
     manager.upsert_repo_metadata = upsert_repo_metadata
     manager.query_repo_metadata = query_repo_metadata
@@ -227,7 +227,7 @@ class TestTableFirstArchitecture:
             mock_table_manager.upsert_repo_metadata(repo_row)
         
         # API gateway reads session + repos
-        session = mock_table_manager.get_candidate_session(username, job_id)
+        session = mock_table_manager.get_job_session(username, job_id)
         assert session['status'] == 'completed'
         assert session['bundle_fingerprint'] == 'bundle_fp_xyz'
         
@@ -267,7 +267,7 @@ class TestJobProgressTracking:
         
         # Simulate sync completions
         for i, repo_name in enumerate(['repo-1', 'repo-2', 'repo-3'], start=1):
-            session = mock_table_manager.get_candidate_session(username, job_id)
+            session = mock_table_manager.get_job_session(username, job_id)
             synced = session['synced_repos'] + [repo_name]
             mock_table_manager.update_candidate_session(username, job_id, {
                 'completed_repos': i,
@@ -275,7 +275,7 @@ class TestJobProgressTracking:
             })
         
         # Final state
-        final = mock_table_manager.get_candidate_session(username, job_id)
+        final = mock_table_manager.get_job_session(username, job_id)
         assert final['completed_repos'] == 3
         assert set(final['synced_repos']) == {'repo-1', 'repo-2', 'repo-3'}
 
@@ -311,7 +311,7 @@ class TestJobProgressTracking:
             'completed_at': datetime.now(timezone.utc).isoformat(),
         })
         
-        final = mock_table_manager.get_candidate_session(username, job_id)
+        final = mock_table_manager.get_job_session(username, job_id)
         assert final['status'] == 'completed'
         assert final['bundle_fingerprint'] == 'merged_fp_abc'
 
@@ -377,7 +377,7 @@ class TestModelMetadataPersistence:
             'trained_at': datetime.now(timezone.utc).isoformat(),
         })
         
-        final = mock_table_manager.get_candidate_session(username, job_id)
+        final = mock_table_manager.get_job_session(username, job_id)
         assert final['model_status'] == 'trained'
         assert final['model_fingerprint'] == 'model_fp_new'
 
@@ -424,7 +424,7 @@ class TestEdgeCases:
             mock_table_manager.upsert_job_session(row)
         
         # Query all sessions for user
-        sessions = mock_table_manager.list_candidate_sessions(username)
+        sessions = mock_table_manager.list_job_sessions(username)
         assert len(sessions) == 3
         
         # Should sort by updated_at/created_at and return latest
@@ -462,7 +462,7 @@ class TestEdgeCases:
             'synced_repos': ['repo-1', 'repo-2', 'repo-3'],
         })
         
-        session = mock_table_manager.get_candidate_session(username, job_id)
+        session = mock_table_manager.get_job_session(username, job_id)
         assert session['completed_repos'] == 3
         assert session['total_repos'] == 5
         assert len(session['synced_repos']) == 3

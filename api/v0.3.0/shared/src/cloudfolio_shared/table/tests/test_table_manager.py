@@ -121,7 +121,7 @@ def test_candidate_session_roundtrip(table_manager: TableManager) -> None:
         {"completed_repos": 1, "synced_repos": ["api"], "status": "synced"},
     )
 
-    stored = table_manager.get_candidate_session("alice", "job-1")
+    stored = table_manager.get_job_session("alice", "job-1")
     assert stored is not None
     assert stored["completed_repos"] == 1
     assert stored["status"] == "synced"

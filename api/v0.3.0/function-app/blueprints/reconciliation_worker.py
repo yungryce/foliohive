@@ -93,14 +93,14 @@ def _collect_job_sets(job_id: str, repo_names: Iterable[str]) -> Tuple[Set[str],
     return synced, failed
 
 
-def _reconcile_session(session: Dict[str, Any]) -> None:
-    job_id = session.get("job_id")
-    username = session.get("username")
-    trace_id = session.get("trace_id")
+def _reconcile_session(job: Dict[str, Any]) -> None:
+    job_id = job.get("job_id")
+    username = job.get("username")
+    trace_id = job.get("trace_id")
     if not job_id or not username:
         return
 
-    expected = session.get("expected_repos") or session.get("queued_repos") or []
+    expected = job.get("expected_repos") or job.get("queued_repos") or []
     if not expected:
         return
 
@@ -108,7 +108,7 @@ def _reconcile_session(session: Dict[str, Any]) -> None:
         "[RECONCILE_CHECK] job=%s user=%s status=%s expected=%d",
         job_id,
         username,
-        session.get("status") or "<unknown>",
+        job.get("status") or "<unknown>",
         len(expected) if isinstance(expected, list) else 0,
     )
 
@@ -125,7 +125,7 @@ def _reconcile_session(session: Dict[str, Any]) -> None:
     )
 
     requeue_cooldown = _env_int("CF_RECONCILE_REQUEUE_COOLDOWN_SECONDS", 600)
-    can_requeue = _should_requeue(session.get("last_requeue_at"), requeue_cooldown)
+    can_requeue = _should_requeue(job.get("last_requeue_at"), requeue_cooldown)
 
     if missing and can_requeue and queue_manager.is_enabled():
         requeued: List[str] = []
@@ -139,13 +139,13 @@ def _reconcile_session(session: Dict[str, Any]) -> None:
                 {
                     "queued_repos": sorted(set(expected) | set(requeued)),
                     "last_requeue_at": _utcnow().isoformat(),
-                    "status": session.get("status") or "queued",
+                    "status": job.get("status") or "queued",
                 },
             )
             logger.info("[RECONCILE] job=%s requeued=%d", job_id, len(requeued))
 
     if _should_enqueue_merge(expected, synced, failed):
-        if session.get("merge_enqueued_at"):
+        if job.get("merge_enqueued_at"):
             return
         if queue_manager.is_enabled():
             queued = queue_manager.enqueue_merge_job(job_id, username, sorted(synced), trace_id=trace_id)
@@ -165,14 +165,14 @@ def reconcile_jobs(timer: func.TimerRequest) -> None:
         return
     min_age_seconds = _env_int("CF_RECONCILE_MIN_AGE_SECONDS", 180)
     updated_before = (_utcnow() - timedelta(seconds=min_age_seconds)).isoformat()
-    sessions = table_manager.list_candidate_sessions_by_status(
+    jobs = table_manager.list_job_sessions_by_status(
         ["queued", "processing", "synced"],
         updated_before=updated_before,
     )
-    if not sessions:
+    if not jobs:
         return
-    for session in sessions:
-        _reconcile_session(session)
+    for job in jobs:
+        _reconcile_session(job)
 
 
 @bp.timer_trigger(arg_name="timer", schedule=CACHE_CLEANUP_SCHEDULE, run_on_startup=False)

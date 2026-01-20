@@ -188,11 +188,11 @@ def _fetch_candidate_session(username: str, job_id: Optional[str] = None) -> Opt
     if not _table_enabled():
         return None
     if job_id:
-        session = table_manager.get_candidate_session(username, job_id)
+        session = table_manager.get_job_session(username, job_id)
         logger.info("Fetched candidate session for user=%s job_id=%s: %s", username, job_id, "found" if session else "not found")
         return _normalize_candidate_session(session, username, job_id)
 
-    sessions = table_manager.list_candidate_sessions(username)
+    sessions = table_manager.list_job_sessions(username)
     if not sessions:
         return None
     normalized = [_normalize_candidate_session(session, username, session.get("RowKey")) for session in sessions]
@@ -438,7 +438,7 @@ def _upsert_job_session_row(
     if not _table_enabled():
         return
 
-    existing = table_manager.get_candidate_session(username, job_id)
+    existing = table_manager.get_job_session(username, job_id)
     existing_synced = existing.get("synced_repos", []) if existing else []
     merged_synced = list(synced_repos or existing_synced)
     row = JobSessionRow(
