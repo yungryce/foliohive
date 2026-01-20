@@ -45,3 +45,10 @@ Changes to `ui/src/app`
 - Then fetch candidates for that session via new endpoint
 - Update candidate-context.service.ts to store/retrieve candidates under new session key
 - Update UI components to reflect session-based candidate tracking
+
+
+Further Considerations
+Backend enhancement (optional): Add WebSocket/SSE support for real-time notifications to eliminate polling (future improvement)
+Cache strategy: Consider invalidating cache when new job starts to prevent stale data display
+Error handling: What if job fails? Show error message with retry option
+Navigation UX: Should landing page wait for completion before navigating? Or navigate with loading state?

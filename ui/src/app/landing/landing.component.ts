@@ -27,37 +27,45 @@ export class LandingComponent implements OnInit {
     this.error = '';
     const username = (this.username || '').trim();
     if (!username) {
+      console.log('[LandingComponent] No username provided.');
       this.error = 'Enter a GitHub username.';
       return;
     }
 
+    console.log(`[LandingComponent] Starting process for username: ${username}`);
     this.loading = true;
 
     // Check if bundle already exists
     this.repoService.checkBundle(username).subscribe({
       next: (exists) => {
+        console.log(`[LandingComponent] Bundle check for ${username}: ${exists ? 'exists' : 'does not exist'}`);
         if (exists) {
           // Bundle exists, navigate directly without forcing refresh
           this.candidateContext.upsertCandidate({ username });
           this.loading = false;
+          console.log(`[LandingComponent] Navigating to /ai for username: ${username}`);
           this.router.navigate(['/ai'], { queryParams: { username } });
         } else {
           // Bundle doesn't exist, trigger refresh
+          console.log(`[LandingComponent] Triggering refresh for username: ${username}`);
           this.repoService.startBuild(username, true).subscribe({
-            next: (res) => {
-              const jobId = res?.job_id;
-              this.candidateContext.upsertCandidate({ username, jobId: jobId || undefined });
+            next: (response) => {
+              const jobId = response?.job_id;
+              console.log(`[LandingComponent] Refresh started successfully for username: ${username}, job_id: ${jobId}`);
+              this.candidateContext.upsertCandidate({ username });
               this.loading = false;
-              this.router.navigate(['/ai'], { queryParams: { username, job_id: jobId || null } });
+              this.router.navigate(['/ai'], { queryParams: { username, job_id: jobId } });
             },
-            error: () => {
+            error: (err) => {
+              console.error(`[LandingComponent] Failed to start refresh for username: ${username}`, err);
               this.loading = false;
               this.error = 'Failed to start refresh. Is api-gateway running?';
             },
           });
         }
       },
-      error: () => {
+      error: (err) => {
+        console.error(`[LandingComponent] Failed to check bundle for username: ${username}`, err);
         this.loading = false;
         this.error = 'Failed to check bundle. Is api-gateway running?';
       },

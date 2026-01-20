@@ -717,7 +717,7 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
             enqueued_names.append(repo_name)
 
     logger.info(
-        "[REFRESH_ENQUEUED] request_id=%s username=%s job_id=%s enqueued=%d"/len(expected_repo_names),
+        "[REFRESH_ENQUEUED] request_id=%s username=%s job_id=%s enqueued=%d/%d",
         trace["request_id"],
         username,
         job_id,

@@ -35,9 +35,10 @@ export class AiComponent implements OnInit, OnDestroy {
   candidates$ = this.candidateContext.candidates$;
 
   activeUsername: string | null = null;
-  activeJobId: string | null = null;
   skillsText: string = '';
 
+  // Job status tracking
+  activeJobId: string | null = null;
   status: JobStatusResponse | null = null;
   polling = false;
 
@@ -55,12 +56,22 @@ export class AiComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     const usernameFromUrl = (this.route.snapshot.queryParamMap.get('username') || '').trim();
     const jobIdFromUrl = (this.route.snapshot.queryParamMap.get('job_id') || '').trim();
+    
     if (usernameFromUrl) {
-      this.candidateContext.upsertCandidate({ username: usernameFromUrl, jobId: jobIdFromUrl || undefined });
+      this.candidateContext.upsertCandidate({ username: usernameFromUrl });
     }
+    
     this.syncActiveFromContext();
-    this.startPollingIfPossible();
-    this.checkBundleStatusIfReady();
+    
+    // If we have a fresh job_id from URL, start polling for its completion
+    if (jobIdFromUrl) {
+      console.log(`[AiComponent] Fresh job_id detected: ${jobIdFromUrl}, starting status polling`);
+      this.activeJobId = jobIdFromUrl;
+      this.startPollingJobStatus(jobIdFromUrl);
+    } else {
+      // No fresh job, check if bundle already exists
+      this.checkBundleStatusIfReady();
+    }
   }
 
   ngOnDestroy(): void {
@@ -70,7 +81,6 @@ export class AiComponent implements OnInit, OnDestroy {
   private syncActiveFromContext(): void {
     const active = this.candidateContext.activeCandidate;
     this.activeUsername = active?.username ?? null;
-    this.activeJobId = active?.jobId ?? null;
     this.skillsText = active?.skillsText ?? '';
   }
 
@@ -78,52 +88,107 @@ export class AiComponent implements OnInit, OnDestroy {
     this.candidateContext.setActive(username);
     this.syncActiveFromContext();
     this.noRepositories = false;
+    this.status = null;
+    this.activeJobId = null;
+    this.polling = false;
+    this.pollSub?.unsubscribe();
+    
     this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { username: this.activeUsername, job_id: this.activeJobId || null },
+      queryParams: { username: this.activeUsername, job_id: null },
       queryParamsHandling: 'merge',
     });
-    this.startPollingIfPossible();
     this.checkBundleStatusIfReady();
     this.suggested = [];
     this.answerHtml = null;
     this.repositoriesUsed = [];
   }
 
-  private startPollingIfPossible(): void {
-    this.pollSub?.unsubscribe();
-    this.status = null;
-    this.polling = false;
-
+  private startPollingJobStatus(jobId: string): void {
     const username = this.activeUsername;
-    const jobId = this.activeJobId;
-    if (!username || !jobId) return;
+    if (!username || !jobId) {
+      console.warn('[AiComponent] Cannot start polling: missing username or job_id');
+      return;
+    }
 
     this.polling = true;
-    this.pollSub = timer(0, 2000)
-      .pipe(switchMap(() => this.repoService.getJobStatus(username, jobId)))
-      .subscribe((status) => {
-        if (!status) return;
-        this.status = status;
-        if (status.status === 'completed') {
-          this.polling = false;
-          this.pollSub?.unsubscribe();
-          this.loadSuggestions();
-          this.checkBundleStatusIfReady(true);
+    this.noRepositories = false;
+    console.log(`[AiComponent] Starting job status polling for ${username}, job_id: ${jobId}`);
+
+    // Poll every 3 seconds for up to 2 minutes (40 attempts)
+    this.pollSub = timer(0, 3000).pipe(
+      switchMap(() => this.repoService.getJobStatus(username, jobId))
+    ).subscribe({
+      next: (statusResponse) => {
+        if (!statusResponse) {
+          console.warn('[AiComponent] Job status returned null, stopping poll');
+          this.stopPollingAndCheck();
+          return;
         }
-      });
+
+        this.status = statusResponse;
+        console.log(`[AiComponent] Job status: ${statusResponse.status}, progress: ${statusResponse.progress?.completed}/${statusResponse.progress?.total}`);
+
+        // Check if job is complete
+        if (statusResponse.status === 'completed') {
+          console.log(`[AiComponent] Job completed, loading bundle`);
+          this.stopPollingAndCheck();
+        } else if (statusResponse.status === 'failed') {
+          console.error(`[AiComponent] Job failed`);
+          this.stopPollingAndCheck();
+        }
+        // Continue polling if status is 'processing' or 'queued'
+      },
+      error: (err) => {
+        console.error('[AiComponent] Job status polling error:', err);
+        this.stopPollingAndCheck();
+      }
+    });
+
+    // Safety timeout: stop polling after 2 minutes
+    setTimeout(() => {
+      if (this.polling) {
+        console.warn('[AiComponent] Polling timeout reached (2 minutes), stopping');
+        this.stopPollingAndCheck();
+      }
+    }, 120000);
   }
 
-  private checkBundleStatusIfReady(force = false): void {
+  private stopPollingAndCheck(): void {
+    this.polling = false;
+    this.pollSub?.unsubscribe();
+    this.pollSub = null;
+    
+    // Clear job_id from URL to prevent re-polling on component reuse
+    this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { job_id: null },
+      queryParamsHandling: 'merge',
+    });
+    
+    this.activeJobId = null;
+    this.checkBundleStatusIfReady();
+  }
+
+  private checkBundleStatusIfReady(): void {
     const username = this.activeUsername;
     if (!username) return;
-    if (this.polling && !force) return;
 
-    const jobId = this.activeJobId || undefined;
-    this.repoService.getUserBundle(username, jobId, true).subscribe(bundle => {
+    // Don't check if we're still polling for an active job
+    if (this.polling && this.activeJobId) {
+      console.log(`[AiComponent] Skipping bundle check - still polling job ${this.activeJobId}`);
+      return;
+    }
+
+    this.repoService.getUserBundle(username, undefined, true).subscribe(bundle => {
       const hasRepos = Array.isArray(bundle?.data) && bundle.data.length > 0;
       this.noRepositories = !hasRepos;
-      if (!hasRepos) {
+      
+      if (hasRepos) {
+        console.log(`[AiComponent] Bundle loaded with ${bundle.data.length} repositories`);
+        this.loadSuggestions();
+      } else {
+        console.log(`[AiComponent] No repositories found for ${username}`);
         this.suggested = [];
         this.answerHtml = null;
         this.repositoriesUsed = [];
@@ -134,7 +199,6 @@ export class AiComponent implements OnInit, OnDestroy {
   private loadSuggestions(): void {
     const username = this.activeUsername;
     if (!username) return;
-    const jobId = this.activeJobId || undefined;
     const keywords = (this.skillsText || '')
       .split(/[,\n]/g)
       .map(s => s.trim().toLowerCase())
@@ -145,7 +209,7 @@ export class AiComponent implements OnInit, OnDestroy {
       return;
     }
 
-    this.repoService.getUserBundle(username, jobId, false).subscribe(bundle => {
+    this.repoService.getUserBundle(username, undefined, false).subscribe(bundle => {
       const repos = Array.isArray(bundle?.data) ? bundle.data : [];
       const scored: SuggestedRepo[] = repos
         .map((repo: any) => {
@@ -217,10 +281,9 @@ export class AiComponent implements OnInit, OnDestroy {
 
     this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { username: this.activeUsername, job_id: this.activeJobId || null },
+      queryParams: { username: this.activeUsername },
       queryParamsHandling: 'merge',
     });
-    this.startPollingIfPossible();
     this.checkBundleStatusIfReady();
   }
 }

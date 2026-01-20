@@ -37,7 +37,6 @@ export class ProjectComponent implements OnInit {
   contentHtml: SafeHtml = '';
 
   username = '';
-  jobId?: string;
   repoName = '';
   repo$!: Observable<RepoDetailVM | null>;
 
@@ -49,10 +48,9 @@ export class ProjectComponent implements OnInit {
 
     const active = this.candidateContext.activeCandidate;
     this.username = active?.username ?? '';
-    this.jobId = active?.jobId;
 
     this.repo$ = this.repoBundleService
-      .getUserSingleRepoBundle(this.username, this.repoName, this.jobId)
+      .getUserSingleRepoBundle(this.username, this.repoName, undefined)
       .pipe(
         map((res: SingleRepoBundleResponse | null | undefined) => {
           this.repo = res?.data;

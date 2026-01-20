@@ -34,7 +34,6 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   filteredRepos$!: Observable<RepoCardVM[]>;
   filterByDocumentation = false; 
   username = '';
-  jobId?: string;
   missingCandidate = false;
 
   // Filter options
@@ -71,10 +70,8 @@ export class ProjectsComponent implements OnInit, OnDestroy {
           return;
         }
 
-        const active = this.candidateContext.activeCandidate;
         this.missingCandidate = false;
         this.username = username;
-        this.jobId = active?.jobId;
         this.loadRepoBundle();
       });
   }
@@ -89,17 +86,13 @@ export class ProjectsComponent implements OnInit, OnDestroy {
     this.building = true;
     this.buildMessage = 'Starting build… This may take a few minutes.';
     this.repoBundleService.startBuild(this.username, true).subscribe({
-      next: (resp) => {
-        const nextJobId = resp?.job_id as string | undefined;
-        if (nextJobId) {
-          this.jobId = nextJobId;
-          this.candidateContext.upsertCandidate({ username: this.username, jobId: nextJobId });
-        }
+      next: () => {
+        this.candidateContext.upsertCandidate({ username: this.username });
 
         // Begin a light polling loop to refresh the bundle for ~2 minutes
         timer(5000, 5000).pipe(
           takeWhile((_, i) => i < 24), // 24*5s ≈ 2 minutes
-          switchMap(() => this.repoBundleService.getUserBundle(this.username, this.jobId, false))
+          switchMap(() => this.repoBundleService.getUserBundle(this.username, undefined, false))
         ).subscribe({
           next: b => {
             // Stop polling when data appears
@@ -122,7 +115,7 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   }
 
   loadRepoBundle(): void {
-    this.repoBundle$ = this.repoBundleService.getUserBundle(this.username, this.jobId).pipe(
+    this.repoBundle$ = this.repoBundleService.getUserBundle(this.username).pipe(
       tap(bundle => {
         this.bundleEmpty = !(Array.isArray(bundle?.data) && bundle.data.length > 0);
       })
