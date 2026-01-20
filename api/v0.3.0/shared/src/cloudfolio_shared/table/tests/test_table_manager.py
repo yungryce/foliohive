@@ -5,7 +5,7 @@ import pytest  # type: ignore
 from azure.core.exceptions import ResourceNotFoundError  # type: ignore
 
 from cloudfolio_shared.table import (  # type: ignore
-    CandidateSessionRow,
+    JobSessionRow,
     ModelMetadataRow,
     RepoMetadataRow,
     RepoSyncStatusRow,
@@ -106,14 +106,14 @@ def table_manager() -> TableManager:
 
 
 def test_candidate_session_roundtrip(table_manager: TableManager) -> None:
-    row = CandidateSessionRow(
+    row = JobSessionRow(
         username="alice",
         job_id="job-1",
         expected_repos=["api", "web"],
         queued_repos=["api"],
         status="queued",
     )
-    table_manager.upsert_candidate_session(row)
+    table_manager.upsert_job_session(row)
 
     table_manager.update_candidate_session(
         "alice",

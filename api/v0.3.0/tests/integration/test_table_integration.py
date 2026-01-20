@@ -17,18 +17,18 @@ import pytest
 
 @pytest.fixture
 def mock_table_manager():
-    """Mock table_manager with CandidateSessions, RepoMetadata, ModelMetadata tables."""
+    """Mock table_manager with JobSessions, RepoMetadata, ModelMetadata tables."""
     manager = MagicMock()
     manager.is_enabled.return_value = True
     
     # In-memory stores for each table
-    candidate_sessions: Dict[tuple, Dict[str, Any]] = {}
+    job_sessions: Dict[tuple, Dict[str, Any]] = {}
     repo_metadata: Dict[tuple, Dict[str, Any]] = {}
     model_metadata: Dict[tuple, Dict[str, Any]] = {}
     
-    def upsert_candidate_session(row):
+    def upsert_job_session(row):
         key = (row.username, row.job_id)
-        candidate_sessions[key] = {
+        job_sessions[key] = {
             'PartitionKey': row.username,
             'RowKey': row.job_id,
             'username': row.username,
@@ -48,16 +48,16 @@ def mock_table_manager():
         }
     
     def get_candidate_session(username: str, job_id: str):
-        return candidate_sessions.get((username, job_id))
+        return job_sessions.get((username, job_id))
     
     def list_candidate_sessions(username: str):
         return [s for key, s in candidate_sessions.items() if key[0] == username]
     
     def update_candidate_session(username: str, job_id: str, updates: Dict[str, Any]):
         key = (username, job_id)
-        if key in candidate_sessions:
-            candidate_sessions[key].update(updates)
-            candidate_sessions[key]['updated_at'] = datetime.now(timezone.utc).isoformat()
+        if key in job_sessions:
+            job_sessions[key].update(updates)
+            job_sessions[key]['updated_at'] = datetime.now(timezone.utc).isoformat()
     
     def upsert_repo_metadata(row):
         key = (row.username, row.repo_name)
@@ -105,7 +105,7 @@ def mock_table_manager():
     def get_model_metadata(username: str, fingerprint: str):
         return model_metadata.get((username, fingerprint))
     
-    manager.upsert_candidate_session = upsert_candidate_session
+    manager.upsert_job_session = upsert_job_session
     manager.get_candidate_session = get_candidate_session
     manager.list_candidate_sessions = list_candidate_sessions
     manager.update_candidate_session = update_candidate_session
@@ -184,13 +184,13 @@ class TestTableFirstArchitecture:
 
     def test_api_gateway_reads_bundle_from_table(self, mock_table_manager):
         """Verify API gateway serves bundle data from CandidateSessions + RepoMetadata tables."""
-        from cloudfolio_shared.table import CandidateSessionRow, RepoMetadataRow
+        from cloudfolio_shared.table import JobSessionRow, RepoMetadataRow
         
         username = 'testuser'
         job_id = str(uuid.uuid4())
         
         # Create session
-        session_row = CandidateSessionRow(
+        session_row = JobSessionRow(
             username=username,
             job_id=job_id,
             status='completed',
@@ -206,7 +206,7 @@ class TestTableFirstArchitecture:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=None,
         )
-        mock_table_manager.upsert_candidate_session(session_row)
+        mock_table_manager.upsert_job_session(session_row)
         
         # Create repo metadata
         for repo_name in ['repo-a', 'repo-b']:
@@ -241,13 +241,13 @@ class TestJobProgressTracking:
 
     def test_sync_worker_updates_progress_incrementally(self, mock_table_manager):
         """Verify sync worker updates completed_repos and synced_repos as jobs complete."""
-        from cloudfolio_shared.table import CandidateSessionRow
+        from cloudfolio_shared.table import JobSessionRow
         
         username = 'testuser'
         job_id = str(uuid.uuid4())
         
         # Initialize job
-        row = CandidateSessionRow(
+        row = JobSessionRow(
             username=username,
             job_id=job_id,
             status='processing',
@@ -263,7 +263,7 @@ class TestJobProgressTracking:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=None,
         )
-        mock_table_manager.upsert_candidate_session(row)
+        mock_table_manager.upsert_job_session(row)
         
         # Simulate sync completions
         for i, repo_name in enumerate(['repo-1', 'repo-2', 'repo-3'], start=1):
@@ -281,12 +281,12 @@ class TestJobProgressTracking:
 
     def test_merge_worker_marks_job_completed(self, mock_table_manager):
         """Verify merge worker sets status=completed and bundle_fingerprint."""
-        from cloudfolio_shared.table import CandidateSessionRow
+        from cloudfolio_shared.table import JobSessionRow
         
         username = 'testuser'
         job_id = str(uuid.uuid4())
         
-        row = CandidateSessionRow(
+        row = JobSessionRow(
             username=username,
             job_id=job_id,
             status='processing',
@@ -302,7 +302,7 @@ class TestJobProgressTracking:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=None,
         )
-        mock_table_manager.upsert_candidate_session(row)
+        mock_table_manager.upsert_job_session(row)
         
         # Merge worker updates status + fingerprint
         mock_table_manager.update_candidate_session(username, job_id, {
@@ -347,12 +347,12 @@ class TestModelMetadataPersistence:
 
     def test_training_completion_updates_candidate_session(self, mock_table_manager):
         """Verify training worker updates CandidateSessions with model_fingerprint."""
-        from cloudfolio_shared.table import CandidateSessionRow
+        from cloudfolio_shared.table import JobSessionRow
         
         username = 'testuser'
         job_id = str(uuid.uuid4())
         
-        row = CandidateSessionRow(
+        row = JobSessionRow(
             username=username,
             job_id=job_id,
             status='completed',
@@ -368,7 +368,7 @@ class TestModelMetadataPersistence:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=None,
         )
-        mock_table_manager.upsert_candidate_session(row)
+        mock_table_manager.upsert_job_session(row)
         
         # Training worker updates model fields
         mock_table_manager.update_candidate_session(username, job_id, {
@@ -398,14 +398,14 @@ class TestEdgeCases:
 
     def test_missing_job_id_returns_latest_session(self, mock_table_manager):
         """Verify API gateway returns latest session when job_id not specified."""
-        from cloudfolio_shared.table import CandidateSessionRow
+        from cloudfolio_shared.table import JobSessionRow
         
         username = 'testuser'
         
         # Create multiple sessions
         for i in range(3):
             job_id = f'job-{i}'
-            row = CandidateSessionRow(
+            row = JobSessionRow(
                 username=username,
                 job_id=job_id,
                 status='completed',
@@ -421,7 +421,7 @@ class TestEdgeCases:
                 created_at=datetime(2025, 1, 10 + i, tzinfo=timezone.utc).isoformat(),
                 updated_at=None,
             )
-            mock_table_manager.upsert_candidate_session(row)
+            mock_table_manager.upsert_job_session(row)
         
         # Query all sessions for user
         sessions = mock_table_manager.list_candidate_sessions(username)
@@ -433,12 +433,12 @@ class TestEdgeCases:
 
     def test_partial_repo_sync_tracked_correctly(self, mock_table_manager):
         """Verify progress tracking when only some repos complete."""
-        from cloudfolio_shared.table import CandidateSessionRow
+        from cloudfolio_shared.table import JobSessionRow
         
         username = 'testuser'
         job_id = str(uuid.uuid4())
         
-        row = CandidateSessionRow(
+        row = JobSessionRow(
             username=username,
             job_id=job_id,
             status='processing',
@@ -454,7 +454,7 @@ class TestEdgeCases:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=None,
         )
-        mock_table_manager.upsert_candidate_session(row)
+        mock_table_manager.upsert_job_session(row)
         
         # Sync only 3 repos
         mock_table_manager.update_candidate_session(username, job_id, {

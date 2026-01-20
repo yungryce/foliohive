@@ -21,7 +21,7 @@ from azure.identity import DefaultAzureCredential
 __all__ = [
     "TableManager",
     "TableNames",
-    "CandidateSessionRow",
+    "JobSessionRow",
     "RepoMetadataRow",
     "RepoSyncStatusRow",
     "ModelMetadataRow",
@@ -43,8 +43,8 @@ class TableNames:
 
 
 @dataclass
-class CandidateSessionRow:
-    """Representation of a candidate session/job row."""
+class JobSessionRow:
+    """Representation of a job-tracking session row for a candidate."""
 
     username: str
     job_id: str
@@ -287,12 +287,12 @@ class TableManager:
     # ------------------------------------------------------------------
     # Candidate sessions
     # ------------------------------------------------------------------
-    def upsert_candidate_session(self, row: CandidateSessionRow) -> None:
+    def upsert_job_session(self, row: JobSessionRow) -> None:
         table = self._get_table_client(self.table_names.candidate_sessions)
         if not table:
             return
         logger.info(
-            "[TABLE_UPSERT_SESSION] user=%s job=%s status=%s total=%s completed=%s expected=%d queued=%d synced=%d",
+            "[TABLE_UPSERT_JOB_SESSION] user=%s job=%s status=%s total=%s completed=%s expected=%d queued=%d synced=%d",
             row.username,
             row.job_id,
             row.status,

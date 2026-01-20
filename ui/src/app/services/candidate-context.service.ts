@@ -3,7 +3,6 @@ import { BehaviorSubject } from 'rxjs';
 
 export interface CandidateContext {
   username: string;
-  jobId?: string;
   skillsText?: string;
 }
 
@@ -14,8 +13,8 @@ export class CandidateContextService {
 
   private readonly activeUsernameSubject = new BehaviorSubject<string | null>(null);
   readonly activeUsername$ = this.activeUsernameSubject.asObservable();
-  private readonly storageKey = 'cloudfolio.trackedCandidates';
-  private readonly activeKey = 'cloudfolio.activeCandidate';
+  private readonly storageKey = 'foliohive.trackedCandidates';
+  private readonly activeKey = 'foliohive.activeCandidate';
   private readonly maxStored = 5;
 
   get activeUsername(): string | null {

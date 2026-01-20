@@ -126,7 +126,7 @@ Queue properties: default visibility timeout 30s, poison queue enabled after 5 r
 - **Location & Scope** – Introduce `apps/shared/src/cloudfolio_shared/table/table_manager.py` with a `TableManager` class that owns Azure Data Tables connections, table name discovery, and resilient CRUD helpers. Keep `cache_manager` focused on business-level workflows that combine Table access with queue emission or blob lookups.
 - **Responsibilities**:
   1. Instantiate a single `TableServiceClient` based on `AzureWebJobsStorage` or explicit `TABLE_STORAGE_CONNECTION_STRING`.
-  2. Provide typed row operations (`upsert_candidate_session`, `append_repo_metadata`, `get_repo_metadata_by_job`, `update_model_metadata`). Each helper returns normalized dictionaries ready for higher-level cache orchestration.
+  2. Provide typed row operations (`upsert_job_session`, `append_repo_metadata`, `get_repo_metadata_by_job`, `update_model_metadata`). Each helper returns normalized dictionaries ready for higher-level cache orchestration.
   3. Handle retries, ETag concurrency, and structured logging; bubble up typed errors for poison queue handling.
 - **Public API Sketch**:
   ```text
@@ -138,10 +138,10 @@ Queue properties: default visibility timeout 30s, poison queue enabled after 5 r
     telemetry: Logger
   )
 
-  upsert_candidate_session(session: CandidateSessionRow) -> None
+  upsert_job_session(session: JobSessionRow) -> None
   batch_upsert_repo_metadata(rows: list[RepoMetadataRow]) -> None
   query_repo_metadata(username: str, job_id: str | None = None) -> list[RepoMetadataRow]
-  get_bundle_summary(username: str, job_id: str) -> CandidateSessionRow | None
+  get_bundle_summary(username: str, job_id: str) -> JobSessionRow | None
   upsert_model_metadata(metadata: ModelMetadataRow) -> None
   ```
   Rows can be Python dataclasses or TypedDicts defined under `cloudfolio_shared.table.schemas` to promote reuse across workers and tests.

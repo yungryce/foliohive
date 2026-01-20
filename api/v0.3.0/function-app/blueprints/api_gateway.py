@@ -25,7 +25,7 @@ from cloudfolio_shared import (
     table_manager,
 )
 
-from cloudfolio_shared.table import CandidateSessionRow
+from cloudfolio_shared.table import JobSessionRow
 
 try:  # Azure SDK may be unavailable in local dev; ignore import failures gracefully
     from azure.core.exceptions import ResourceNotFoundError
@@ -328,7 +328,7 @@ def _identify_repo_freshness(username: str) -> Dict[str, Any]:
         bundle_cache_key,
     )
 
-    all_repos = repo_manager.get_all_repos_metadata(username=username, include_languages=True)
+    all_repos = repo_manager.get_all_repos_metadata(username=username, include_languages=False)
     current_fingerprints = {
         repo.get("name"): FingerprintManager.generate_metadata_fingerprint(repo) for repo in all_repos if repo.get("name")
     }
@@ -396,7 +396,7 @@ def _queue_mode_enabled() -> bool:
     return env_flag and queue_manager.is_enabled()
 
 
-def _upsert_candidate_session_row(
+def _upsert_job_session_row(
     job_id: str,
     username: str,
     expected_repo_names: List[str],
@@ -417,7 +417,7 @@ def _upsert_candidate_session_row(
     existing = table_manager.get_candidate_session(username, job_id)
     existing_synced = existing.get("synced_repos", []) if existing else []
     merged_synced = list(synced_repos or existing_synced)
-    row = CandidateSessionRow(
+    row = JobSessionRow(
         username=username,
         job_id=job_id,
         status=status,
@@ -436,7 +436,7 @@ def _upsert_candidate_session_row(
         request_id=request_id if not existing else (existing.get("request_id") or request_id),
         session_id=session_id if not existing else (existing.get("session_id") or session_id),
     )
-    table_manager.upsert_candidate_session(row)
+    table_manager.upsert_job_session(row)
 
 
 def _persist_job_metadata(
@@ -472,7 +472,7 @@ def _persist_job_metadata(
         "session_id": session_id,
     }
 
-    _upsert_candidate_session_row(
+    _upsert_job_session_row(
         job_id,
         username,
         expected_repo_names,
@@ -690,18 +690,12 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
             enqueued_names.append(repo_name)
 
     logger.info(
-        "--------------Enqueued %s/%s repos for job %s",
-        enqueued,
-        len(expected_repo_names),
-        job_id,
-    )
-
-    logger.info(
-        "[REFRESH_ENQUEUED] request_id=%s username=%s job_id=%s enqueued=%d",
+        "[REFRESH_ENQUEUED] request_id=%s username=%s job_id=%s enqueued=%d"/len(expected_repo_names),
         trace["request_id"],
         username,
         job_id,
         enqueued,
+        len(expected_repo_names),
     )
 
     if enqueued == 0:
