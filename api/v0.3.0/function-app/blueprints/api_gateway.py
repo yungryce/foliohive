@@ -203,6 +203,30 @@ def _fetch_candidate_session(username: str, job_id: Optional[str] = None) -> Opt
     return normalized[0]
 
 
+def _record_session_candidate(trace: Dict[str, str], username: str, job_id: Optional[str]) -> None:
+    if not _table_enabled():
+        return
+    session_id = trace.get("session_id") if trace else ""
+    if not session_id or not username:
+        return
+
+    resolved_job_id = job_id
+    if not resolved_job_id:
+        latest = _fetch_candidate_session(username)
+        resolved_job_id = latest.get("job_id") if latest else None
+
+    try:
+        table_manager.upsert_session_candidate(session_id, username, resolved_job_id)
+    except Exception as exc:  # pragma: no cover - safety net
+        logger.warning(
+            "Failed to persist session candidate (session_id=%s user=%s job_id=%s): %s",
+            session_id,
+            username,
+            resolved_job_id or "<none>",
+            exc,
+        )
+
+
 def _repo_row_to_bundle_entry(row: Dict[str, Any]) -> Dict[str, Any]:
     repo_name = row.get("RowKey") or row.get("repo_name")
     document = row.get("document") if isinstance(row.get("document"), dict) else {}
@@ -520,6 +544,7 @@ def get_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
         requested_job_id or "<latest>",
     )
     session = _fetch_candidate_session(username, requested_job_id)
+    _record_session_candidate(trace, username, session.get("job_id") if session else requested_job_id)
     repo_rows = _query_repo_rows(username, session)
 
     if session and repo_rows:
@@ -659,6 +684,8 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         len(expected_repo_names),
     )
 
+    _record_session_candidate(trace, username, job_id)
+
     _persist_job_metadata(
         job_id,
         username,
@@ -744,6 +771,7 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
         return _create_error_response("job_id query parameter required", 400)
 
     trace = _get_trace_context(req)
+    _record_session_candidate(trace, username, job_id)
     logger.info(
         "[STATUS_REQUEST] request_id=%s session_id=%s username=%s job_id=%s",
         trace["request_id"],
@@ -792,6 +820,39 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
         completed,
         total,
     )
+    return _create_success_response(payload, cache_control="no-cache")
+
+
+@bp.route(route="session/candidates", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_session_candidates(req: func.HttpRequest) -> func.HttpResponse:
+    trace = _get_trace_context(req)
+    session_id = trace.get("session_id")
+    if not session_id:
+        return _create_error_response("X-Session-Id required", 400)
+    if not _table_enabled():
+        return _create_success_response({"candidates": []}, cache_control="no-cache")
+
+    limit = 10
+    limit_param = req.params.get("limit")
+    if limit_param:
+        try:
+            limit = max(1, min(50, int(limit_param)))
+        except (TypeError, ValueError):
+            limit = 10
+
+    candidates = table_manager.list_session_candidates(session_id, limit=limit)
+    payload = {
+        "candidates": [
+            {
+                "username": row.get("username"),
+                "latest_job_id": row.get("latest_job_id"),
+                "last_viewed_at": row.get("last_viewed_at"),
+                "query_count": row.get("query_count"),
+            }
+            for row in candidates
+            if row.get("username")
+        ]
+    }
     return _create_success_response(payload, cache_control="no-cache")
 
 

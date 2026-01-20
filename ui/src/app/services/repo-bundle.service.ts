@@ -45,6 +45,13 @@ export interface JobStatusResponse {
   created_at?: string;
 }
 
+export interface SessionCandidate {
+  username: string;
+  latest_job_id?: string;
+  last_viewed_at?: string;
+  query_count?: number;
+}
+
 @Injectable({ providedIn: 'root' })
 export class RepoBundleService {
   private http = inject(HttpClient);
@@ -150,6 +157,23 @@ export class RepoBundleService {
       catchError((err: any) => {
         if (err?.status !== 404) console.error('getUserSingleRepoBundle error:', err);
         return of({ username, repo, data: null } as SingleRepoBundleResponse);
+      })
+    );
+  }
+
+  /** GET /session/candidates?limit=... */
+  getSessionCandidates(limit = 10): Observable<SessionCandidate[]> {
+    const url = `${this.config.apiUrl}/session/candidates`;
+    const params = new HttpParams().set('limit', String(limit));
+    return this.http.get<any>(url, { params }).pipe(
+      map((res: any) => {
+        const payload = res?.status === 'success' && res?.data ? res.data : res;
+        const candidates = payload?.candidates ?? [];
+        return Array.isArray(candidates) ? (candidates as SessionCandidate[]) : [];
+      }),
+      catchError((err: any) => {
+        console.warn('getSessionCandidates error:', err);
+        return of([] as SessionCandidate[]);
       })
     );
   }

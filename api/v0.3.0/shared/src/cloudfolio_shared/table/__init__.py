@@ -2,6 +2,7 @@
 
 from .table_manager import (
     JobSessionRow,
+    SessionCandidateRow,
     ModelMetadataRow,
     RepoMetadataRow,
     RepoSyncStatusRow,
@@ -14,6 +15,7 @@ __all__ = [
     "TableManager",
     "TableNames",
     "JobSessionRow",
+    "SessionCandidateRow",
     "RepoMetadataRow",
     "RepoSyncStatusRow",
     "ModelMetadataRow",

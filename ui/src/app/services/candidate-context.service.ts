@@ -1,5 +1,7 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
+import { RepoBundleService, SessionCandidate } from './repo-bundle.service';
+import { SessionIdService } from './session-id.service';
 
 export interface CandidateContext {
   username: string;
@@ -13,9 +15,10 @@ export class CandidateContextService {
 
   private readonly activeUsernameSubject = new BehaviorSubject<string | null>(null);
   readonly activeUsername$ = this.activeUsernameSubject.asObservable();
-  private readonly storageKey = 'foliohive.trackedCandidates';
-  private readonly activeKey = 'foliohive.activeCandidate';
+  private readonly storageKeyPrefix = 'foliohive.trackedCandidates';
+  private readonly activeKeyPrefix = 'foliohive.activeCandidate';
   private readonly maxStored = 5;
+  private readonly sessionId: string;
 
   get activeUsername(): string | null {
     return this.activeUsernameSubject.value;
@@ -31,8 +34,10 @@ export class CandidateContextService {
     return [...this.candidatesSubject.value];
   }
 
-  constructor() {
+  constructor(private readonly repoService: RepoBundleService, sessionIdService: SessionIdService) {
+    this.sessionId = sessionIdService.getOrCreate();
     this.loadFromStorage();
+    this.syncFromSession();
   }
 
   upsertCandidate(candidate: CandidateContext): void {
@@ -115,6 +120,14 @@ export class CandidateContextService {
     return window.localStorage;
   }
 
+  private get storageKey(): string {
+    return `${this.storageKeyPrefix}.${this.sessionId}`;
+  }
+
+  private get activeKey(): string {
+    return `${this.activeKeyPrefix}.${this.sessionId}`;
+  }
+
   private persistCandidates(list: CandidateContext[]): void {
     const storage = this.getStorage();
     if (!storage) return;
@@ -137,5 +150,40 @@ export class CandidateContextService {
     } catch (error) {
       console.warn('Failed to persist active candidate', error);
     }
+  }
+
+  private syncFromSession(): void {
+    this.repoService.getSessionCandidates(this.maxStored).subscribe((candidates: SessionCandidate[]) => {
+      if (!Array.isArray(candidates) || candidates.length === 0) return;
+
+      const existing = this.candidatesSubject.value;
+      const seen = new Set<string>();
+      const merged: CandidateContext[] = [];
+
+      for (const candidate of candidates) {
+        const username = (candidate?.username || '').trim();
+        if (!username || seen.has(username)) continue;
+        const prior = existing.find((c: CandidateContext) => c.username === username);
+        merged.push({ username, skillsText: prior?.skillsText });
+        seen.add(username);
+      }
+
+      for (const candidate of existing) {
+        const username = candidate.username;
+        if (!username || seen.has(username)) continue;
+        merged.push(candidate);
+        seen.add(username);
+      }
+
+      const limited = merged.slice(0, this.maxStored);
+      if (limited.length) {
+        this.candidatesSubject.next(limited);
+        this.persistCandidates(limited);
+        if (!this.activeUsernameSubject.value) {
+          this.activeUsernameSubject.next(limited[0].username);
+          this.persistActive(limited[0].username);
+        }
+      }
+    });
   }
 }
