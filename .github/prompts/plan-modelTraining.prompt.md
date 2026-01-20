@@ -16,7 +16,7 @@
 | Download repo bundles | Training worker | Reads blob references from the queue payload, never from Tables.
 '| Train & package semantic model | `models/semantic_model.py` | Loads experiment settings from `models/model_registry.py`.
 | Write model artifacts | Training worker | Uploads to `model-artifacts` blob container; older versions trimmed by lifecycle rules.
-| Publish metadata | Training worker via `table_manager` | Upserts rows in `ModelMetadata` and updates `CandidateSessions` status.
+| Publish metadata | Training worker via `table_manager` | Upserts rows in `ModelMetadata` and updates `JobSessions` status.
 | Signal completion | Queue message deletion + table updates | Merge/API workers observe status in Tables; no callback required.
 
 ## 3. Interfaces & Contracts
@@ -42,7 +42,7 @@
 
 ### 3.2 Table Access (via `cloudfolio_shared.table.table_manager`)
 - `ModelMetadata` row keys: `PartitionKey=username`, `RowKey=model_fingerprint`.
-- `CandidateSessions` update: set `model_status`, `model_fingerprint`, `trained_at`.
+- `JobSessions` update: set `model_status`, `model_fingerprint`, `trained_at`.
 - Table operations **must** use the shared `TableManager` helpers to keep retry logic, logging, and schema guarantees aligned with other plans.
 
 ### 3.3 Blob Usage

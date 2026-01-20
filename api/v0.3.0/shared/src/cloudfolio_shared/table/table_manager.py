@@ -37,7 +37,7 @@ logger.propagate = True
 class TableNames:
     """Configured table names used by Cloudfolio."""
 
-    candidate_sessions: str = "CandidateSessions"
+    job_sessions: str = "JobSessions"
     session_candidates: str = "SessionCandidates"
     repo_metadata: str = "RepoMetadata"
     model_metadata: str = "ModelMetadata"
@@ -187,7 +187,7 @@ class TableManager:
         table_names: Optional[TableNames] = None,
     ) -> None:
         self.table_names = table_names or TableNames(
-            candidate_sessions=os.getenv("TABLE_CANDIDATE_SESSIONS", TableNames.candidate_sessions),
+            job_sessions=os.getenv("TABLE_JOB_SESSIONS", TableNames.job_sessions),
             session_candidates=os.getenv("TABLE_SESSION_CANDIDATES", TableNames.session_candidates),
             repo_metadata=os.getenv("TABLE_REPO_METADATA", TableNames.repo_metadata),
             model_metadata=os.getenv("TABLE_MODEL_METADATA", TableNames.model_metadata),
@@ -258,7 +258,7 @@ class TableManager:
         if not self._service_client:
             return
         for name in (
-            self.table_names.candidate_sessions,
+            self.table_names.job_sessions,
             self.table_names.session_candidates,
             self.table_names.repo_metadata,
             self.table_names.model_metadata,
@@ -302,10 +302,10 @@ class TableManager:
         return enabled
 
     # ------------------------------------------------------------------
-    # Candidate sessions
+    # Job sessions
     # ------------------------------------------------------------------
     def upsert_job_session(self, row: JobSessionRow) -> None:
-        table = self._get_table_client(self.table_names.candidate_sessions)
+        table = self._get_table_client(self.table_names.job_sessions)
         if not table:
             return
         logger.info(
@@ -380,7 +380,7 @@ class TableManager:
         return rows
 
     def update_candidate_session(self, username: str, job_id: str, updates: Dict[str, Any]) -> None:
-        table = self._get_table_client(self.table_names.candidate_sessions)
+        table = self._get_table_client(self.table_names.job_sessions)
         if not table or not updates:
             return
         logger.info(
@@ -398,7 +398,7 @@ class TableManager:
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
 
     def get_candidate_session(self, username: str, job_id: str) -> Optional[Dict[str, Any]]:
-        table = self._get_table_client(self.table_names.candidate_sessions)
+        table = self._get_table_client(self.table_names.job_sessions)
         if not table:
             return None
         try:
@@ -409,7 +409,7 @@ class TableManager:
         return self._deserialize_candidate_session(entity)
 
     def list_candidate_sessions(self, username: str) -> List[Dict[str, Any]]:
-        table = self._get_table_client(self.table_names.candidate_sessions)
+        table = self._get_table_client(self.table_names.job_sessions)
         if not table:
             return []
         # query = table.list_entities(f"PartitionKey eq '{username}'")
@@ -433,7 +433,7 @@ class TableManager:
         *,
         updated_before: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        table = self._get_table_client(self.table_names.candidate_sessions)
+        table = self._get_table_client(self.table_names.job_sessions)
         if not table:
             return []
         status_list = [status for status in (statuses or []) if status]

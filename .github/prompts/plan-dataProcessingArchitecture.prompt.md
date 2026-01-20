@@ -88,12 +88,12 @@ Queue properties: default visibility timeout 30s, poison queue enabled after 5 r
 
 ### 5.1 Azure Table Storage (Hot, Queryable Metadata)
 - **Tables used (logical names)**:
-  - `CandidateSessions` – one row per `(username, job_id)` with job status, timestamps, and high-level summary.
+  - `JobSessions` – one row per `(username, job_id)` with job status, timestamps, and high-level summary.
   - `RepoMetadata` – per-repo rows (partitioned by username) containing README summary, tech stack, and fingerprints.
   - `ModelMetadata` – current model version, training fingerprint, experiment name, and last-trained timestamps.
 - **Access patterns**:
-  - `api-gateway` queries `CandidateSessions` + `RepoMetadata` for `/bundles/{username}` and `/bundles/{username}/status`.
-  - `merge-worker` reads/writes `CandidateSessions` and aggregates `RepoMetadata` into a consolidated bundle record.
+  - `api-gateway` queries `JobSessions` + `RepoMetadata` for `/bundles/{username}` and `/bundles/{username}/status`.
+  - `merge-worker` reads/writes `JobSessions` and aggregates `RepoMetadata` into a consolidated bundle record.
   - `training-worker` updates `ModelMetadata` after successful runs; `api-gateway` reads it to decide whether to fall back or use fresh embeddings.
 - **Implementation**:
   - All access funneled through `cloudfolio_shared.table.table_manager` (low-level CRUD + query helpers) and `cloudfolio_shared.cache.cache_manager` (scenario-specific orchestration), preventing raw Table SDK exposure inside Function Apps.
@@ -112,13 +112,13 @@ Queue properties: default visibility timeout 30s, poison queue enabled after 5 r
 
 ### 5.3 What Each App Actually Uses
 - `api-gateway`:
-  - Reads/writes Tables (`CandidateSessions`, `RepoMetadata`, `ModelMetadata`) strictly through `table_manager` helpers surfaced by `cache_manager`.
+  - Reads/writes Tables (`JobSessions`, `RepoMetadata`, `ModelMetadata`) strictly through `table_manager` helpers surfaced by `cache_manager`.
   - Reads long-lived model artifacts from `model-artifacts` via AI helpers.
   - Does **not** read full repo file blobs.
 - `sync-worker`:
-  - Writes `RepoMetadata` rows and `CandidateSessions` progress by calling `table_manager` upsert helpers; writes **ephemeral** repo content blobs for training.
+  - Writes `RepoMetadata` rows and `JobSessions` progress by calling `table_manager` upsert helpers; writes **ephemeral** repo content blobs for training.
 - `merge-worker`:
-  - Reads `RepoMetadata` rows; writes aggregate bundle row + job status to `CandidateSessions` using `table_manager` batch operations; does not touch blobs directly.
+  - Reads `RepoMetadata` rows; writes aggregate bundle row + job status to `JobSessions` using `table_manager` batch operations; does not touch blobs directly.
 - `training-worker`:
   - Reads ephemeral repo content blobs; writes `ModelMetadata` rows through `table_manager` and stores `model-artifacts` blobs.
 

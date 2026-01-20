@@ -59,7 +59,7 @@ These variables configure connections to Azure Storage services. For local devel
 
 | Variable | Description | Default | Used By |
 |----------|-------------|---------|---------|
-| `TABLE_CANDIDATE_SESSIONS` | Table name for candidate sessions/jobs | `CandidateSessions` | `table_manager` |
+| `TABLE_JOB_SESSIONS` | Table name for job tracking sessions | `JobSessions` | `table_manager` |
 | `TABLE_REPO_METADATA` | Table name for repository metadata | `RepoMetadata` | `table_manager` |
 | `TABLE_MODEL_METADATA` | Table name for model metadata | `ModelMetadata` | `table_manager` |
 

@@ -51,7 +51,7 @@ def mock_table_manager():
         return job_sessions.get((username, job_id))
     
     def list_candidate_sessions(username: str):
-        return [s for key, s in candidate_sessions.items() if key[0] == username]
+        return [s for key, s in job_sessions.items() if key[0] == username]
     
     def update_candidate_session(username: str, job_id: str, updates: Dict[str, Any]):
         key = (username, job_id)
@@ -183,7 +183,7 @@ class TestTableFirstArchitecture:
         assert all(r['username'] == username for r in results)
 
     def test_api_gateway_reads_bundle_from_table(self, mock_table_manager):
-        """Verify API gateway serves bundle data from CandidateSessions + RepoMetadata tables."""
+        """Verify API gateway serves bundle data from JobSessions + RepoMetadata tables."""
         from cloudfolio_shared.table import JobSessionRow, RepoMetadataRow
         
         username = 'testuser'
@@ -237,7 +237,7 @@ class TestTableFirstArchitecture:
 
 
 class TestJobProgressTracking:
-    """Test CandidateSessions table updates during pipeline execution."""
+    """Test JobSessions table updates during pipeline execution."""
 
     def test_sync_worker_updates_progress_incrementally(self, mock_table_manager):
         """Verify sync worker updates completed_repos and synced_repos as jobs complete."""
@@ -346,7 +346,7 @@ class TestModelMetadataPersistence:
         assert len(result['repo_names']) == 5
 
     def test_training_completion_updates_candidate_session(self, mock_table_manager):
-        """Verify training worker updates CandidateSessions with model_fingerprint."""
+        """Verify training worker updates JobSessions with model_fingerprint."""
         from cloudfolio_shared.table import JobSessionRow
         
         username = 'testuser'

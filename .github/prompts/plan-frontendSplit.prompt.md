@@ -114,7 +114,7 @@ Design rules:
 
 | Risk | Mitigation |
 |------|------------|
-| Recruiter UI forgets to honor queue latency (infinite spinner) | Shared polling utility that inspects `CandidateSessions` row timestamps before claiming completion |
+| Recruiter UI forgets to honor queue latency (infinite spinner) | Shared polling utility that inspects `JobSessions` row timestamps before claiming completion |
 | SWA ↔ Function App drift (routes renamed) | Keep route declarations in `staticwebapp.config.json` sourced from shared constants file; CI fails if env vars missing |
 | Telemetry gaps if `localStorage` blocked | Gracefully fall back to in-memory session IDs; log warning banner for private browsing |
 | Duplicate deployments | Each SWA pipeline scoped to app directory paths to avoid needless builds |

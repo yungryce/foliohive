@@ -97,7 +97,7 @@ class _FakeServiceClient:
 def table_manager() -> TableManager:
     service = _FakeServiceClient()
     names = TableNames(
-        candidate_sessions="CandidateSessions",
+        job_sessions="JobSessions",
         repo_metadata="RepoMetadata",
         model_metadata="ModelMetadata",
         repo_sync_status="RepoSyncStatus",
