@@ -5,7 +5,7 @@ import pytest  # type: ignore
 from azure.core.exceptions import ResourceNotFoundError  # type: ignore
 
 from cloudfolio_shared.table import (  # type: ignore
-    JobSessionRow,
+    JobMetadataRow,
     ModelMetadataRow,
     RepoMetadataRow,
     RepoSyncStatusRow,
@@ -97,7 +97,7 @@ class _FakeServiceClient:
 def table_manager() -> TableManager:
     service = _FakeServiceClient()
     names = TableNames(
-        job_sessions="JobSessions",
+        job_metadata="JobMetadata",
         repo_metadata="RepoMetadata",
         model_metadata="ModelMetadata",
         repo_sync_status="RepoSyncStatus",
@@ -106,14 +106,14 @@ def table_manager() -> TableManager:
 
 
 def test_candidate_session_roundtrip(table_manager: TableManager) -> None:
-    row = JobSessionRow(
+    row = JobMetadataRow(
         username="alice",
         job_id="job-1",
         expected_repos=["api", "web"],
         queued_repos=["api"],
         status="queued",
     )
-    table_manager.upsert_job_session(row)
+    table_manager.upsert_job_metadata(row)
 
     table_manager.update_candidate_session(
         "alice",
@@ -121,7 +121,7 @@ def test_candidate_session_roundtrip(table_manager: TableManager) -> None:
         {"completed_repos": 1, "synced_repos": ["api"], "status": "synced"},
     )
 
-    stored = table_manager.get_job_session("alice", "job-1")
+    stored = table_manager.get_job_metadata("alice", "job-1")
     assert stored is not None
     assert stored["completed_repos"] == 1
     assert stored["status"] == "synced"

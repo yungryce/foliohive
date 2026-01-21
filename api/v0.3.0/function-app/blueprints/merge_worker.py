@@ -158,7 +158,7 @@ def _update_job_status(job_id: str, username: str, synced_repo_names: List[str],
     now = datetime.now(timezone.utc).isoformat()
 
     if table_manager.is_enabled():
-        existing = table_manager.get_job_session(username, job_id) or {}
+        existing = table_manager.get_job_metadata(username, job_id) or {}
         total_repos = existing.get("total_repos", merged_count)
         table_manager.update_candidate_session(
             username,
@@ -213,7 +213,7 @@ def _resolve_fresh_repos(payload: Dict[str, Any], username: str, job_id: Optiona
     repo_names: Iterable[str] = payload.get("synced_repos") or payload.get("repo_names") or []
     if not repo_names:
         if job_id and table_manager.is_enabled():
-            session = table_manager.get_job_session(username, job_id) or {}
+            session = table_manager.get_job_metadata(username, job_id) or {}
             session_synced = session.get("synced_repos") or []
             if isinstance(session_synced, list) and session_synced:
                 repo_names = session_synced

@@ -147,22 +147,22 @@ def _parse_iso(timestamp: Optional[str]) -> datetime:
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
-def _normalize_candidate_session(
+def _normalize_job_metadata(
     payload: Optional[Dict[str, Any]],
     username: str,
     job_id: Optional[str],
 ) -> Optional[Dict[str, Any]]:
+    
     if not payload:
         return None
-    session = dict(payload)
-    # Prefer server-provided keys; do not overwrite with request values.
-    # This prevents cross-candidate leakage if a storage provider ignores filters.
-    resolved_username = session.get("PartitionKey") or session.get("username")
-    resolved_job_id = session.get("RowKey") or session.get("job_id")
+    candidate_job = dict(payload)
+
+    resolved_username = candidate_job.get("PartitionKey") or candidate_job.get("username")
+    resolved_job_id = candidate_job.get("RowKey") or candidate_job.get("job_id")
 
     if resolved_username and username and resolved_username != username:
         logger.warning(
-            "Discarding mismatched candidate session (requested=%s, found=%s, job_id=%s)",
+            "Discarding mismatched job metadata (requested=%s, found=%s, job_id=%s)",
             username,
             resolved_username,
             resolved_job_id or "<unknown>",
@@ -170,32 +170,31 @@ def _normalize_candidate_session(
         return None
     if resolved_job_id and job_id and resolved_job_id != job_id:
         logger.warning(
-            "Discarding mismatched candidate session job_id (requested=%s, found=%s, username=%s)",
+            "Discarding mismatched job metadata job_id (requested=%s, found=%s, username=%s)",
             job_id,
             resolved_job_id,
             resolved_username or "<unknown>",
         )
         return None
 
-    session["username"] = resolved_username or username
-    session["job_id"] = resolved_job_id or job_id
-    session.pop("PartitionKey", None)
-    session.pop("RowKey", None)
-    return session
-
+    candidate_job["username"] = resolved_username or username
+    candidate_job["job_id"] = resolved_job_id or job_id
+    candidate_job.pop("PartitionKey", None)
+    candidate_job.pop("RowKey", None)
+    return candidate_job
 
 def _fetch_candidate_session(username: str, job_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     if not _table_enabled():
         return None
     if job_id:
-        session = table_manager.get_job_session(username, job_id)
-        logger.info("Fetched candidate session for user=%s job_id=%s: %s", username, job_id, "found" if session else "not found")
-        return _normalize_candidate_session(session, username, job_id)
+        session = table_manager.get_job_metadata(username, job_id)
+        logger.info("Fetched job metadata for user=%s job_id=%s: %s", username, job_id, "found" if session else "not found")
+        return _normalize_job_metadata(session, username, job_id)
 
     sessions = table_manager.list_job_sessions(username)
     if not sessions:
         return None
-    normalized = [_normalize_candidate_session(session, username, session.get("RowKey")) for session in sessions]
+    normalized = [_normalize_job_metadata(session, username, session.get("RowKey")) for session in sessions]
     normalized = [session for session in normalized if session and session.get("job_id")]
     if not normalized:
         return None
@@ -438,7 +437,7 @@ def _upsert_job_session_row(
     if not _table_enabled():
         return
 
-    existing = table_manager.get_job_session(username, job_id)
+    existing = table_manager.get_job_metadata(username, job_id)
     existing_synced = existing.get("synced_repos", []) if existing else []
     merged_synced = list(synced_repos or existing_synced)
     row = JobSessionRow(

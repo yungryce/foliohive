@@ -165,7 +165,7 @@ def reconcile_jobs(timer: func.TimerRequest) -> None:
         return
     min_age_seconds = _env_int("CF_RECONCILE_MIN_AGE_SECONDS", 180)
     updated_before = (_utcnow() - timedelta(seconds=min_age_seconds)).isoformat()
-    jobs = table_manager.list_job_sessions_by_status(
+    jobs = table_manager.list_jobs_metadata_by_status(
         ["queued", "processing", "synced"],
         updated_before=updated_before,
     )

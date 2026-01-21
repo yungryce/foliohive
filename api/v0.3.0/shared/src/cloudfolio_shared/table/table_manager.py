@@ -21,7 +21,7 @@ from azure.identity import DefaultAzureCredential
 __all__ = [
     "TableManager",
     "TableNames",
-    "JobSessionRow",
+    "JobMetadataRow",
     "SessionCandidateRow",
     "RepoMetadataRow",
     "RepoSyncStatusRow",
@@ -37,7 +37,7 @@ logger.propagate = True
 class TableNames:
     """Configured table names used by Cloudfolio."""
 
-    job_sessions: str = "JobSessions"
+    job_metadata: str = "JobMetadata"
     session_candidates: str = "SessionCandidates"
     repo_metadata: str = "RepoMetadata"
     model_metadata: str = "ModelMetadata"
@@ -45,8 +45,8 @@ class TableNames:
 
 
 @dataclass
-class JobSessionRow:
-    """Representation of a job-tracking session row for a candidate."""
+class JobMetadataRow:
+    """Representation of a job-tracking metadata row for a candidate."""
 
     username: str
     job_id: str
@@ -187,7 +187,7 @@ class TableManager:
         table_names: Optional[TableNames] = None,
     ) -> None:
         self.table_names = table_names or TableNames(
-            job_sessions=os.getenv("TABLE_JOB_SESSIONS", TableNames.job_sessions),
+            job_metadata=os.getenv("TABLE_JOB_METADATA", TableNames.job_metadata),
             session_candidates=os.getenv("TABLE_SESSION_CANDIDATES", TableNames.session_candidates),
             repo_metadata=os.getenv("TABLE_REPO_METADATA", TableNames.repo_metadata),
             model_metadata=os.getenv("TABLE_MODEL_METADATA", TableNames.model_metadata),
@@ -258,7 +258,7 @@ class TableManager:
         if not self._service_client:
             return
         for name in (
-            self.table_names.job_sessions,
+            self.table_names.job_metadata,
             self.table_names.session_candidates,
             self.table_names.repo_metadata,
             self.table_names.model_metadata,
@@ -302,14 +302,14 @@ class TableManager:
         return enabled
 
     # ------------------------------------------------------------------
-    # Job sessions
+    # Job metadata
     # ------------------------------------------------------------------
-    def upsert_job_session(self, row: JobSessionRow) -> None:
-        table = self._get_table_client(self.table_names.job_sessions)
+    def upsert_job_metadata(self, row: JobMetadataRow) -> None:
+        table = self._get_table_client(self.table_names.job_metadata)
         if not table:
             return
         logger.info(
-            "[TABLE_UPSERT_JOB_SESSION] user=%s job=%s status=%s total=%s completed=%s expected=%d queued=%d synced=%d",
+            "[TABLE_UPSERT_JOB_METADATA] user=%s job=%s status=%s total=%s completed=%s expected=%d queued=%d synced=%d",
             row.username,
             row.job_id,
             row.status,
@@ -338,6 +338,75 @@ class TableManager:
         for field_name in _JSON_LIST_FIELDS:
             entity[field_name] = json.dumps(getattr(row, field_name, []) or [], separators=(",", ":"))
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
+
+
+    def get_job_metadata(self, username: str, job_id: str) -> Optional[Dict[str, Any]]:
+        table = self._get_table_client(self.table_names.job_metadata)
+        if not table:
+            return None
+        try:
+            entity = table.get_entity(partition_key=username, row_key=job_id)
+        except ResourceNotFoundError:
+            return None
+        logger.info("[TABLE_GET_JOB_METADATA] user=%s job=%s found=true", username, job_id)
+        return self._deserialize_job_metadata(entity)
+
+    def list_jobs_metadata(self, username: str) -> List[Dict[str, Any]]:
+        table = self._get_table_client(self.table_names.job_metadata)
+        if not table:
+            return []
+        query = table.list_entities(filter=f"PartitionKey eq '{username}'")
+        jobs = [self._deserialize_job_metadata(e) for e in query]
+        logger.info("[TABLE_LIST_JOBS_METADATA] user=%s found=%d", username, len(jobs))
+
+        return jobs
+
+    def list_jobs_metadata_by_status(
+        self,
+        statuses: Iterable[str],
+        *,
+        updated_before: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        table = self._get_table_client(self.table_names.job_metadata)
+        if not table:
+            return []
+        status_list = [status for status in (statuses or []) if status]
+        if not status_list:
+            return []
+        status_filters = [f"status eq '{status}'" for status in status_list]
+        filters = [f"({' or '.join(status_filters)})"]
+        if updated_before:
+            filters.append(f"updated_at lt '{updated_before}'")
+        filter_str = " and ".join(filters)
+        query = table.list_entities(filter=filter_str)
+        return [self._deserialize_job_metadata(e) for e in query]
+
+    def _deserialize_job_metadata(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(entity)
+        for meta_key in _AZURE_META_FIELDS:
+            payload.pop(meta_key, None)
+        payload["username"] = payload.get("PartitionKey")
+        payload["job_id"] = payload.get("RowKey")
+        for field_name in _JSON_LIST_FIELDS:
+            try:
+                payload[field_name] = json.loads(payload.get(field_name) or "[]")
+            except json.JSONDecodeError:
+                payload[field_name] = []
+        payload["bundle_fingerprint"] = payload.get("bundle_fingerprint") or None
+        payload["model_fingerprint"] = payload.get("model_fingerprint") or None
+        payload["model_status"] = payload.get("model_status") or None
+        payload["merge_enqueued_at"] = payload.get("merge_enqueued_at") or None
+        payload["last_requeue_at"] = payload.get("last_requeue_at") or None
+        payload["force_refresh"] = bool(payload.get("force_refresh"))
+        payload["total_repos"] = int(payload.get("total_repos", 0))
+        payload["completed_repos"] = int(payload.get("completed_repos", 0))
+        payload["created_at"] = payload.get("created_at") or None
+        payload["updated_at"] = payload.get("updated_at") or None
+        return payload
+
+    # ------------------------------------------------------------------
+    # Session candidates
+    # ------------------------------------------------------------------
 
     def upsert_session_candidate(self, session_id: str, username: str, job_id: Optional[str]) -> None:
         table = self._get_table_client(self.table_names.session_candidates)
@@ -380,7 +449,7 @@ class TableManager:
         return rows
 
     def update_candidate_session(self, username: str, job_id: str, updates: Dict[str, Any]) -> None:
-        table = self._get_table_client(self.table_names.job_sessions)
+        table = self._get_table_client(self.table_names.job_metadata)
         if not table or not updates:
             return
         logger.info(
@@ -396,79 +465,6 @@ class TableManager:
             else:
                 entity[key] = value if value is not None else ""
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
-
-    def get_job_session(self, username: str, job_id: str) -> Optional[Dict[str, Any]]:
-        table = self._get_table_client(self.table_names.job_sessions)
-        if not table:
-            return None
-        try:
-            entity = table.get_entity(partition_key=username, row_key=job_id)
-        except ResourceNotFoundError:
-            return None
-        logger.info("[TABLE_GET_JOB_SESSION] user=%s job=%s found=true", username, job_id)
-        return self._deserialize_job_session(entity)
-
-    def list_job_sessions(self, username: str) -> List[Dict[str, Any]]:
-        table = self._get_table_client(self.table_names.job_sessions)
-        if not table:
-            return []
-        # query = table.list_entities(f"PartitionKey eq '{username}'")
-        query = table.list_entities(filter=f"PartitionKey eq '{username}'")
-        sessions = [self._deserialize_job_session(e) for e in query]
-
-        # Defense-in-depth: if an emulator/provider ignores filters, avoid leaking other users' sessions.
-        filtered = [session for session in sessions if session.get("username") == username]
-        if sessions and len(filtered) != len(sessions):
-            logger.warning(
-                "table-manager: list_job_sessions filter mismatch (requested=%s returned=%d kept=%d)",
-                username,
-                len(sessions),
-                len(filtered),
-            )
-        return filtered
-
-    def list_job_sessions_by_status(
-        self,
-        statuses: Iterable[str],
-        *,
-        updated_before: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        table = self._get_table_client(self.table_names.job_sessions)
-        if not table:
-            return []
-        status_list = [status for status in (statuses or []) if status]
-        if not status_list:
-            return []
-        status_filters = [f"status eq '{status}'" for status in status_list]
-        filters = [f"({' or '.join(status_filters)})"]
-        if updated_before:
-            filters.append(f"updated_at lt '{updated_before}'")
-        filter_str = " and ".join(filters)
-        query = table.list_entities(filter=filter_str)
-        return [self._deserialize_job_session(e) for e in query]
-
-    def _deserialize_job_session(self, entity: Dict[str, Any]) -> Dict[str, Any]:
-        payload = dict(entity)
-        for meta_key in _AZURE_META_FIELDS:
-            payload.pop(meta_key, None)
-        payload["username"] = payload.get("PartitionKey")
-        payload["job_id"] = payload.get("RowKey")
-        for field_name in _JSON_LIST_FIELDS:
-            try:
-                payload[field_name] = json.loads(payload.get(field_name) or "[]")
-            except json.JSONDecodeError:
-                payload[field_name] = []
-        payload["bundle_fingerprint"] = payload.get("bundle_fingerprint") or None
-        payload["model_fingerprint"] = payload.get("model_fingerprint") or None
-        payload["model_status"] = payload.get("model_status") or None
-        payload["merge_enqueued_at"] = payload.get("merge_enqueued_at") or None
-        payload["last_requeue_at"] = payload.get("last_requeue_at") or None
-        payload["force_refresh"] = bool(payload.get("force_refresh"))
-        payload["total_repos"] = int(payload.get("total_repos", 0))
-        payload["completed_repos"] = int(payload.get("completed_repos", 0))
-        payload["created_at"] = payload.get("created_at") or None
-        payload["updated_at"] = payload.get("updated_at") or None
-        return payload
 
     def _deserialize_session_candidate(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)

@@ -21,7 +21,7 @@
     "AzureWebJobsStorage__queueServiceUri": "http://127.0.0.1:10001/devstoreaccount1",
     "AzureWebJobsStorage__tableServiceUri": "http://127.0.0.1:10002/devstoreaccount1",
 
-    "TABLE_JOB_SESSIONS": "JobSessions",
+    "TABLE_JOB_METADATA": "JobMetadata",
     "TABLE_REPO_METADATA": "RepoMetadata",
     "TABLE_MODEL_METADATA": "ModelMetadata",
     "TABLE_SERVICE_URI": "http://127.0.0.1:10002/devstoreaccount1",

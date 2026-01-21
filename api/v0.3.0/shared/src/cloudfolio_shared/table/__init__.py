@@ -1,7 +1,7 @@
 """Table abstractions for Cloudfolio shared package."""
 
 from .table_manager import (
-    JobSessionRow,
+    JobMetadataRow,
     SessionCandidateRow,
     ModelMetadataRow,
     RepoMetadataRow,
@@ -14,7 +14,7 @@ from .table_manager import (
 __all__ = [
     "TableManager",
     "TableNames",
-    "JobSessionRow",
+    "JobMetadataRow",
     "SessionCandidateRow",
     "RepoMetadataRow",
     "RepoSyncStatusRow",
