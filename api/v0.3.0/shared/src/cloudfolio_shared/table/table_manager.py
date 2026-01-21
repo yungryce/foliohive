@@ -385,8 +385,6 @@ class TableManager:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
-        payload["username"] = payload.get("PartitionKey")
-        payload["job_id"] = payload.get("RowKey")
         for field_name in _JSON_LIST_FIELDS:
             try:
                 payload[field_name] = json.loads(payload.get(field_name) or "[]")
@@ -402,6 +400,11 @@ class TableManager:
         payload["completed_repos"] = int(payload.get("completed_repos", 0))
         payload["created_at"] = payload.get("created_at") or None
         payload["updated_at"] = payload.get("updated_at") or None
+
+        # Map Azure table keys to application fields
+        payload["username"] = payload.pop("PartitionKey", None)
+        payload["job_id"] = payload.pop("RowKey", None)
+        
         return payload
 
     # ------------------------------------------------------------------
@@ -470,13 +473,15 @@ class TableManager:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
-        payload["session_id"] = payload.get("PartitionKey")
-        payload["username"] = payload.get("RowKey")
         payload["latest_job_id"] = payload.get("latest_job_id") or None
         payload["last_viewed_at"] = payload.get("last_viewed_at") or None
         payload["query_count"] = int(payload.get("query_count", 0) or 0)
         payload["created_at"] = payload.get("created_at") or None
         payload["updated_at"] = payload.get("updated_at") or None
+
+        # Map Azure table keys to application fields
+        payload["username"] = payload.pop("RowKey", None)
+        payload["session_id"] = payload.pop("PartitionKey", None)
         return payload
 
     # ------------------------------------------------------------------
@@ -519,21 +524,9 @@ class TableManager:
                 filters.append(f"({' or '.join(name_filters)})")
         filter_str = " and ".join(filters)
         entities = table.list_entities(filter=filter_str)
-        rows = [self._deserialize_repo_entity(e) for e in entities]
 
-        # Defense-in-depth: ensure results match the requested username/job_id even if filters are ignored.
-        filtered = [row for row in rows if row.get("username") == username]
-        if job_id:
-            filtered = [row for row in filtered if row.get("job_id") == job_id]
-        if rows and len(filtered) != len(rows):
-            logger.warning(
-                "table-manager: query_repo_metadata filter mismatch (requested=%s job_id=%s returned=%d kept=%d)",
-                username,
-                job_id or "<none>",
-                len(rows),
-                len(filtered),
-            )
-        return filtered
+        return [self._deserialize_repo_entity(e) for e in entities]
+
 
     def _serialize_repo_row(self, row: RepoMetadataRow) -> Dict[str, Any]:
         now = _utcnow_iso()
@@ -557,21 +550,35 @@ class TableManager:
         return entity
 
     def _deserialize_repo_entity(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        """Deserialize Azure Table entity to clean dictionary.
+        
+        Removes all Azure-specific metadata and converts table keys to standard fields.
+        Returned dict contains only application-level fields with no Azure artifacts.
+        """
         payload = dict(entity)
+        
+        # Remove Azure metadata fields (etag, odata, etc.)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
+        
+        # Parse JSON-serialized fields
         for field_name in _JSON_FIELDS_REPO:
             try:
                 payload[field_name] = json.loads(payload.get(field_name) or "{}")
             except json.JSONDecodeError:
                 payload[field_name] = {} if field_name != "document" else None
+        
+        # Normalize optional fields
         payload["fingerprint"] = payload.get("fingerprint") or None
         payload["job_id"] = payload.get("job_id") or None
         payload["content_blob"] = payload.get("content_blob") or None
         payload["has_documentation"] = bool(payload.get("has_documentation"))
-        payload["repo_name"] = payload.get("RowKey")
-        payload["username"] = payload.get("PartitionKey")
         payload["created_at"] = payload.get("created_at") or None
+        
+        # Map Azure table keys to application fields
+        payload["repo_name"] = payload.pop("RowKey", None)
+        payload["username"] = payload.pop("PartitionKey", None)
+        
         return payload
 
     # ------------------------------------------------------------------

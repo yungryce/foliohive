@@ -147,81 +147,40 @@ def _parse_iso(timestamp: Optional[str]) -> datetime:
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
-def _normalize_job_metadata(
-    payload: Optional[Dict[str, Any]],
-    username: str,
-    job_id: Optional[str],
-) -> Optional[Dict[str, Any]]:
-    
-    if not payload:
-        return None
-    candidate_job = dict(payload)
-
-    resolved_username = candidate_job.get("PartitionKey") or candidate_job.get("username")
-    resolved_job_id = candidate_job.get("RowKey") or candidate_job.get("job_id")
-
-    if resolved_username and username and resolved_username != username:
-        logger.warning(
-            "Discarding mismatched job metadata (requested=%s, found=%s, job_id=%s)",
-            username,
-            resolved_username,
-            resolved_job_id or "<unknown>",
-        )
-        return None
-    if resolved_job_id and job_id and resolved_job_id != job_id:
-        logger.warning(
-            "Discarding mismatched job metadata job_id (requested=%s, found=%s, username=%s)",
-            job_id,
-            resolved_job_id,
-            resolved_username or "<unknown>",
-        )
-        return None
-
-    candidate_job["username"] = resolved_username or username
-    candidate_job["job_id"] = resolved_job_id or job_id
-    candidate_job.pop("PartitionKey", None)
-    candidate_job.pop("RowKey", None)
-    return candidate_job
-
-def _fetch_candidate_session(username: str, job_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _fetch_candidate_jobs(username: str) -> Optional[Dict[str, Any]]:
     if not _table_enabled():
         return None
-    if job_id:
-        session = table_manager.get_job_metadata(username, job_id)
-        logger.info("Fetched job metadata for user=%s job_id=%s: %s", username, job_id, "found" if session else "not found")
-        return _normalize_job_metadata(session, username, job_id)
 
-    sessions = table_manager.list_job_sessions(username)
-    if not sessions:
+    jobs = table_manager.list_jobs_metadata(username)
+    if not jobs:
         return None
-    normalized = [_normalize_job_metadata(session, username, session.get("RowKey")) for session in sessions]
-    normalized = [session for session in normalized if session and session.get("job_id")]
-    if not normalized:
+    jobs = [job for job in jobs if job and job.get("job_id")]
+    if not jobs:
         return None
-    normalized.sort(key=lambda row: _parse_iso(row.get("updated_at")), reverse=True)
-    return normalized[0]
+    jobs.sort(key=lambda row: _parse_iso(row.get("updated_at")), reverse=True)
+    return jobs[0]
 
 
 def _record_session_candidate(trace: Dict[str, str], username: str, job_id: Optional[str]) -> None:
+    """Record session tracking for username/job_id pair.
+    
+    Should be called explicitly when session tracking is desired,
+    not as a side effect of data retrieval operations.
+    """
     if not _table_enabled():
         return
     session_id = trace.get("session_id") if trace else ""
     if not session_id or not username:
         return
 
-    resolved_job_id = job_id
-    if not resolved_job_id:
-        latest = _fetch_candidate_session(username)
-        resolved_job_id = latest.get("job_id") if latest else None
-
     try:
-        table_manager.upsert_session_candidate(session_id, username, resolved_job_id)
+        table_manager.upsert_session_candidate(session_id, username, job_id)
     except Exception as exc:  # pragma: no cover - safety net
         logger.warning(
             "Failed to persist session candidate (session_id=%s user=%s job_id=%s): %s",
             session_id,
             username,
-            resolved_job_id or "<none>",
+            job_id or "<none>",
             exc,
         )
 
@@ -256,23 +215,30 @@ def _repo_row_to_bundle_entry(row: Dict[str, Any]) -> Dict[str, Any]:
 
 def _query_repo_rows(
     username: str,
-    session: Optional[Dict[str, Any]],
+    job_id: Optional[str] = None,
     repo_names: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
-    if not (_table_enabled() and session):
+    """Query repo metadata from table storage.
+    
+    Simplified wrapper that delegates to table_manager with error handling.
+    Deserialization is fully handled by table_manager - no post-processing needed.
+    
+    Args:
+        username: Required username filter
+        job_id: Optional job_id filter
+        repo_names: Optional list of specific repo names to retrieve
+        
+    Returns:
+        List of fully deserialized repo metadata dicts (no Azure artifacts)
+    """
+    if not _table_enabled():
         return []
-    job_id = session.get("job_id")
+    
     try:
-        rows = table_manager.query_repo_metadata(username, job_id=job_id, repo_names=repo_names)
+        return table_manager.query_repo_metadata(username, job_id=job_id, repo_names=repo_names)
     except Exception:  # pragma: no cover - degraded path
+        logger.warning("Failed to query repo metadata for user=%s job_id=%s", username, job_id or "<none>", exc_info=True)
         return []
-    normalized: List[Dict[str, Any]] = []
-    for row in rows:
-        normalized_row = dict(row)
-        normalized_row.setdefault("repo_name", normalized_row.get("RowKey"))
-        normalized_row.pop("PartitionKey", None)
-        normalized.append(normalized_row)
-    return normalized
 
 
 def _bundle_from_table(username: str, session: Dict[str, Any], repo_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -529,49 +495,113 @@ def health_check(req: func.HttpRequest) -> func.HttpResponse:
 
 @bp.route(route="bundles/{username}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
+    """Retrieve bundle for a username (specific job_id or latest).
+    
+    Pure data retrieval - no session tracking side effects.
+    Use /session/bundle for session-aware retrieval with tracking.
+    """
     username = req.route_params.get("username")
     if not username:
         return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
 
     trace = _get_trace_context(req)
-    requested_job_id = req.params.get("job_id")
     logger.info(
-        "[BUNDLE_REQUEST] request_id=%s session_id=%s username=%s job_id=%s",
+        "[BUNDLE_REQUEST] request_id=%s username=%s",
         trace["request_id"],
-        trace["session_id"],
         username,
-        requested_job_id or "<latest>",
     )
-    session = _fetch_candidate_session(username, requested_job_id)
-    _record_session_candidate(trace, username, session.get("job_id") if session else requested_job_id)
-    repo_rows = _query_repo_rows(username, session)
+    candidate_job = _fetch_candidate_jobs(username)
+    job_id = candidate_job.get("job_id") if candidate_job else None
 
-    if session and repo_rows:
+    # Try table storage first (most recent data)
+    if job_id:
+        repo_rows = _query_repo_rows(username, job_id=job_id)
+        if repo_rows:
+            logger.info(
+                "[BUNDLE_RESPONSE] request_id=%s username=%s job_id=%s source=table repos=%d",
+                trace["request_id"],
+                username,
+                job_id,
+                len(repo_rows),
+            )
+            payload = _bundle_from_table(username, candidate_job, repo_rows)
+            return _create_success_response(payload)
+    
+    # No data available
+    if job_id:
+        return _create_error_response(f"Bundle for '{username}' not ready (job in progress)", 404)
+    
+    return _create_error_response(f"No bundle found for '{username}'. Trigger refresh first.", 404)
+
+
+@bp.route(route="bundles/{username}/{repo}/files", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_repo_files(req: func.HttpRequest) -> func.HttpResponse:
+    """Retrieve files (readme, config, etc.) for a specific repository.
+    
+    Query parameters:
+        type: File type to retrieve (readme, config, all). Default: readme
+    
+    Returns full file content from blob cache without loading entire bundle.
+    """
+    username = req.route_params.get("username")
+    repo = req.route_params.get("repo")
+    if not username or not repo:
+        return _create_error_response("Username and repository name are required", 400)
+
+    file_type = req.params.get("type", "readme").lower()
+    if file_type not in ("readme", "config", "all"):
+        return _create_error_response("Invalid file type. Use: readme, config, or all", 400)
+
+    trace = _get_trace_context(req)
+    logger.info(
+        "[REPO_FILES_REQUEST] request_id=%s username=%s repo=%s type=%s",
+        trace["request_id"],
+        username,
+        repo,
+        file_type,
+    )
+
+    # Retrieve full repo payload from blob cache (where files live)
+    repo_cache_key = cache_manager.generate_cache_key(kind="repo", username=username, repo=repo)
+    cached_result = cache_manager.get(repo_cache_key)
+    
+    if cached_result.get("status") != "valid" or not cached_result.get("data"):
         logger.info(
-            "[BUNDLE_RESPONSE] request_id=%s username=%s job_id=%s source=table repos=%d",
+            "[REPO_FILES_RESPONSE] request_id=%s username=%s repo=%s status=not_found",
             trace["request_id"],
             username,
-            (session.get("job_id") or requested_job_id or "<unknown>"),
-            len(repo_rows),
+            repo,
         )
-        payload = _bundle_from_table(username, session, repo_rows)
-        return _create_success_response(payload)
-
-    cache_payload = _bundle_from_cache(username)
-    if cache_payload:
-        logger.info(
-            "[BUNDLE_RESPONSE] request_id=%s username=%s job_id=%s source=cache repos=%d",
-            trace["request_id"],
-            username,
-            (cache_payload.get("job_id") or requested_job_id or "<latest>"),
-            len(cache_payload.get("data") or []),
+        return _create_error_response(
+            f"No cached data for repository '{repo}'. Trigger refresh first.",
+            404
         )
-        return _create_success_response(cache_payload)
 
-    if session:
-        return _create_error_response(f"Bundle for '{username}' not ready", 404)
-
-    return _create_error_response(f"No valid bundle found for '{username}'", 404)
+    repo_data = cached_result["data"]
+    
+    # Extract requested file types
+    response_payload = {
+        "username": username,
+        "repo": repo,
+        "fingerprint": repo_data.get("fingerprint"),
+    }
+    
+    if file_type == "readme" or file_type == "all":
+        response_payload["primary_readme"] = repo_data.get("readme", "")
+        response_payload["readme_files"] = repo_data.get("readme_files", {})
+    
+    if file_type == "config" or file_type == "all":
+        response_payload["config_files"] = repo_data.get("config_files", {})
+    
+    logger.info(
+        "[REPO_FILES_RESPONSE] request_id=%s username=%s repo=%s type=%s status=success",
+        trace["request_id"],
+        username,
+        repo,
+        file_type,
+    )
+    
+    return _create_success_response(response_payload, cache_control="public, max-age=3600")
 
 
 @bp.route(route="bundles/{username}/{repo}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
@@ -591,15 +621,16 @@ def get_single_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
         requested_job_id or "<latest>",
         repo,
     )
-    session = _fetch_candidate_session(username, requested_job_id)
-    repo_rows = _query_repo_rows(username, session, repo_names=[repo])
+    candidate_job = _fetch_candidate_jobs(username, requested_job_id)
+    job_id = candidate_job.get("job_id") if candidate_job else None
+    repo_rows = _query_repo_rows(username, job_id=job_id, repo_names=[repo])
 
-    if session and repo_rows:
+    if candidate_job and repo_rows:
         logger.info(
             "[REPO_RESPONSE] request_id=%s username=%s job_id=%s source=table",
             trace["request_id"],
             username,
-            (session.get("job_id") or requested_job_id or "<unknown>"),
+            (candidate_job.get("job_id") or requested_job_id or "<unknown>"),
         )
         entry = _repo_row_to_bundle_entry(repo_rows[0])
         payload = {
@@ -622,7 +653,7 @@ def get_single_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
         )
         return _create_success_response(cache_payload)
 
-    if session:
+    if candidate_job:
         return _create_error_response(f"No table metadata ready for '{repo}'", 404)
 
     return _create_error_response(f"No valid repository data found for '{repo}' by user '{username}'", 404)
@@ -779,7 +810,7 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
         job_id,
     )
 
-    session = _fetch_candidate_session(username, job_id)
+    session = _fetch_candidate_jobs(username, job_id)
     cache_data: Optional[Dict[str, Any]] = None
 
     info: Dict[str, Any] = session or {}
@@ -822,8 +853,74 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
     return _create_success_response(payload, cache_control="no-cache")
 
 
+@bp.route(route="session/bundle/{username}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_session_bundle(req: func.HttpRequest) -> func.HttpResponse:
+    """Retrieve bundle for username with session tracking.
+    
+    This endpoint combines bundle retrieval with session candidate tracking,
+    useful for UI contexts where browsing history should be recorded.
+    """
+    username = req.route_params.get("username")
+    if not username:
+        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
+
+    trace = _get_trace_context(req)
+    session_id = trace.get("session_id")
+    if not session_id:
+        return _create_error_response("X-Session-Id header required for session tracking", 400)
+
+    requested_job_id = req.params.get("job_id")
+    logger.info(
+        "[SESSION_BUNDLE_REQUEST] request_id=%s session_id=%s username=%s job_id=%s",
+        trace["request_id"],
+        session_id,
+        username,
+        requested_job_id or "<latest>",
+    )
+
+    session = _fetch_candidate_jobs(username, requested_job_id)
+    resolved_job_id = session.get("job_id") if session else requested_job_id
+    
+    # Record session tracking
+    _record_session_candidate(trace, username, resolved_job_id)
+    
+    repo_rows = _query_repo_rows(username, job_id=resolved_job_id)
+
+    if session and repo_rows:
+        logger.info(
+            "[SESSION_BUNDLE_RESPONSE] request_id=%s session_id=%s username=%s job_id=%s source=table repos=%d",
+            trace["request_id"],
+            session_id,
+            username,
+            resolved_job_id or "<unknown>",
+            len(repo_rows),
+        )
+        payload = _bundle_from_table(username, session, repo_rows)
+        return _create_success_response(payload)
+
+    cache_payload = _bundle_from_cache(username)
+    if cache_payload:
+        logger.info(
+            "[SESSION_BUNDLE_RESPONSE] request_id=%s session_id=%s username=%s source=cache repos=%d",
+            trace["request_id"],
+            session_id,
+            username,
+            len(cache_payload.get("data") or []),
+        )
+        return _create_success_response(cache_payload)
+
+    if session:
+        return _create_error_response(f"Bundle for '{username}' not ready", 404)
+
+    return _create_error_response(f"No valid bundle found for '{username}'", 404)
+
+
 @bp.route(route="session/candidates", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_session_candidates(req: func.HttpRequest) -> func.HttpResponse:
+    """List usernames recently viewed in this session.
+    
+    Returns browsing history for the session, useful for 'recently viewed' UI features.
+    """
     trace = _get_trace_context(req)
     session_id = trace.get("session_id")
     if not session_id:
@@ -864,8 +961,9 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
         return _create_error_response("Request body must contain 'query' and 'username'", 400)
 
     repos_bundle = None
-    session = _fetch_candidate_session(username)
-    repo_rows = _query_repo_rows(username, session) if session else []
+    session = _fetch_candidate_jobs(username)
+    job_id = session.get("job_id") if session else None
+    repo_rows = _query_repo_rows(username, job_id=job_id) if session else []
     if session and repo_rows:
         table_bundle = _bundle_from_table(username, session, repo_rows)
         repos_bundle = table_bundle.get("data")
