@@ -465,9 +465,11 @@ class TableManager:
         payload["session_id"] = payload.pop("PartitionKey", None)
         return payload
 
+
     # ------------------------------------------------------------------
     # Repo metadata
     # ------------------------------------------------------------------
+
     def upsert_repo_metadata(self, row: RepoMetadataRow) -> None:
         self.batch_upsert_repo_metadata([row])
 
@@ -537,20 +539,13 @@ class TableManager:
         # Normalize optional fields
         payload["fingerprint"] = payload.get("fingerprint") or None
         payload["content_blob"] = payload.get("content_blob") or None
+        payload["readme_excerpt"] = payload.get("readme_excerpt") or None
         payload["has_documentation"] = bool(payload.get("has_documentation"))
         payload["created_at"] = payload.get("created_at") or None
         payload["last_synced_at"] = payload.get("last_synced_at") or None
         payload["updated_at"] = payload.get("updated_at") or None
         return payload
-        payload["content_blob"] = payload.get("content_blob") or None
-        payload["has_documentation"] = bool(payload.get("has_documentation"))
-        payload["created_at"] = payload.get("created_at") or None
-        
-        # Map Azure table keys to application fields
-        payload["repo_name"] = payload.pop("RowKey", None)
-        payload["username"] = payload.pop("PartitionKey", None)
-        
-        return payload
+
 
     # ------------------------------------------------------------------
     # Repo sync status (per job, per repo)

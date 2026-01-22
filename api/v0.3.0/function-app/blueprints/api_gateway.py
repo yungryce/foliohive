@@ -179,35 +179,6 @@ def _record_session_candidate(trace: Dict[str, str], username: str, job_id: Opti
             exc,
         )
 
-
-def _repo_row_to_bundle_entry(row: Dict[str, Any]) -> Dict[str, Any]:
-    repo_name = row.get("RowKey") or row.get("repo_name")
-    document = row.get("document") if isinstance(row.get("document"), dict) else {}
-    entry: Dict[str, Any] = dict(document)
-    entry.setdefault("name", repo_name)
-    metadata_candidate = document.get("metadata") if isinstance(document.get("metadata"), dict) else row.get("metadata")
-    entry.setdefault("metadata", metadata_candidate or {})
-    languages_candidate = document.get("languages") if isinstance(document.get("languages"), dict) else row.get("languages")
-    entry.setdefault("languages", languages_candidate or {})
-    categorized_candidate = (
-        document.get("categorized_types")
-        if isinstance(document.get("categorized_types"), dict)
-        else row.get("categorized_types")
-    )
-    entry.setdefault("categorized_types", categorized_candidate or {})
-    entry.setdefault(
-        "fingerprint",
-        document.get("fingerprint") if isinstance(document.get("fingerprint"), str) else row.get("fingerprint"),
-    )
-    if "has_documentation" not in entry and row.get("has_documentation") is not None:
-        entry["has_documentation"] = bool(row.get("has_documentation"))
-    if "readme_excerpt" not in entry and row.get("readme_excerpt"):
-        entry["readme_excerpt"] = row.get("readme_excerpt")
-    if "content_blob" not in entry and row.get("content_blob"):
-        entry["content_blob"] = row.get("content_blob")
-    return entry
-
-
 def _query_repo_rows(
     username: str,
     job_id: Optional[str] = None,
@@ -234,10 +205,51 @@ def _query_repo_rows(
         return []
 
 
-def _bundle_from_table(username: str, session: Dict[str, Any], repo_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _repo_row_to_bundle_entry(
+    row: Dict[str, Any],
+    *,
+    languages: Optional[List[Dict[str, Any]]] = None,
+    github_metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Convert deserialized repo metadata row to bundle entry.
+
+    Row is already cleaned by table_manager._deserialize_repo_entity,
+    so Azure metadata fields are removed and PartitionKey/RowKey are mapped.
+    """
+    entry = {
+        "name": row.get("repo_name"),
+        "fingerprint": row.get("fingerprint"),
+        "content_blob": row.get("content_blob"),
+        "readme_excerpt": row.get("readme_excerpt"),
+        "has_documentation": row.get("has_documentation"),
+        "created_at": row.get("created_at"),
+        "last_synced_at": row.get("last_synced_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+    if languages:
+        entry["languages"] = languages
+
+    if github_metadata:
+        entry["github"] = {
+            "description": github_metadata.get("description"),
+            "topics": github_metadata.get("topics", []),
+            "homepage_url": github_metadata.get("homepage_url"),
+            "stars_count": github_metadata.get("stars_count"),
+            "forks_count": github_metadata.get("forks_count"),
+            "watchers_count": github_metadata.get("watchers_count"),
+            "primary_language": github_metadata.get("primary_language"),
+            "license_name": github_metadata.get("license_name"),
+            "html_url": github_metadata.get("html_url") or github_metadata.get("homepage_url"),
+        }
+
+    return entry
+
+
+def _bundle_from_table(username: str, job: Dict[str, Any], repo_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Build bundle from table data - list fields computed from RepoSyncStatus."""
-    entries = [_repo_row_to_bundle_entry(row) for row in repo_rows]
-    job_id = session.get("job_id")
+    entries: List[Dict[str, Any]] = []
+    job_id = job.get("job_id")
 
     # Compute list fields from RepoSyncStatus if job_id available
     synced_repos = []
@@ -249,13 +261,26 @@ def _bundle_from_table(username: str, session: Dict[str, Any], repo_rows: List[D
         synced_repos = [row["repo_name"] for row in status_rows if row.get("status") == "synced"]
         # queued/expected not tracked in RepoSyncStatus - use empty lists
 
+    # Enrich each repo with languages and GitHub metadata that recruiters expect
+    for row in repo_rows:
+        repo_name = row.get("repo_name")
+        languages = table_manager.query_repo_languages(username, repo_name) if repo_name else []
+        github_meta = table_manager.get_repo_github_metadata(username, repo_name) if repo_name else None
+        entries.append(
+            _repo_row_to_bundle_entry(
+                row,
+                languages=languages,
+                github_metadata=github_meta,
+            )
+        )
+
     return {
         "username": username,
         "job_id": job_id,
-        "fingerprint": session.get("bundle_fingerprint"),
-        "last_modified": session.get("updated_at"),
+        "fingerprint": job.get("bundle_fingerprint"),
+        "last_modified": job.get("updated_at"),
         "size_bytes": None,
-        "status": session.get("status"),
+        "status": job.get("status"),
         "expected_repos": expected_repos,
         "queued_repos": queued_repos,
         "synced_repos": synced_repos,
