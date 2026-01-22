@@ -87,8 +87,6 @@ def _load_repos_from_table(username: str, repo_names: Iterable[str], job_id: Opt
     names = [name for name in repo_names if name]
     if not names:
         return []
-    if not table_manager.is_enabled():
-        return []
 
     # Query core repo metadata (no job_id filter in normalized schema)
     rows = table_manager.query_repo_metadata(username, repo_names=names)
@@ -187,23 +185,21 @@ def _update_job_status(job_id: str, username: str, synced_repo_names: List[str],
     merged_count = len(synced_repo_names)
     now = datetime.now(timezone.utc).isoformat()
 
-    if table_manager.is_enabled():
-        table_manager.update_candidate_session(
-            username,
-            job_id,
-            {
-                "status": "completed",
-                "bundle_fingerprint": fingerprint,
-                "completed_at": now,
-            },
-        )
-        logger.info(
-            "[JOB_STATUS_UPDATED] job=%s user=%s status=completed merged_repos=%d",
-            job_id,
-            username,
-            merged_count,
-        )
-        return
+    table_manager.update_candidate_session(
+        username,
+        job_id,
+        {
+            "status": "completed",
+            "bundle_fingerprint": fingerprint,
+            "completed_at": now,
+        },
+    )
+    logger.info(
+        "[JOB_STATUS_UPDATED] job=%s user=%s status=completed merged_repos=%d",
+        job_id,
+        username,
+        merged_count,
+    )
 
 
 def _enqueue_training_job(
@@ -246,7 +242,7 @@ def _resolve_fresh_repos(payload: Dict[str, Any], username: str, job_id: Optiona
     # Try to get repo names from payload (backwards compatible)
     repo_names: Iterable[str] = payload.get("synced_repos") or payload.get("repo_names") or []
     
-    if not repo_names and job_id and table_manager.is_enabled():
+    if not repo_names and job_id:
         # Query RepoSyncStatus to find synced repos for this job
         status_rows = table_manager.list_repo_statuses(job_id)
         if status_rows:

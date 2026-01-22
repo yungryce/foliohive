@@ -129,12 +129,6 @@ def _get_github_repo_manager(username: str) -> GitHubRepoManager:
 def _job_cache_key(job_id: str) -> str:
     return f"job:{job_id}"
 
-def _table_enabled() -> bool:
-    try:
-        return table_manager.is_enabled()
-    except Exception:  # pragma: no cover - defensive fallback
-        return False
-
 
 def _parse_iso(timestamp: Optional[str]) -> datetime:
     if not timestamp:
@@ -149,9 +143,6 @@ def _parse_iso(timestamp: Optional[str]) -> datetime:
 
 def _fetch_candidate_jobs(username: str, job_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Fetch job metadata - returns specific job if job_id provided, else latest."""
-    if not _table_enabled():
-        return None
-
     if job_id:
         # Fetch specific job
         return table_manager.get_job_metadata(username, job_id)
@@ -173,8 +164,6 @@ def _record_session_candidate(trace: Dict[str, str], username: str, job_id: Opti
     Should be called explicitly when session tracking is desired,
     not as a side effect of data retrieval operations.
     """
-    if not _table_enabled():
-        return
     session_id = trace.get("session_id") if trace else ""
     if not session_id or not username:
         return
@@ -237,9 +226,6 @@ def _query_repo_rows(
     Returns:
         List of fully deserialized repo metadata dicts (no Azure artifacts)
     """
-    if not _table_enabled():
-        return []
-
     try:
         # job_id removed from normalized schema - use RepoSyncStatus for job-repo relationships
         return table_manager.query_repo_metadata(username, repo_names=repo_names)
@@ -258,7 +244,7 @@ def _bundle_from_table(username: str, session: Dict[str, Any], repo_rows: List[D
     queued_repos = []
     expected_repos = []
     
-    if job_id and table_manager.is_enabled():
+    if job_id:
         status_rows = table_manager.list_repo_statuses(job_id)
         synced_repos = [row["repo_name"] for row in status_rows if row.get("status") == "synced"]
         # queued/expected not tracked in RepoSyncStatus - use empty lists
@@ -418,9 +404,6 @@ def _upsert_job_session_row(
     session_id: Optional[str] = None,
 ) -> None:
     """Persist job metadata - list fields removed in normalized schema."""
-    if not _table_enabled():
-        return
-
     existing = table_manager.get_job_metadata(username, job_id)
     row = JobMetadataRow(
         username=username,

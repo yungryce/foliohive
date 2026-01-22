@@ -168,14 +168,6 @@ def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: 
 
 
 def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, Any], content_blob: str) -> None:
-    if not table_manager.is_enabled():
-        logger.warning(
-            "Table manager disabled; skipping repo metadata persistence for %s/%s",
-            username,
-            repo_payload.get("name"),
-        )
-        return
-
     repo_name = repo_payload.get("name")
     if not repo_name:
         logger.warning("Cannot persist repo metadata without repo_name")
@@ -256,10 +248,9 @@ def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, A
 
 def _load_job_snapshot(job_id: str, username: str) -> Dict[str, Any]:
     """Load job metadata - list fields removed in normalized schema."""
-    if table_manager.is_enabled():
-        session = table_manager.get_job_metadata(username, job_id)
-        if session:
-            return dict(session)
+    session = table_manager.get_job_metadata(username, job_id)
+    if session:
+        return dict(session)
 
     cached = cache_manager.get(_job_cache_key(job_id))
     if cached.get("status") == "valid" and isinstance(cached.get("data"), dict):
@@ -308,44 +299,32 @@ def _update_job_progress(
     status_value = "failed" if sync_failed else "synced"
 
     # Update RepoSyncStatus (source of truth for job-repo relationships)
-    if table_manager.is_enabled():
-        table_manager.upsert_repo_status(
-            RepoSyncStatusRow(
-                job_id=job_id,
-                repo_name=repo_name,
-                username=username,
-                status=status_value,
-                message_id=message_id,
-                error=None,
-            )
+    table_manager.upsert_repo_status(
+        RepoSyncStatusRow(
+            job_id=job_id,
+            repo_name=repo_name,
+            username=username,
+            status=status_value,
+            message_id=message_id,
+            error=None,
         )
+    )
 
-        # Query RepoSyncStatus to calculate progress
-        tracked = queued_repos or expected_repos
-        tracked = [name for name in tracked if isinstance(name, str) and name]
-        if not tracked and repo_name:
-            tracked = [repo_name]
+    # Query RepoSyncStatus to calculate progress
+    tracked = queued_repos or expected_repos
+    tracked = [name for name in tracked if isinstance(name, str) and name]
+    if not tracked and repo_name:
+        tracked = [repo_name]
 
-        synced: set[str] = set()
-        failed: set[str] = set()
-        for name in tracked:
-            row = table_manager.get_repo_status(job_id, name)
-            status = (row or {}).get("status")
-            if status == "synced":
-                synced.add(name)
-            elif status == "failed":
-                failed.add(name)
-    else:
-        # Fallback to legacy in-memory tracking
-        synced = set(job_info.get("synced_repos", []) or [])
-        failed = set(job_info.get("failed_repos", []) or [])
-        if repo_name:
-            if sync_failed:
-                failed.add(repo_name)
-                synced.discard(repo_name)
-            else:
-                synced.add(repo_name)
-                failed.discard(repo_name)
+    synced: set[str] = set()
+    failed: set[str] = set()
+    for name in tracked:
+        row = table_manager.get_repo_status(job_id, name)
+        status = (row or {}).get("status")
+        if status == "synced":
+            synced.add(name)
+        elif status == "failed":
+            failed.add(name)
 
     synced_list = sorted(synced)
     failed_list = sorted(failed)
@@ -409,8 +388,7 @@ def _update_job_progress(
             len(synced_list),
             len(failed_list),
         )
-        if table_manager.is_enabled():
-            table_manager.update_candidate_session(username, job_id, {"status": "synced"})
+        table_manager.update_candidate_session(username, job_id, {"status": "synced"})
     # Legacy cache fallback removed - no list fields to update
 
     if should_merge:
@@ -422,7 +400,7 @@ def _update_job_progress(
                 len(synced_list),
                 len(failed_list),
             )
-            if enqueued and table_manager.is_enabled():
+            if enqueued:
                 table_manager.update_candidate_session(
                     username,
                     job_id,
