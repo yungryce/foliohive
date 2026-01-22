@@ -238,17 +238,17 @@ def _bundle_from_table(username: str, session: Dict[str, Any], repo_rows: List[D
     """Build bundle from table data - list fields computed from RepoSyncStatus."""
     entries = [_repo_row_to_bundle_entry(row) for row in repo_rows]
     job_id = session.get("job_id")
-    
+
     # Compute list fields from RepoSyncStatus if job_id available
     synced_repos = []
     queued_repos = []
     expected_repos = []
-    
+
     if job_id:
         status_rows = table_manager.list_repo_statuses(job_id)
         synced_repos = [row["repo_name"] for row in status_rows if row.get("status") == "synced"]
         # queued/expected not tracked in RepoSyncStatus - use empty lists
-    
+
     return {
         "username": username,
         "job_id": job_id,
@@ -386,17 +386,12 @@ def _try_hydrate_repo(username: str, repo_name: str, expected_fingerprint: Optio
 def _upsert_job_session_row(
     job_id: str,
     username: str,
-    expected_repo_names: List[str],
-    queued: List[str],
-    resolved_total: int,
     *,
     status: str,
     force_refresh: bool,
-    synced_repos: Optional[List[str]],
     created_at: str,
     trace_id: Optional[str] = None,
     request_id: Optional[str] = None,
-    session_id: Optional[str] = None,
 ) -> None:
     """Persist job metadata - list fields removed in normalized schema."""
     existing = table_manager.get_job_metadata(username, job_id)
@@ -417,16 +412,11 @@ def _upsert_job_session_row(
 def _persist_job_metadata(
     job_id: str,
     username: str,
-    expected_repo_names: List[str],  # For backwards compat - not stored
     *,
-    queued_repo_names: Optional[List[str]] = None,  # For backwards compat - not stored
-    total_repos: Optional[int] = None,  # For backwards compat - not stored
     status: str = "queued",
     force_refresh: bool = False,
-    synced_repos: Optional[List[str]] = None,  # For backwards compat - not stored
     trace_id: Optional[str] = None,
     request_id: Optional[str] = None,
-    session_id: Optional[str] = None,  # For backwards compat - not stored
 ) -> None:
     """Persist job metadata - list fields removed in normalized schema."""
     created_at = datetime.now(timezone.utc).isoformat()
@@ -434,16 +424,11 @@ def _persist_job_metadata(
     _upsert_job_session_row(
         job_id,
         username,
-        expected_repo_names,  # Not used in upsert
-        [],  # queued - not used
-        0,  # resolved_total - not used
         status=status,
         force_refresh=force_refresh,
-        synced_repos=None,  # Not used
         created_at=created_at,
         trace_id=trace_id,
         request_id=request_id,
-        session_id=session_id,  # Not used
     )
 
 
@@ -686,11 +671,9 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
     _persist_job_metadata(
         job_id,
         username,
-        expected_repo_names,
         force_refresh=force_refresh,
         trace_id=trace.get("trace_id"),
         request_id=trace.get("request_id"),
-        session_id=trace.get("session_id"),
     )
 
     enqueued = 0
@@ -726,12 +709,8 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         _persist_job_metadata(
             job_id,
             username,
-            [],
-            queued_repo_names=[],
-            total_repos=0,
             trace_id=trace.get("trace_id"),
             request_id=trace.get("request_id"),
-            session_id=trace.get("session_id"),
         )
         return _create_error_response("Failed to enqueue sync jobs", 502)
 
@@ -741,13 +720,9 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
     _persist_job_metadata(
         job_id,
         username,
-        expected_repo_names,
-        queued_repo_names=enqueued_names,
-        total_repos=enqueued,
         force_refresh=force_refresh,
         trace_id=trace.get("trace_id"),
         request_id=trace.get("request_id"),
-        session_id=trace.get("session_id"),
     )
     response = {
         "status": "processing",
