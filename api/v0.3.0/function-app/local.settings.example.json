@@ -8,7 +8,6 @@
     "GITHUB_TOKEN": "<your-github-personal-access-token>",
     "GITHUB_USERNAME": "<your-github-username>",
 
-    "ENABLE_QUEUE_MODE": "true",
     "ENABLE_CONFIG_DISCOVERY_GRAPHQL": "false",
     "CF_HOT_CACHE_ENABLED": "true",
 

@@ -29,7 +29,6 @@ def configure_test_environment() -> None:
         "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==",
     )
     os.environ.setdefault("GITHUB_TOKEN", "test_github_token_123")
-    os.environ.setdefault("ENABLE_QUEUE_MODE", "true")
     os.environ.setdefault("GROQ_API_KEY", "test_groq_api_key")
     yield
 

@@ -63,11 +63,6 @@ These variables configure connections to Azure Storage services. For local devel
 | `TABLE_REPO_METADATA` | Table name for repository metadata | `RepoMetadata` | `table_manager` |
 | `TABLE_MODEL_METADATA` | Table name for model metadata | `ModelMetadata` | `table_manager` |
 
-### Queue Configuration
-
-| Variable | Description | Default | Used By |
-|----------|-------------|---------|---------|
-| `ENABLE_QUEUE_MODE` | Enable/disable queue-based processing | `true` | `api_gateway`, `queue_manager` |
 
 ### Cache Configuration
 
@@ -149,7 +144,7 @@ For production (Azure-hosted Functions):
 
 1. **Remove development storage URLs** - Use managed identity or connection strings
 2. **Set real GitHub token** - Use secure secret management
-3. **Enable appropriate features** - Set `ENABLE_QUEUE_MODE`, `CF_HOT_CACHE_ENABLED` based on needs
+3. **Enable appropriate features** - Set `CF_HOT_CACHE_ENABLED` based on needs
 4. **Configure table names** - Use production table names if different
 5. **Set training parameters** - Adjust `CF_RECONCILE_REQUEUE_COOLDOWN_SECONDS`, etc.
 
@@ -167,7 +162,6 @@ For production (Azure-hosted Functions):
 ### "Queue manager disabled"
 - Verify `AzureWebJobsStorage__queueServiceUri` is set
 - Ensure Azurite queue endpoint is running
-- Check `ENABLE_QUEUE_MODE` is not set to `false`
 
 ### "Cache errors"
 - Check blob storage endpoint is accessible
@@ -183,7 +177,7 @@ For production (Azure-hosted Functions):
 - **github_api.py**: `GITHUB_TOKEN`, `GITHUB_USERNAME`
 
 ### Workers & Blueprint Functions
-- **api_gateway.py**: `GITHUB_TOKEN`, `ENABLE_QUEUE_MODE`, `BUILD_BUILDNUMBER`
+- **api_gateway.py**: `GITHUB_TOKEN`, `BUILD_BUILDNUMBER`
 - **sync_worker.py**: `GITHUB_TOKEN`, `ENABLE_CONFIG_DISCOVERY_GRAPHQL`
 - **merge_worker.py**: `TRAINING_EXPERIMENT`
 - **reconciliation_worker.py**: `CF_RECONCILE_REQUEUE_COOLDOWN_SECONDS`, `CF_RECONCILE_MIN_AGE_SECONDS`, `CF_CACHE_CLEANUP_ENABLED`, `CF_CACHE_CLEANUP_MAX_AGE_HOURS`

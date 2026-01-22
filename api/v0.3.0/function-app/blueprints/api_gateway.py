@@ -383,11 +383,6 @@ def _try_hydrate_repo(username: str, repo_name: str, expected_fingerprint: Optio
     return data if isinstance(data, dict) else None
 
 
-def _queue_mode_enabled() -> bool:
-    env_flag = os.getenv("ENABLE_QUEUE_MODE", "true").lower() == "true"
-    return env_flag and queue_manager.is_enabled()
-
-
 def _upsert_job_session_row(
     job_id: str,
     username: str,
@@ -461,7 +456,6 @@ def _persist_job_metadata(
 def health_check(req: func.HttpRequest) -> func.HttpResponse:
     status = {
         "status": "ok",
-        "queue_mode": _queue_mode_enabled(),
         "cache": cache_manager.use_cache,
         "version": os.getenv("BUILD_BUILDNUMBER", "dev"),
     }
@@ -653,9 +647,6 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         username,
         force_refresh,
     )
-
-    if not _queue_mode_enabled():
-        return _create_error_response("Queue mode disabled or queue manager unavailable", 503)
 
     try:
         freshness = _identify_repo_freshness(username)
