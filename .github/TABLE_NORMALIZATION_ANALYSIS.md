@@ -41,8 +41,8 @@ Current architecture violates multiple normalization principles:
 | `failed_repos` | List[str] | ❌ VIOLATION | List stored in atomic row | **Remove** - redundant with RepoSyncStatus |
 | `bundle_fingerprint` | str | ✅ ATOMIC | Scalar hash reference to blob | Keep - denormalized for performance |
 | `force_refresh` | bool | ✅ ATOMIC | Scalar flag | Keep - job configuration |
-| `model_status` | str | ⚠️ DUPLICATED | Duplicates ModelMetadata.status | **Consider removing** - query ModelMetadata instead |
-| `model_fingerprint` | str | ⚠️ FK VIOLATION | Foreign key to ModelMetadata without constraint | Keep but add validation logic |
+| `model_status` | str | ⚠️ DUPLICATED | Duplicates ModelMetadata.status | **Remove** - query ModelMetadata instead |
+| `model_fingerprint` | str | ⚠️ FK VIOLATION | Foreign key to ModelMetadata without constraint | **Remove** - query ModelMetadata instead |
 | `merge_enqueued_at` | str | ✅ ATOMIC | Timestamp scalar | Keep - workflow tracking |
 | `last_requeue_at` | str | ✅ ATOMIC | Timestamp scalar | Keep - workflow tracking |
 | `trace_id` | str | ✅ ATOMIC | Correlation ID | Keep - observability |
@@ -167,7 +167,7 @@ def upsert_session_candidate(self, session_id: str, username: str, job_id: Optio
 | `username` | str | ✅ ATOMIC | Natural key (PartitionKey) | Keep - user identifier |
 | `repo_name` | str | ✅ ATOMIC | Natural key (RowKey) | Keep - repo identifier |
 | `fingerprint` | str | ✅ ATOMIC | Content hash | Keep - cache invalidation |
-| `job_id` | str | ⚠️ AMBIGUOUS | Which job created this? Or latest job? | **Clarify semantics** - consider removing |
+| `job_id` | str | ⚠️ AMBIGUOUS | Which job created this? Or latest job? | **Remove** - RepoSyncStatus table already tracks the (job_id, repo_name) |
 | `document` | Dict | ❌ VIOLATION | Nested JSON blob duplicating other fields | **Remove** - redundant with other fields |
 | `metadata` | Dict | ❌ VIOLATION | Nested JSON containing repo details | **Normalize** - extract to RepoDetailsRow |
 | `content_blob` | str | ✅ ATOMIC | Blob cache key reference | Keep - pointer to full content |
@@ -190,13 +190,15 @@ def upsert_session_candidate(self, session_id: str, username: str, job_id: Optio
 
 2. **Data Duplication:** `document` field duplicates data already in `metadata`, `fingerprint`, `has_documentation`:
    ```python
+   # sync_worker.py
    document = {
        "name": repo_name,  # Already in RowKey
        "fingerprint": ...,  # Already in fingerprint field
        "has_documentation": ...,  # Already in has_documentation field
-       "api_usage": ...,  # Should be separate
+       "api_usage": ...,  # Should be in RepoAPIUsage table
    }
    ```
+ 
 
 3. **Queryability:** Cannot query "repos using Python >50%" because `languages` is JSON blob. Must load all repos and parse.
 
@@ -271,6 +273,24 @@ class RepoGitHubMetadataRow:
     created_at: str
     pushed_at: str
     updated_at: str
+
+# RepoAPIUsage Table (NEW)
+@dataclass
+class RepoAPIUsageRow:
+    """GitHub API consumption tracking per sync operation."""
+    job_id: str                         # PartitionKey
+    operation_key: str                  # RowKey: "{repo_name}#{operation}#{timestamp}"
+    repo_name: str
+    username: str
+    operation: str                      # 'config_discovery', 'metadata_fetch', 'languages_fetch'
+    api_calls: int                      # Number of REST API calls made
+    rate_limit_remaining: Optional[int] # GitHub rate limit remaining after operation
+    rate_limit_reset_at: Optional[str]  # When rate limit resets (ISO8601)
+    graphql_cost: Optional[int]         # GraphQL query cost (if applicable)
+    execution_time_ms: Optional[int]    # Operation duration in milliseconds
+    endpoint: Optional[str]             # GitHub API endpoint called
+    mode: Optional[str]                 # 'rest' or 'graphql'
+    created_at: str                     # Operation timestamp
 ```
 
 **Benefits:**
@@ -279,6 +299,7 @@ class RepoGitHubMetadataRow:
 - Can query: "SELECT * FROM RepoLanguages WHERE language='Python' AND percentage>50"
 - Atomic updates per language/file type
 - Respects Azure 32KB row limit
+- **API Usage Tracking:** Query total GitHub API consumption per job/user for rate limit management and cost optimization
 
 ---
 
@@ -491,213 +512,9 @@ ModelMetadata (username → fingerprint)
 5. **RepoLanguages** - Normalized language stats
 6. **RepoFileTypes** - Normalized file categorization  
 7. **RepoGitHubMetadata** - Extracted GitHub metadata
-8. **ModelRepos** - Many-to-many model↔repo
-9. **ModelMetrics** - Queryable training metrics
-
-### Migration Plan
-
-#### Phase 1: Remove Derived Fields (Low Risk)
-- Drop `total_repos`, `completed_repos`, `repos_count` from JobMetadata/ModelMetadata
-- Update code to calculate from RepoSyncStatus/ModelRepos queries
-- **Estimated effort:** 2 hours
-
-#### Phase 2: Remove List Fields (Medium Risk)
-- Drop `expected_repos`, `queued_repos`, `synced_repos`, `failed_repos` from JobMetadata
-- Drop `repo_names` from ModelMetadata
-- Create ModelRepos table
-- Update sync_worker.py to query instead of read lists
-- **Estimated effort:** 1 day
-
-#### Phase 3: Normalize Nested JSON (High Risk)
-- Create RepoLanguages, RepoFileTypes, RepoGitHubMetadata tables
-- Migrate existing `languages`, `categorized_types`, `metadata` blobs
-- Update merge_worker.py and API gateway queries
-- **Estimated effort:** 2-3 days
-
-#### Phase 4: Add FK Validation (Low Risk)
-- Add validation in upsert methods to check FK existence
-- Add unit tests for FK violations
-- **Estimated effort:** 4 hours
-
----
-
-## Impact Analysis
-
-### Code Changes Required
-
-#### api_gateway.py
-```python
-# BEFORE
-candidate_job = _fetch_candidate_jobs(username)
-synced_repos = candidate_job.get("synced_repos", [])
-
-# AFTER
-candidate_job = _fetch_candidate_jobs(username)
-job_id = candidate_job.get("job_id")
-statuses = table_manager.list_repo_statuses(job_id)
-synced_repos = [s["repo_name"] for s in statuses if s["status"] == "synced"]
-```
-
-#### sync_worker.py
-```python
-# BEFORE
-job_info["synced_repos"].append(repo_name)
-table_manager.upsert_job_metadata(job_info)
-
-# AFTER
-# RepoSyncStatus update is atomic - no list manipulation needed
-table_manager.upsert_repo_status(RepoSyncStatusRow(
-    job_id=job_id,
-    repo_name=repo_name,
-    status="synced",
-    ...
-))
-```
-
-#### merge_worker.py
-```python
-# BEFORE
-fresh_repos = payload.get("fresh_repos")  # Embedded list
-cached_bundle = payload.get("cached_bundle")  # Embedded list
-
-# AFTER
-job_id = payload.get("job_id")
-statuses = table_manager.list_repo_statuses(job_id)
-synced_repo_names = [s["repo_name"] for s in statuses if s["status"] == "synced"]
-fresh_repos = table_manager.query_repo_metadata(username, repo_names=synced_repo_names)
-```
-
-### Performance Impact
-
-#### Queries Become More Expensive
-| Operation | Before | After | Impact |
-|-----------|--------|-------|--------|
-| Get synced repos | 1 point read | 1 query (list) | +10-50ms depending on repo count |
-| Get total repos | 1 point read | 1 query + count | +10-50ms |
-| Get model repos | 1 point read | 1 query (list) | +10-50ms |
-
-#### Writes Become Safer
-| Operation | Before | After | Benefit |
-|-----------|--------|-------|---------|
-| Update repo status | Read+Modify+Write (race condition) | Single upsert | Atomic - no race |
-| Add model repo | Read list+Append+Write (race) | Single insert | Atomic - no race |
-
-**Verdict:** Slight read latency increase (10-50ms) acceptable for ACID guarantees.
-
-### Storage Impact
-
-#### Before Normalization
-- JobMetadata: ~2KB per row (with 4 lists)
-- RepoMetadata: ~10-50KB per row (nested JSON)
-- ModelMetadata: ~5KB per row (with repo_names list)
-
-#### After Normalization
-- JobMetadata: ~500 bytes per row (no lists)
-- RepoMetadata: ~1KB per row (no JSON)
-- ModelMetadata: ~500 bytes per row (no lists)
-- +RepoLanguages: ~200 bytes × languages per repo
-- +RepoFileTypes: ~300 bytes × file types per repo
-- +ModelRepos: ~150 bytes × repos per model
-- +ModelMetrics: ~500 bytes per model
-
-**Net Result:** Slight increase in total storage (~10-20%) but data is queryable and atomic.
-
----
-
-## Compliance Scorecard
-
-### ACID Principles
-
-| Principle | Current State | After Normalization |
-|-----------|---------------|---------------------|
-| **Atomicity** | ❌ VIOLATED - list updates have race conditions | ✅ FIXED - each row is atomic unit |
-| **Consistency** | ❌ VIOLATED - synced_repos list can diverge from RepoSyncStatus | ✅ FIXED - single source of truth |
-| **Isolation** | ⚠️ PARTIAL - Azure Table optimistic concurrency | ⚠️ PARTIAL - unchanged (Azure limitation) |
-| **Durability** | ✅ COMPLIANT - Azure Table persistence | ✅ COMPLIANT - unchanged |
-
-### Normal Forms
-
-| Normal Form | Current State | After Normalization |
-|-------------|---------------|---------------------|
-| **1NF** (Atomic values) | ❌ VIOLATED - lists and nested JSON | ✅ COMPLIANT - all scalar values |
-| **2NF** (No partial deps) | ✅ COMPLIANT - composite keys used properly | ✅ COMPLIANT - maintained |
-| **3NF** (No transitive deps) | ❌ VIOLATED - derived fields (total_repos from synced_repos) | ✅ COMPLIANT - no derived data |
-| **BCNF** (Every determinant is key) | ⚠️ PARTIAL - username determines job_id in multiple tables | ⚠️ PARTIAL - acceptable for NoSQL |
-
----
-
-## Decision: Accept or Normalize?
-
-### Option A: Keep Current Design (Denormalized)
-**Pros:**
-- No code changes required
-- Faster reads (1 query vs multiple)
-- Simpler mental model
-
-**Cons:**
-- Race conditions in production (already observed)
-- Data consistency bugs (synced_repos ≠ RepoSyncStatus)
-- Cannot query by language/file type
-- Violates ACID atomicity
-
-**Verdict:** ❌ NOT RECOMMENDED - Tech debt will compound
-
-### Option B: Full Normalization (Recommended)
-**Pros:**
-- Eliminates race conditions
-- Single source of truth
-- Queryable data (languages, metrics)
-- ACID compliant
-- Scalable architecture
-
-**Cons:**
-- 2-3 days migration effort
-- Slightly slower reads (+10-50ms)
-- More complex queries
-
-**Verdict:** ✅ RECOMMENDED - Short-term pain, long-term gain
-
-### Option C: Hybrid Approach (Pragmatic)
-**Phase 1 (Must Fix):**
-- Remove list fields from JobMetadata (eliminates race conditions)
-- Remove repo_names from ModelMetadata
-
-**Phase 2 (Should Fix):**
-- Normalize RepoMetadata nested JSON
-
-**Phase 3 (Nice to Have):**
-- Add FK validation
-- Create ModelMetrics table
-
-**Verdict:** ⚠️ ACCEPTABLE - Prioritize safety over purity
-
----
-
-## Action Items
-
-### Immediate (Week 1)
-- [ ] Review this analysis with team
-- [ ] Decide: Full normalization vs Hybrid
-- [ ] Create feature branch: `normalize-table-schema`
-- [ ] Write failing tests demonstrating race conditions
-
-### Short-term (Week 2-3)
-- [ ] Phase 1: Remove list fields from JobMetadata
-- [ ] Update sync_worker.py to query RepoSyncStatus
-- [ ] Update api_gateway.py aggregate queries
-- [ ] Add FK validation to upsert methods
-
-### Medium-term (Month 2)
-- [ ] Phase 2: Normalize RepoMetadata JSON blobs
-- [ ] Create migration script for existing data
-- [ ] Update merge_worker.py queries
-- [ ] Performance testing
-
-### Long-term (Month 3+)
-- [ ] Phase 3: Create ModelMetrics table
-- [ ] Add advanced querying capabilities
-- [ ] Documentation updates
-- [ ] Monitoring/alerting for FK violations
+8. **RepoAPIUsage** - GitHub API consumption tracking (see detailed section below)  
+9. **ModelRepos** - Many-to-many model↔repo 
+10. **ModelMetrics** - Queryable training metrics
 
 ---
 
