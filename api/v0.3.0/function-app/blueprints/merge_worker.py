@@ -82,47 +82,76 @@ def _load_repos_from_cache(username: str, repo_names: Iterable[str], job_id: Opt
 
 
 def _load_repos_from_table(username: str, repo_names: Iterable[str], job_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Load repos from normalized tables - reconstructs full document from multiple tables."""
+    _ = job_id  # job_id removed from RepoMetadataRow
     names = [name for name in repo_names if name]
     if not names:
         return []
     if not table_manager.is_enabled():
         return []
 
-    rows = table_manager.query_repo_metadata(username, job_id=job_id, repo_names=names)
+    # Query core repo metadata (no job_id filter in normalized schema)
+    rows = table_manager.query_repo_metadata(username, repo_names=names)
     documents: List[Dict[str, Any]] = []
+    
     for row in rows:
-        doc = row.get("document") if isinstance(row.get("document"), dict) else {}
-        repo_name = row.get("repo_name") or row.get("RowKey") or doc.get("name")
-        entry: Dict[str, Any] = dict(doc)
-        if repo_name and "name" not in entry:
-            entry["name"] = repo_name
-        if "fingerprint" not in entry and row.get("fingerprint"):
-            entry["fingerprint"] = row.get("fingerprint")
+        repo_name = row.get("repo_name") or row.get("RowKey")
+        if not repo_name:
+            continue
 
-        if "metadata" not in entry and isinstance(row.get("metadata"), dict):
-            entry["metadata"] = row.get("metadata")
-        if "languages" not in entry and isinstance(row.get("languages"), dict):
-            entry["languages"] = row.get("languages")
-        if "categorized_types" not in entry and isinstance(row.get("categorized_types"), dict):
-            entry["categorized_types"] = row.get("categorized_types")
+        # Start with core metadata fields
+        entry: Dict[str, Any] = {
+            "name": repo_name,
+            "fingerprint": row.get("fingerprint"),
+            "has_documentation": bool(row.get("has_documentation")),
+            "readme_excerpt": row.get("readme_excerpt"),
+            "content_blob": row.get("content_blob"),
+        }
 
-        if "has_documentation" not in entry and row.get("has_documentation") is not None:
-            entry["has_documentation"] = bool(row.get("has_documentation"))
-        if "readme_excerpt" not in entry and row.get("readme_excerpt"):
-            entry["readme_excerpt"] = row.get("readme_excerpt")
-        if "content_blob" not in entry and row.get("content_blob"):
-            entry["content_blob"] = row.get("content_blob")
+        # Query normalized tables to reconstruct full document
+        # 1. Languages
+        lang_rows = table_manager.query_repo_languages(username, repo_name)
+        if lang_rows:
+            entry["languages"] = {row["language"]: row["bytes_count"] for row in lang_rows}
+        else:
+            entry["languages"] = {}
+
+        # 2. File types
+        file_type_rows = table_manager.query_repo_file_types(username, repo_name)
+        if file_type_rows:
+            entry["categorized_types"] = {row["category"]: row["types"] for row in file_type_rows}
+        else:
+            entry["categorized_types"] = {}
+
+        # 3. GitHub metadata
+        github_meta = table_manager.get_repo_github_metadata(username, repo_name)
+        if github_meta:
+            entry["metadata"] = {
+                "name": repo_name,
+                "description": github_meta.get("description"),
+                "topics": github_meta.get("topics", []),
+                "homepage": github_meta.get("homepage_url"),
+                "stargazers_count": github_meta.get("stars_count"),
+                "forks_count": github_meta.get("forks_count"),
+                "fork": github_meta.get("is_fork"),
+                "archived": github_meta.get("is_archived"),
+                "language": github_meta.get("primary_language"),
+                "license": {"name": github_meta.get("license_name")} if github_meta.get("license_name") else None,
+                "updated_at": row.get("last_synced_at"),
+            }
+        else:
+            entry["metadata"] = {"name": repo_name}
 
         documents.append(entry)
+    
     if documents:
         logger.info(
-            "[MERGE_LOAD] user=%s job=%s source=repo_table repos=%d",
+            "[MERGE_LOAD] user=%s job=%s source=normalized_tables repos=%d",
             username,
             job_id or "<unknown>",
             len(documents),
         )
-        return documents
-    return []
+    return documents
 
 
 def _merge_repos(fresh_repos: List[Dict[str, Any]], cached_bundle: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -154,23 +183,25 @@ def _save_bundle(username: str, bundle: List[Dict[str, Any]], fingerprint: str) 
 
 
 def _update_job_status(job_id: str, username: str, synced_repo_names: List[str], fingerprint: str) -> None:
+    """Update job status - list fields removed in normalized schema."""
     merged_count = len(synced_repo_names)
     now = datetime.now(timezone.utc).isoformat()
 
     if table_manager.is_enabled():
-        existing = table_manager.get_job_metadata(username, job_id) or {}
-        total_repos = existing.get("total_repos", merged_count)
         table_manager.update_candidate_session(
             username,
             job_id,
             {
-                "completed_repos": merged_count,
-                "total_repos": max(int(total_repos or 0), merged_count),
                 "status": "completed",
                 "bundle_fingerprint": fingerprint,
                 "completed_at": now,
-                "synced_repos": list(synced_repo_names),
             },
+        )
+        logger.info(
+            "[JOB_STATUS_UPDATED] job=%s user=%s status=completed merged_repos=%d",
+            job_id,
+            username,
+            merged_count,
         )
         return
 
@@ -207,20 +238,20 @@ def _enqueue_training_job(
 
 
 def _resolve_fresh_repos(payload: Dict[str, Any], username: str, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Resolve repos to merge - queries RepoSyncStatus for job-repo relationships."""
     fresh = payload.get("fresh_repos")
     if isinstance(fresh, list) and fresh:
         return [repo for repo in fresh if isinstance(repo, dict)]
+    
+    # Try to get repo names from payload (backwards compatible)
     repo_names: Iterable[str] = payload.get("synced_repos") or payload.get("repo_names") or []
-    if not repo_names:
-        if job_id and table_manager.is_enabled():
-            session = table_manager.get_job_metadata(username, job_id) or {}
-            session_synced = session.get("synced_repos") or []
-            if isinstance(session_synced, list) and session_synced:
-                repo_names = session_synced
-            else:
-                status_rows = table_manager.list_repo_statuses(job_id)
-                if status_rows:
-                    repo_names = [row.get("repo_name") for row in status_rows if row.get("status") == "synced"]
+    
+    if not repo_names and job_id and table_manager.is_enabled():
+        # Query RepoSyncStatus to find synced repos for this job
+        status_rows = table_manager.list_repo_statuses(job_id)
+        if status_rows:
+            repo_names = [row.get("repo_name") for row in status_rows if row.get("status") == "synced"]
+    
     table_repos = _load_repos_from_table(username, repo_names, job_id)
     if table_repos:
         return table_repos

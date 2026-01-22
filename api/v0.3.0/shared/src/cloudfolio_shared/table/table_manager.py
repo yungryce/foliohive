@@ -24,6 +24,9 @@ __all__ = [
     "JobMetadataRow",
     "SessionCandidateRow",
     "RepoMetadataRow",
+    "RepoLanguagesRow",
+    "RepoFileTypesRow",
+    "RepoGitHubMetadataRow",
     "RepoSyncStatusRow",
     "ModelMetadataRow",
     "table_manager",
@@ -40,32 +43,33 @@ class TableNames:
     job_metadata: str = "JobMetadata"
     session_candidates: str = "SessionCandidates"
     repo_metadata: str = "RepoMetadata"
+    repo_languages: str = "RepoLanguages"
+    repo_file_types: str = "RepoFileTypes"
+    repo_github_metadata: str = "RepoGitHubMetadata"
     model_metadata: str = "ModelMetadata"
     repo_sync_status: str = "RepoSyncStatus"
 
 
 @dataclass
 class JobMetadataRow:
-    """Representation of a job-tracking metadata row for a candidate."""
+    """Job tracking - normalized schema.
+    
+    Removed fields (query from RepoSyncStatus instead):
+    - total_repos, completed_repos (derived from RepoSyncStatus)
+    - expected_repos, queued_repos, synced_repos, failed_repos (lists)
+    - model_status, model_fingerprint (query ModelMetadata)
+    - session_id (circular ref, use SessionCandidates)
+    """
 
     username: str
     job_id: str
     status: str = "queued"
-    total_repos: int = 0
-    completed_repos: int = 0
-    expected_repos: List[str] = field(default_factory=list)
-    queued_repos: List[str] = field(default_factory=list)
-    synced_repos: List[str] = field(default_factory=list)
-    failed_repos: List[str] = field(default_factory=list)
     bundle_fingerprint: Optional[str] = None
     force_refresh: bool = False
-    model_status: Optional[str] = None
-    model_fingerprint: Optional[str] = None
     merge_enqueued_at: Optional[str] = None
     last_requeue_at: Optional[str] = None
     trace_id: Optional[str] = None
     request_id: Optional[str] = None
-    session_id: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -85,21 +89,74 @@ class SessionCandidateRow:
 
 @dataclass
 class RepoMetadataRow:
-    """Per-repository metadata used by merge + AI flows."""
+    """Lightweight per-repository metadata - normalized schema.
+    
+    Removed fields (moved to dedicated tables):
+    - job_id (use RepoSyncStatus for job tracking)
+    - document (redundant with other fields)
+    - metadata (moved to RepoGitHubMetadataRow)
+    - languages (moved to RepoLanguagesRow)
+    - categorized_types (moved to RepoFileTypesRow)
+    """
 
     username: str
     repo_name: str
     fingerprint: Optional[str]
-    job_id: Optional[str] = None
-    document: Dict[str, Any] = field(default_factory=dict)
-    metadata: Dict[str, Any] = field(default_factory=dict)
     content_blob: Optional[str] = None
-    languages: Dict[str, Any] = field(default_factory=dict)
-    categorized_types: Dict[str, Any] = field(default_factory=dict)
     has_documentation: Optional[bool] = None
     readme_excerpt: Optional[str] = None
     created_at: Optional[str] = None
     last_synced_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+@dataclass
+class RepoLanguagesRow:
+    """Per-repo language statistics - normalized from RepoMetadata.languages."""
+
+    username: str  # PartitionKey
+    repo_language_key: str  # RowKey: "{repo_name}#{language}"
+    repo_name: str
+    language: str
+    bytes: int
+    percentage: Optional[float] = None
+
+
+@dataclass
+class RepoFileTypesRow:
+    """Per-repo file type categorization - normalized from RepoMetadata.categorized_types."""
+
+    username: str  # PartitionKey
+    repo_type_key: str  # RowKey: "{repo_name}#{category}"
+    repo_name: str
+    category: str
+    file_path: str
+    file_type: str
+
+
+@dataclass
+class RepoGitHubMetadataRow:
+    """GitHub-specific metadata - normalized from RepoMetadata.metadata."""
+
+    username: str  # PartitionKey
+    repo_name: str  # RowKey
+    full_name: Optional[str] = None
+    description: Optional[str] = None
+    html_url: Optional[str] = None
+    homepage: Optional[str] = None
+    stars: int = 0
+    forks: int = 0
+    open_issues: int = 0
+    watchers: int = 0
+    default_branch: Optional[str] = None
+    is_private: bool = False
+    is_fork: bool = False
+    is_archived: bool = False
+    license_name: Optional[str] = None
+    github_created_at: Optional[str] = None
+    github_updated_at: Optional[str] = None
+    github_pushed_at: Optional[str] = None
+    created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
 
@@ -142,8 +199,8 @@ class ModelMetadataRow:
             raise ValueError("fingerprint or model_fingerprint must be provided")
 
 
-_JSON_LIST_FIELDS = {"expected_repos", "queued_repos", "synced_repos", "failed_repos"}
-_JSON_FIELDS_REPO = {"document", "metadata", "languages", "categorized_types"}
+_JSON_LIST_FIELDS: set[str] = set()  # Removed: list fields no longer used in normalized schema
+_JSON_FIELDS_REPO: set[str] = set()  # Removed: nested JSON fields moved to normalized tables
 _JSON_FIELDS_MODEL = {"metadata", "training_params", "repo_names"}
 _AZURE_META_FIELDS = {"etag", "odata.etag", "odata.metadata"}
 _REPO_STATUS_ALLOWED = {"synced", "failed", "pending"}
@@ -261,6 +318,9 @@ class TableManager:
             self.table_names.job_metadata,
             self.table_names.session_candidates,
             self.table_names.repo_metadata,
+            self.table_names.repo_languages,
+            self.table_names.repo_file_types,
+            self.table_names.repo_github_metadata,
             self.table_names.model_metadata,
             self.table_names.repo_sync_status,
         ):
@@ -309,34 +369,25 @@ class TableManager:
         if not table:
             return
         logger.info(
-            "[TABLE_UPSERT_JOB_METADATA] user=%s job=%s status=%s total=%s completed=%s expected=%d queued=%d synced=%d",
+            "[TABLE_UPSERT_JOB_METADATA] user=%s job=%s status=%s",
             row.username,
             row.job_id,
             row.status,
-            row.total_repos,
-            row.completed_repos,
-            len(row.expected_repos or []),
-            len(row.queued_repos or []),
-            len(row.synced_repos or []),
         )
         now = _utcnow_iso()
         entity = {
             "PartitionKey": row.username,
             "RowKey": row.job_id,
             "status": row.status,
-            "total_repos": int(row.total_repos),
-            "completed_repos": int(row.completed_repos),
             "bundle_fingerprint": row.bundle_fingerprint or "",
             "force_refresh": bool(row.force_refresh),
-            "model_status": row.model_status or "",
-            "model_fingerprint": row.model_fingerprint or "",
             "merge_enqueued_at": row.merge_enqueued_at or "",
             "last_requeue_at": row.last_requeue_at or "",
+            "trace_id": row.trace_id or "",
+            "request_id": row.request_id or "",
             "created_at": row.created_at or now,
             "updated_at": now,
         }
-        for field_name in _JSON_LIST_FIELDS:
-            entity[field_name] = json.dumps(getattr(row, field_name, []) or [], separators=(",", ":"))
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
 
 
@@ -385,21 +436,17 @@ class TableManager:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
-        for field_name in _JSON_LIST_FIELDS:
-            try:
-                payload[field_name] = json.loads(payload.get(field_name) or "[]")
-            except json.JSONDecodeError:
-                payload[field_name] = []
+        payload["username"] = payload.get("PartitionKey")
+        payload["job_id"] = payload.get("RowKey")
         payload["bundle_fingerprint"] = payload.get("bundle_fingerprint") or None
-        payload["model_fingerprint"] = payload.get("model_fingerprint") or None
-        payload["model_status"] = payload.get("model_status") or None
         payload["merge_enqueued_at"] = payload.get("merge_enqueued_at") or None
         payload["last_requeue_at"] = payload.get("last_requeue_at") or None
+        payload["trace_id"] = payload.get("trace_id") or None
+        payload["request_id"] = payload.get("request_id") or None
         payload["force_refresh"] = bool(payload.get("force_refresh"))
-        payload["total_repos"] = int(payload.get("total_repos", 0))
-        payload["completed_repos"] = int(payload.get("completed_repos", 0))
         payload["created_at"] = payload.get("created_at") or None
         payload["updated_at"] = payload.get("updated_at") or None
+        return payload
 
         # Map Azure table keys to application fields
         payload["username"] = payload.pop("PartitionKey", None)
@@ -452,6 +499,7 @@ class TableManager:
         return rows
 
     def update_candidate_session(self, username: str, job_id: str, updates: Dict[str, Any]) -> None:
+        """Update job metadata fields - no list fields in normalized schema."""
         table = self._get_table_client(self.table_names.job_metadata)
         if not table or not updates:
             return
@@ -463,10 +511,7 @@ class TableManager:
         )
         entity: Dict[str, Any] = {"PartitionKey": username, "RowKey": job_id, "updated_at": _utcnow_iso()}
         for key, value in updates.items():
-            if key in _JSON_LIST_FIELDS:
-                entity[key] = json.dumps(value or [], separators=(",", ":"))
-            else:
-                entity[key] = value if value is not None else ""
+            entity[key] = value if value is not None else ""
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
 
     def _deserialize_session_candidate(self, entity: Dict[str, Any]) -> Dict[str, Any]:
@@ -508,15 +553,13 @@ class TableManager:
         self,
         username: str,
         *,
-        job_id: Optional[str] = None,
         repo_names: Optional[Iterable[str]] = None,
     ) -> List[Dict[str, Any]]:
+        """Query repo metadata - job_id filter removed (use RepoSyncStatus)."""
         table = self._get_table_client(self.table_names.repo_metadata)
         if not table:
             return []
         filters = [f"PartitionKey eq '{username}'"]
-        if job_id:
-            filters.append(f"job_id eq '{job_id}'")
         if repo_names:
             names = list(repo_names)
             if names:
@@ -534,7 +577,6 @@ class TableManager:
             "PartitionKey": row.username,
             "RowKey": row.repo_name,
             "fingerprint": row.fingerprint or "",
-            "job_id": row.job_id or "",
             "content_blob": row.content_blob or "",
             "has_documentation": bool(row.has_documentation),
             "readme_excerpt": (row.readme_excerpt or "")[:16384],
@@ -542,35 +584,28 @@ class TableManager:
             "last_synced_at": row.last_synced_at or now,
             "updated_at": row.updated_at or now,
         }
-        for field_name in _JSON_FIELDS_REPO:
-            entity[field_name] = _safe_json_dump_limited(
-                getattr(row, field_name, {}),
-                label=f"repo_metadata.{field_name}",
-            )
         return entity
 
     def _deserialize_repo_entity(self, entity: Dict[str, Any]) -> Dict[str, Any]:
-        """Deserialize Azure Table entity to clean dictionary.
-        
-        Removes all Azure-specific metadata and converts table keys to standard fields.
-        Returned dict contains only application-level fields with no Azure artifacts.
-        """
+        """Deserialize Azure Table entity to clean dictionary - normalized schema."""
         payload = dict(entity)
         
-        # Remove Azure metadata fields (etag, odata, etc.)
+        # Remove Azure metadata fields
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
         
-        # Parse JSON-serialized fields
-        for field_name in _JSON_FIELDS_REPO:
-            try:
-                payload[field_name] = json.loads(payload.get(field_name) or "{}")
-            except json.JSONDecodeError:
-                payload[field_name] = {} if field_name != "document" else None
+        # Map Azure keys to application fields
+        payload["repo_name"] = payload.pop("RowKey", None)
+        payload["username"] = payload.pop("PartitionKey", None)
         
         # Normalize optional fields
         payload["fingerprint"] = payload.get("fingerprint") or None
-        payload["job_id"] = payload.get("job_id") or None
+        payload["content_blob"] = payload.get("content_blob") or None
+        payload["has_documentation"] = bool(payload.get("has_documentation"))
+        payload["created_at"] = payload.get("created_at") or None
+        payload["last_synced_at"] = payload.get("last_synced_at") or None
+        payload["updated_at"] = payload.get("updated_at") or None
+        return payload
         payload["content_blob"] = payload.get("content_blob") or None
         payload["has_documentation"] = bool(payload.get("has_documentation"))
         payload["created_at"] = payload.get("created_at") or None
@@ -651,6 +686,185 @@ class TableManager:
         payload["message_id"] = payload.get("message_id") or None
         payload["error"] = payload.get("error") or None
         payload["updated_at"] = payload.get("updated_at") or None
+        return payload
+
+    # ------------------------------------------------------------------
+    # Normalized repo tables: Languages, File Types, GitHub Metadata
+    # ------------------------------------------------------------------
+    def upsert_repo_languages(self, row: RepoLanguagesRow) -> None:
+        """Store language statistics for a repository."""
+        table = self._get_table_client(self.table_names.repo_languages)
+        if not table:
+            return
+        now = _utcnow_iso()
+        entity: Dict[str, Any] = {
+            "PartitionKey": row.username,
+            "RowKey": f"{row.repo_name}#{row.language}",
+            "repo_name": row.repo_name,
+            "language": row.language,
+            "bytes_count": int(row.bytes_count or 0),
+            "percentage": float(row.percentage or 0.0),
+            "created_at": row.created_at or now,
+            "updated_at": now,
+        }
+        table.upsert_entity(entity, mode=UpdateMode.REPLACE)
+
+    def batch_upsert_repo_languages(self, rows: List[RepoLanguagesRow]) -> None:
+        """Batch insert language statistics - replaces all existing for username+repo."""
+        if not rows:
+            return
+        table = self._get_table_client(self.table_names.repo_languages)
+        if not table:
+            return
+        
+        # Group by username+repo to delete existing entries first
+        by_repo: Dict[tuple[str, str], List[RepoLanguagesRow]] = {}
+        for row in rows:
+            key = (row.username, row.repo_name)
+            by_repo.setdefault(key, []).append(row)
+        
+        for (username, repo_name), repo_rows in by_repo.items():
+            # Delete existing entries for this repo
+            filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
+            existing = table.list_entities(filter=filter_str)
+            for entity in existing:
+                table.delete_entity(partition_key=entity["PartitionKey"], row_key=entity["RowKey"])
+            
+            # Insert new entries
+            for row in repo_rows:
+                self.upsert_repo_languages(row)
+        
+        logger.info("[TABLE_BATCH_UPSERT_LANGUAGES] rows=%d", len(rows))
+
+    def query_repo_languages(self, username: str, repo_name: str) -> List[Dict[str, Any]]:
+        """Query all language statistics for a repository."""
+        table = self._get_table_client(self.table_names.repo_languages)
+        if not table:
+            return []
+        filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
+        entities = table.list_entities(filter=filter_str)
+        return [self._deserialize_repo_languages(e) for e in entities]
+
+    def _deserialize_repo_languages(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(entity)
+        for meta_key in _AZURE_META_FIELDS:
+            payload.pop(meta_key, None)
+        payload["username"] = payload.pop("PartitionKey", None)
+        # RowKey is composite, extract from individual fields
+        payload.pop("RowKey", None)
+        return payload
+
+    def upsert_repo_file_types(self, row: RepoFileTypesRow) -> None:
+        """Store file type categorization for a repository."""
+        table = self._get_table_client(self.table_names.repo_file_types)
+        if not table:
+            return
+        now = _utcnow_iso()
+        entity: Dict[str, Any] = {
+            "PartitionKey": row.username,
+            "RowKey": f"{row.repo_name}#{row.category}",
+            "repo_name": row.repo_name,
+            "category": row.category,
+            "types": _safe_json_dump_limited(row.types or [], label="file_types.types"),
+            "created_at": row.created_at or now,
+            "updated_at": now,
+        }
+        table.upsert_entity(entity, mode=UpdateMode.REPLACE)
+
+    def batch_upsert_repo_file_types(self, rows: List[RepoFileTypesRow]) -> None:
+        """Batch insert file types - replaces all existing for username+repo."""
+        if not rows:
+            return
+        table = self._get_table_client(self.table_names.repo_file_types)
+        if not table:
+            return
+        
+        # Group by username+repo to delete existing entries first
+        by_repo: Dict[tuple[str, str], List[RepoFileTypesRow]] = {}
+        for row in rows:
+            key = (row.username, row.repo_name)
+            by_repo.setdefault(key, []).append(row)
+        
+        for (username, repo_name), repo_rows in by_repo.items():
+            # Delete existing entries for this repo
+            filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
+            existing = table.list_entities(filter=filter_str)
+            for entity in existing:
+                table.delete_entity(partition_key=entity["PartitionKey"], row_key=entity["RowKey"])
+            
+            # Insert new entries
+            for row in repo_rows:
+                self.upsert_repo_file_types(row)
+        
+        logger.info("[TABLE_BATCH_UPSERT_FILE_TYPES] rows=%d", len(rows))
+
+    def query_repo_file_types(self, username: str, repo_name: str) -> List[Dict[str, Any]]:
+        """Query all file type categories for a repository."""
+        table = self._get_table_client(self.table_names.repo_file_types)
+        if not table:
+            return []
+        filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
+        entities = table.list_entities(filter=filter_str)
+        return [self._deserialize_repo_file_types(e) for e in entities]
+
+    def _deserialize_repo_file_types(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(entity)
+        for meta_key in _AZURE_META_FIELDS:
+            payload.pop(meta_key, None)
+        payload["username"] = payload.pop("PartitionKey", None)
+        payload.pop("RowKey", None)
+        try:
+            payload["types"] = json.loads(payload.get("types") or "[]")
+        except json.JSONDecodeError:
+            payload["types"] = []
+        return payload
+
+    def upsert_repo_github_metadata(self, row: RepoGitHubMetadataRow) -> None:
+        """Store GitHub API metadata for a repository."""
+        table = self._get_table_client(self.table_names.repo_github_metadata)
+        if not table:
+            return
+        now = _utcnow_iso()
+        entity: Dict[str, Any] = {
+            "PartitionKey": row.username,
+            "RowKey": row.repo_name,
+            "repo_name": row.repo_name,
+            "description": (row.description or "")[:4096],
+            "topics": _safe_json_dump_limited(row.topics or [], label="github_metadata.topics"),
+            "homepage_url": (row.homepage_url or "")[:2048],
+            "stars_count": int(row.stars_count or 0),
+            "forks_count": int(row.forks_count or 0),
+            "is_fork": bool(row.is_fork),
+            "is_archived": bool(row.is_archived),
+            "primary_language": (row.primary_language or "")[:128],
+            "license_name": (row.license_name or "")[:256],
+            "created_at": row.created_at or now,
+            "updated_at": now,
+        }
+        table.upsert_entity(entity, mode=UpdateMode.REPLACE)
+        logger.info("[TABLE_UPSERT_GITHUB_METADATA] user=%s repo=%s", row.username, row.repo_name)
+
+    def get_repo_github_metadata(self, username: str, repo_name: str) -> Optional[Dict[str, Any]]:
+        """Get GitHub metadata for a repository."""
+        table = self._get_table_client(self.table_names.repo_github_metadata)
+        if not table:
+            return None
+        try:
+            entity = table.get_entity(partition_key=username, row_key=repo_name)
+        except ResourceNotFoundError:
+            return None
+        return self._deserialize_repo_github_metadata(entity)
+
+    def _deserialize_repo_github_metadata(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(entity)
+        for meta_key in _AZURE_META_FIELDS:
+            payload.pop(meta_key, None)
+        payload["username"] = payload.pop("PartitionKey", None)
+        payload["repo_name"] = payload.pop("RowKey", None)
+        try:
+            payload["topics"] = json.loads(payload.get("topics") or "[]")
+        except json.JSONDecodeError:
+            payload["topics"] = []
         return payload
 
     # ------------------------------------------------------------------

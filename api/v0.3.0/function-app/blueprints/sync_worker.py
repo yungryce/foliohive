@@ -23,7 +23,7 @@ from cloudfolio_shared import (
     queue_manager,
     table_manager,
 )
-from cloudfolio_shared.table import RepoMetadataRow, RepoSyncStatusRow
+from cloudfolio_shared.table import RepoMetadataRow, RepoSyncStatusRow, RepoLanguagesRow, RepoFileTypesRow, RepoGitHubMetadataRow
 
 logger = logging.getLogger("cloudfolio.sync_worker")
 logger.setLevel(logging.INFO)
@@ -181,33 +181,81 @@ def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, A
         logger.warning("Cannot persist repo metadata without repo_name")
         return
 
-    # Keep Table document minimal: full payload (including config_files) lives in blob cache.
-    # Store only essential merge/query metadata. Training worker loads from blob, not Table.
-    document = {
-        "name": repo_name,
-        "fingerprint": repo_payload.get("fingerprint"),
-        "has_documentation": repo_payload.get("has_documentation"),
-        "api_usage": repo_payload.get("api_usage"),
-    }
-
+    # 1. Persist core repo metadata (normalized - no nested JSON)
+    metadata_dict = repo_payload.get("metadata", {})
     row = RepoMetadataRow(
         username=username,
         repo_name=repo_name,
         fingerprint=repo_payload.get("fingerprint"),
-        job_id=job_id,
-        document=document,
-        metadata=repo_payload.get("metadata", {}),
         content_blob=content_blob,
-        languages=repo_payload.get("languages", {}),
-        categorized_types=repo_payload.get("categorized_types", {}),
         has_documentation=repo_payload.get("has_documentation"),
         readme_excerpt=(repo_payload.get("readme") or "")[:READ_ME_EXCERPT_MAX_CHARS],
-        last_synced_at=repo_payload.get("metadata", {}).get("updated_at") if isinstance(repo_payload.get("metadata"), dict) else None,
+        last_synced_at=metadata_dict.get("updated_at") if isinstance(metadata_dict, dict) else None,
     )
     table_manager.upsert_repo_metadata(row)
 
+    # 2. Persist languages to normalized table
+    languages = repo_payload.get("languages", {})
+    if languages and isinstance(languages, dict):
+        total_bytes = sum(v for v in languages.values() if isinstance(v, (int, float)))
+        lang_rows = []
+        for lang, byte_count in languages.items():
+            if not isinstance(byte_count, (int, float)):
+                continue
+            percentage = (byte_count / total_bytes * 100) if total_bytes > 0 else 0
+            lang_rows.append(
+                RepoLanguagesRow(
+                    username=username,
+                    repo_name=repo_name,
+                    language=lang,
+                    bytes_count=int(byte_count),
+                    percentage=round(percentage, 2),
+                )
+            )
+        if lang_rows:
+            table_manager.batch_upsert_repo_languages(lang_rows)
+            logger.info("[PERSIST_LANGUAGES] repo=%s languages=%d", repo_name, len(lang_rows))
+
+    # 3. Persist file types to normalized table
+    categorized = repo_payload.get("categorized_types", {})
+    if categorized and isinstance(categorized, dict):
+        file_type_rows = []
+        for category, types_list in categorized.items():
+            if not isinstance(types_list, list):
+                continue
+            file_type_rows.append(
+                RepoFileTypesRow(
+                    username=username,
+                    repo_name=repo_name,
+                    category=category,
+                    types=types_list,
+                )
+            )
+        if file_type_rows:
+            table_manager.batch_upsert_repo_file_types(file_type_rows)
+            logger.info("[PERSIST_FILE_TYPES] repo=%s categories=%d", repo_name, len(file_type_rows))
+
+    # 4. Persist GitHub metadata to normalized table
+    if isinstance(metadata_dict, dict):
+        github_row = RepoGitHubMetadataRow(
+            username=username,
+            repo_name=repo_name,
+            description=metadata_dict.get("description"),
+            topics=metadata_dict.get("topics", []),
+            homepage_url=metadata_dict.get("homepage"),
+            stars_count=metadata_dict.get("stargazers_count", 0),
+            forks_count=metadata_dict.get("forks_count", 0),
+            is_fork=metadata_dict.get("fork", False),
+            is_archived=metadata_dict.get("archived", False),
+            primary_language=metadata_dict.get("language"),
+            license_name=metadata_dict.get("license", {}).get("name") if isinstance(metadata_dict.get("license"), dict) else None,
+        )
+        table_manager.upsert_repo_github_metadata(github_row)
+        logger.info("[PERSIST_GITHUB_METADATA] repo=%s", repo_name)
+
 
 def _load_job_snapshot(job_id: str, username: str) -> Dict[str, Any]:
+    """Load job metadata - list fields removed in normalized schema."""
     if table_manager.is_enabled():
         session = table_manager.get_job_metadata(username, job_id)
         if session:
@@ -221,12 +269,6 @@ def _load_job_snapshot(job_id: str, username: str) -> Dict[str, Any]:
     return {
         "job_id": job_id,
         "username": username,
-        "synced_repos": [],
-        "failed_repos": [],
-        "expected_repos": [],
-        "queued_repos": [],
-        "completed_repos": 0,
-        "total_repos": 0,
         "status": "queued",
     }
 
@@ -240,9 +282,12 @@ def _update_job_progress(
     message_id: Optional[str] = None,
     trace_id: Optional[str] = None,
 ) -> None:
+    """Update job progress by querying RepoSyncStatus - no list fields in normalized schema."""
     job_info = _load_job_snapshot(job_id, username)
-    queued_repos = job_info.get("queued_repos") or []
-    expected_repos = job_info.get("expected_repos") or []
+
+    # Legacy: For backwards compatibility, check if old list fields exist
+    queued_repos = job_info.get("queued_repos", [])
+    expected_repos = job_info.get("expected_repos", [])
 
     if not isinstance(queued_repos, list):
         queued_repos = []
@@ -250,7 +295,7 @@ def _update_job_progress(
         expected_repos = []
 
     logger.info(
-        "[JOB_PROGRESS_START] job=%s user=%s repo=%s sync_failed=%s message_id=%s queued=%d expected=%d prior_completed=%s prior_total=%s",
+        "[JOB_PROGRESS_START] job=%s user=%s repo=%s sync_failed=%s message_id=%s queued=%d expected=%d",
         job_id,
         username,
         repo_name,
@@ -258,17 +303,11 @@ def _update_job_progress(
         message_id or "<none>",
         len([x for x in queued_repos if isinstance(x, str) and x]),
         len([x for x in expected_repos if isinstance(x, str) and x]),
-        job_info.get("completed_repos"),
-        job_info.get("total_repos"),
     )
 
     status_value = "failed" if sync_failed else "synced"
 
-    # IMPORTANT: Avoid relying on list queries against RepoSyncStatus.
-    # Some emulators/providers can behave unexpectedly for filtered list operations,
-    # which can inflate progress by mixing status rows from other jobs/candidates.
-    # Instead, treat RepoSyncStatus as the source of truth and read per-repo via point reads
-    # for just the repos in this job.
+    # Update RepoSyncStatus (source of truth for job-repo relationships)
     if table_manager.is_enabled():
         table_manager.upsert_repo_status(
             RepoSyncStatusRow(
@@ -281,6 +320,7 @@ def _update_job_progress(
             )
         )
 
+        # Query RepoSyncStatus to calculate progress
         tracked = queued_repos or expected_repos
         tracked = [name for name in tracked if isinstance(name, str) and name]
         if not tracked and repo_name:
@@ -296,6 +336,7 @@ def _update_job_progress(
             elif status == "failed":
                 failed.add(name)
     else:
+        # Fallback to legacy in-memory tracking
         synced = set(job_info.get("synced_repos", []) or [])
         failed = set(job_info.get("failed_repos", []) or [])
         if repo_name:
@@ -313,25 +354,18 @@ def _update_job_progress(
     tracked_total = len([name for name in (queued_repos or expected_repos) if isinstance(name, str) and name])
     inferred_total = tracked_total or completed
     processed_count = len(synced | failed)
-    total_target = max(job_info.get("total_repos", 0), inferred_total, processed_count, completed)
 
-    updates = {
-        "synced_repos": synced_list,
-        "failed_repos": failed_list,
-        "completed_repos": completed,
-        "total_repos": total_target,
-    }
-
+    # No updates to JobMetadataRow - these are derived fields computed from RepoSyncStatus
+    # Only update status if needed
     queued_set = set(name for name in queued_repos if isinstance(name, str) and name)
     processed = synced | failed
     pending = queued_set - processed if queued_set else set()
 
     logger.info(
-        "[JOB_PROGRESS_COMPUTED] job=%s user=%s completed=%d total=%d synced=%d failed=%d pending=%d",
+        "[JOB_PROGRESS_COMPUTED] job=%s user=%s completed=%d synced=%d failed=%d pending=%d",
         job_id,
         username,
-        updates.get("completed_repos"),
-        updates.get("total_repos"),
+        completed,
         len(synced_list),
         len(failed_list),
         len(pending),
@@ -367,42 +401,17 @@ def _update_job_progress(
             ", ".join(sorted(pending)[:5]),
         )
 
+    # Update job status when complete
     if should_merge:
-        updates["status"] = "synced"
         logger.info(
             "[JOB_COMPLETE] job=%s ready for merge: synced=%d failed=%d",
             job_id,
             len(synced_list),
             len(failed_list),
         )
-
-    if table_manager.is_enabled():
-        table_manager.update_candidate_session(username, job_id, updates)
-        logger.info(
-            "[JOB_SESSION_UPDATED] job=%s user=%s status=%s",
-            job_id,
-            username,
-            updates.get("status") or "<unchanged>",
-        )
-    elif cache_manager.use_cache and os.getenv("CF_BLOB_CACHE_ENABLED", "true").lower() == "true":
-        existing = _load_job_snapshot(job_id, username)
-        merged = dict(existing)
-        merged.update(updates)
-        cache_manager.save(_job_cache_key(job_id), merged, ttl=JOB_METADATA_TTL_SECONDS)
-        logger.info(
-            "[JOB_CACHE_UPDATED] job=%s user=%s status=%s",
-            job_id,
-            username,
-            updates.get("status") or "<unchanged>",
-        )
-
-    logger.info(
-        "Job %s progress: %s/%s (status=%s)",
-        job_id,
-        updates.get("completed_repos"),
-        updates.get("total_repos"),
-        updates.get("status", "processing"),
-    )
+        if table_manager.is_enabled():
+            table_manager.update_candidate_session(username, job_id, {"status": "synced"})
+    # Legacy cache fallback removed - no list fields to update
 
     if should_merge:
         if queue_manager.is_enabled():
