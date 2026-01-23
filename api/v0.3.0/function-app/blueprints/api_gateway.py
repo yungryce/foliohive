@@ -542,7 +542,6 @@ def get_repo_files(req: func.HttpRequest) -> func.HttpResponse:
     return _create_success_response(response_payload, cache_control="public, max-age=3600")
 
 
-
 @bp.route(route="bundles/{username}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
     """Retrieve bundle for a username (specific job_id or latest).
@@ -582,61 +581,6 @@ def get_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
 
     # No job found for username
     return _create_error_response(f"No bundle found for '{username}'. Trigger refresh first.", 404)
-
-
-@bp.route(route="bundles/{username}/{repo}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_single_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
-    username = req.route_params.get("username")
-    repo = req.route_params.get("repo")
-    if not username or not repo:
-        return _create_error_response("Username and repository name are required", 400)
-
-    trace = _get_trace_context(req)
-    requested_job_id = req.params.get("job_id")
-    logger.info(
-        "[REPO_REQUEST] request_id=%s session_id=%s username=%s job_id=%s repo=%s",
-        trace["request_id"],
-        trace["session_id"],
-        username,
-        requested_job_id or "<latest>",
-        repo,
-    )
-    candidate_job = _fetch_candidate_jobs(username, requested_job_id)
-    job_id = candidate_job.get("job_id") if candidate_job else None
-    repo_rows = _query_repo_rows(username, job_id=job_id, repo_names=[repo])
-
-    if candidate_job and repo_rows:
-        logger.info(
-            "[REPO_RESPONSE] request_id=%s username=%s job_id=%s source=table",
-            trace["request_id"],
-            username,
-            (candidate_job.get("job_id") or requested_job_id or "<unknown>"),
-        )
-        entry = _repo_row_to_bundle_entry(repo_rows[0])
-        payload = {
-            "username": username,
-            "repo": entry.get("name") or repo,
-            "fingerprint": entry.get("fingerprint"),
-            "last_modified": repo_rows[0].get("updated_at"),
-            "size_bytes": None,
-            "data": entry,
-        }
-        return _create_success_response(payload)
-
-    cache_payload = _repo_bundle_from_cache(username, repo)
-    if cache_payload:
-        logger.info(
-            "[REPO_RESPONSE] request_id=%s username=%s job_id=%s source=cache",
-            trace["request_id"],
-            username,
-            (cache_payload.get("job_id") or requested_job_id or "<latest>"),
-        )
-        return _create_success_response(cache_payload)
-
-    if candidate_job:
-        return _create_error_response(f"No table metadata ready for '{repo}'", 404)
-
-    return _create_error_response(f"No valid repository data found for '{repo}' by user '{username}'", 404)
 
 
 @bp.route(route="bundles/{username}/refresh", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
@@ -690,8 +634,6 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         job_id,
         len(expected_repo_names),
     )
-
-    _record_session_candidate(trace, username, job_id)
 
     _persist_job_metadata(
         job_id,

@@ -297,6 +297,84 @@ class TableManager:
             self._tables[table_name] = client
         return client
 
+
+
+    # ------------------------------------------------------------------
+    # Session candidates
+    # ------------------------------------------------------------------
+
+    def upsert_session_candidate(self, session_id: str, username: str, job_id: Optional[str]) -> None:
+        table = self._get_table_client(self.table_names.session_candidates)
+        if not table:
+            return
+        if not session_id or not username:
+            return
+
+        now = _utcnow_iso()
+        existing_count = 0
+        created_at = now
+        try:
+            existing = table.get_entity(partition_key=session_id, row_key=username)
+            existing_count = int(existing.get("query_count", 0) or 0)
+            created_at = existing.get("created_at") or created_at
+        except ResourceNotFoundError:
+            pass
+
+        entity = {
+            "PartitionKey": session_id,
+            "RowKey": username,
+            "latest_job_id": job_id or "",
+            "last_viewed_at": now,
+            "query_count": existing_count + 1,
+            "created_at": created_at,
+            "updated_at": now,
+        }
+        table.upsert_entity(entity, mode=UpdateMode.MERGE)
+
+    def list_session_candidates(self, session_id: str, *, limit: int = 10) -> List[Dict[str, Any]]:
+        table = self._get_table_client(self.table_names.session_candidates)
+        if not table or not session_id:
+            return []
+
+        query = table.list_entities(filter=f"PartitionKey eq '{session_id}'")
+        rows = [self._deserialize_session_candidate(e) for e in query]
+        rows.sort(key=lambda row: row.get("last_viewed_at") or row.get("updated_at") or "", reverse=True)
+        if limit and limit > 0:
+            return rows[:limit]
+        return rows
+
+    def update_candidate_session(self, username: str, job_id: str, updates: Dict[str, Any]) -> None:
+        """Update job metadata fields - no list fields in normalized schema."""
+        table = self._get_table_client(self.table_names.job_metadata)
+        if not table or not updates:
+            return
+        logger.info(
+            "[TABLE_UPDATE_SESSION] user=%s job=%s keys=%s",
+            username,
+            job_id,
+            sorted(list(updates.keys())),
+        )
+        entity: Dict[str, Any] = {"PartitionKey": username, "RowKey": job_id, "updated_at": _utcnow_iso()}
+        for key, value in updates.items():
+            entity[key] = value if value is not None else ""
+        table.upsert_entity(entity, mode=UpdateMode.MERGE)
+
+    def _deserialize_session_candidate(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(entity)
+        for meta_key in _AZURE_META_FIELDS:
+            payload.pop(meta_key, None)
+        payload["latest_job_id"] = payload.get("latest_job_id") or None
+        payload["last_viewed_at"] = payload.get("last_viewed_at") or None
+        payload["query_count"] = int(payload.get("query_count", 0) or 0)
+        payload["created_at"] = payload.get("created_at") or None
+        payload["updated_at"] = payload.get("updated_at") or None
+
+        # Map Azure table keys to application fields
+        payload["username"] = payload.pop("RowKey", None)
+        payload["session_id"] = payload.pop("PartitionKey", None)
+        return payload
+
+
     # ------------------------------------------------------------------
     # Job metadata
     # ------------------------------------------------------------------
@@ -382,87 +460,6 @@ class TableManager:
         payload["force_refresh"] = bool(payload.get("force_refresh"))
         payload["created_at"] = payload.get("created_at") or None
         payload["updated_at"] = payload.get("updated_at") or None
-        return payload
-
-        # Map Azure table keys to application fields
-        payload["username"] = payload.pop("PartitionKey", None)
-        payload["job_id"] = payload.pop("RowKey", None)
-        
-        return payload
-
-    # ------------------------------------------------------------------
-    # Session candidates
-    # ------------------------------------------------------------------
-
-    def upsert_session_candidate(self, session_id: str, username: str, job_id: Optional[str]) -> None:
-        table = self._get_table_client(self.table_names.session_candidates)
-        if not table:
-            return
-        if not session_id or not username:
-            return
-
-        now = _utcnow_iso()
-        existing_count = 0
-        created_at = now
-        try:
-            existing = table.get_entity(partition_key=session_id, row_key=username)
-            existing_count = int(existing.get("query_count", 0) or 0)
-            created_at = existing.get("created_at") or created_at
-        except ResourceNotFoundError:
-            pass
-
-        entity = {
-            "PartitionKey": session_id,
-            "RowKey": username,
-            "latest_job_id": job_id or "",
-            "last_viewed_at": now,
-            "query_count": existing_count + 1,
-            "created_at": created_at,
-            "updated_at": now,
-        }
-        table.upsert_entity(entity, mode=UpdateMode.MERGE)
-
-    def list_session_candidates(self, session_id: str, *, limit: int = 10) -> List[Dict[str, Any]]:
-        table = self._get_table_client(self.table_names.session_candidates)
-        if not table or not session_id:
-            return []
-
-        query = table.list_entities(filter=f"PartitionKey eq '{session_id}'")
-        rows = [self._deserialize_session_candidate(e) for e in query]
-        rows.sort(key=lambda row: row.get("last_viewed_at") or row.get("updated_at") or "", reverse=True)
-        if limit and limit > 0:
-            return rows[:limit]
-        return rows
-
-    def update_candidate_session(self, username: str, job_id: str, updates: Dict[str, Any]) -> None:
-        """Update job metadata fields - no list fields in normalized schema."""
-        table = self._get_table_client(self.table_names.job_metadata)
-        if not table or not updates:
-            return
-        logger.info(
-            "[TABLE_UPDATE_SESSION] user=%s job=%s keys=%s",
-            username,
-            job_id,
-            sorted(list(updates.keys())),
-        )
-        entity: Dict[str, Any] = {"PartitionKey": username, "RowKey": job_id, "updated_at": _utcnow_iso()}
-        for key, value in updates.items():
-            entity[key] = value if value is not None else ""
-        table.upsert_entity(entity, mode=UpdateMode.MERGE)
-
-    def _deserialize_session_candidate(self, entity: Dict[str, Any]) -> Dict[str, Any]:
-        payload = dict(entity)
-        for meta_key in _AZURE_META_FIELDS:
-            payload.pop(meta_key, None)
-        payload["latest_job_id"] = payload.get("latest_job_id") or None
-        payload["last_viewed_at"] = payload.get("last_viewed_at") or None
-        payload["query_count"] = int(payload.get("query_count", 0) or 0)
-        payload["created_at"] = payload.get("created_at") or None
-        payload["updated_at"] = payload.get("updated_at") or None
-
-        # Map Azure table keys to application fields
-        payload["username"] = payload.pop("RowKey", None)
-        payload["session_id"] = payload.pop("PartitionKey", None)
         return payload
 
 
