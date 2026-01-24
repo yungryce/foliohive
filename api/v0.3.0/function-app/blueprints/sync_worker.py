@@ -23,7 +23,7 @@ from cloudfolio_shared import (
     queue_manager,
     table_manager,
 )
-from cloudfolio_shared.table import RepoMetadataRow, RepoSyncStatusRow, RepoLanguagesRow, RepoFileTypesRow, RepoGitHubMetadataRow
+from cloudfolio_shared.table import RepoMetadataRow, RepoSyncStatusRow, RepoLanguagesRow, RepoGitHubMetadataRow
 
 logger = logging.getLogger("cloudfolio.sync_worker")
 logger.setLevel(logging.INFO)
@@ -35,10 +35,6 @@ JOB_METADATA_TTL_SECONDS = 4 * 3600
 READ_ME_EXCERPT_MAX_CHARS = 4096
 STANDARD_CONFIG_FETCH_LIMIT = 20
 STANDARD_CONFIG_MAX_CHARS = 4000
-
-
-def _job_cache_key(job_id: str) -> str:
-    return f"job:{job_id}"
 
 
 def _get_repo_manager(username: str) -> GitHubRepoManager:
@@ -70,15 +66,23 @@ def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     return payload
 
 
-def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: Optional[str]) -> bool:
+def _fetch_repo_metadata(username: str, repo_name: str, fingerprint: Optional[str] = None) -> bool:
+    """Fetch repository metadata only (fast) - stored in table_manager.
+    
+    Fetches:
+    - Repo metadata (description, stars, forks, etc.)
+    - Languages statistics
+    - File type discovery (filenames only, no content)
+    
+    Does NOT fetch file contents (readme/config). Use _fetch_and_cache_files for that.
+    """
     logger.info(
-        "[SYNC_FETCH_START] repo=%s job=%s - Beginning fetch (metadata+languages+README+file_types)",
+        "[METADATA_FETCH_START] repo=%s - Fetching metadata (no file contents)",
         repo_name,
-        job_id,
     )
     repo_manager = _get_repo_manager(username)
     if not repo_name:
-        raise ValueError("Repository name missing in message")
+        raise ValueError("Repository name missing")
 
     try:
         repo_metadata = repo_manager.get_repo_metadata(username=username, repo=repo_name, include_languages=True)
@@ -88,106 +92,46 @@ def _fetch_repo_bundle(job_id: str, username: str, repo_name: str, fingerprint: 
 
     resolved_fingerprint = fingerprint or FingerprintManager.generate_metadata_fingerprint(repo_metadata)
 
-    mode = "rest"
-    if os.getenv("ENABLE_CONFIG_DISCOVERY_GRAPHQL", "false").lower() == "true":
-        mode = "graphql"
-
-    usage_payload: Optional[Dict[str, Any]] = None
-
-    discovery = repo_manager.discover_repo_files(
-        username=username,
-        repo=repo_name,
-        mode=mode,
-        limit=STANDARD_CONFIG_FETCH_LIMIT,
-        max_chars=STANDARD_CONFIG_MAX_CHARS,
-        readme_max_chars=READ_ME_EXCERPT_MAX_CHARS,
-    )
-    config_files = discovery.get("config_files", {})
-    readme_files = discovery.get("readme_files", {})
-    readme_content = discovery.get("primary_readme", "")
-    config_usage = discovery.get("api_usage")
-    if config_usage:
-        if hasattr(config_usage, "to_dict"):
-            usage_payload = config_usage.to_dict()
-        elif isinstance(config_usage, dict):
-            usage_payload = config_usage
-        else:
-            usage_payload = {"raw": config_usage}
-    else:
-        usage_payload = None
-
-    logger.info(
-        "[CONFIG_USAGE] repo=%s job=%s - Config discovery API usage: %s",
-        repo_name,
-        job_id,
-        usage_payload if usage_payload is not None else "none",
-    )
-
-    languages_data = repo_metadata.get("languages", {})
-    logger.info(
-        "[SYNC_API_CALLS] repo=%s job=%s - Using GitHub languages API: %d languages detected",
-        repo_name,
-        job_id,
-        len(languages_data),
-    )
-
-    file_types = {}
-    categorized_types = {}
-
-    result: Dict[str, Any] = {
-        "name": repo_name,
-        "metadata": repo_metadata,
-        "readme": readme_content,
-        "readme_files": readme_files,
-        "config_files": config_files,
-        "file_types": file_types,
-        "categorized_types": categorized_types,
-        "fingerprint": resolved_fingerprint,
-        "languages": repo_metadata.get("languages", {}),
-        "has_documentation": bool(readme_content),
-        "api_usage": {"config_discovery": usage_payload} if usage_payload is not None else {},
-    }
-
-    logger.info(
-        "[SYNC_FETCH_COMPLETE] repo=%s job=%s - Fetch complete: languages=%d file_types=%d config_files=%d",
-        repo_name,
-        job_id,
-        len(languages_data),
-        len(file_types),
-        len(config_files),
-    )
-
-    cache_key = cache_manager.generate_cache_key(kind="repo", username=username, repo=repo_name)
-    cache_manager.save(cache_key, result, ttl=None, fingerprint=resolved_fingerprint)
-    logger.info("[SYNC_CACHE] repo=%s job=%s - Cached repo data under key=%s", repo_name, job_id, cache_key)
-
-    _persist_repo_metadata(job_id, username, result, cache_key)
-    logger.info("***Cached repo %s/%s fingerprint=%s", username, repo_name, resolved_fingerprint)
+    # Persist to table storage (metadata only)
+    _persist_repo_metadata(username, repo_name, repo_metadata, resolved_fingerprint)
+    logger.info("[METADATA_PERSISTED] repo=%s fingerprint=%s", repo_name, resolved_fingerprint)
 
     return True
 
 
-def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, Any], content_blob: str) -> None:
-    repo_name = repo_payload.get("name")
+def _persist_repo_metadata(
+    username: str,
+    repo_name: str,
+    repo_metadata: Dict[str, Any],
+    fingerprint: str,
+) -> None:
+    """Persist repo metadata to normalized tables only (no file caching).
+    
+    Persists to table_manager:
+    - RepoMetadata: core metadata fields
+    - RepoLanguages: language statistics
+    - RepoGitHubMetadata: GitHub API fields
+    
+    File contents are handled separately by _fetch_and_cache_files.
+    """
     if not repo_name:
         logger.warning("Cannot persist repo metadata without repo_name")
         return
 
     # 1. Persist core repo metadata (normalized - no nested JSON)
-    metadata_dict = repo_payload.get("metadata", {})
     row = RepoMetadataRow(
         username=username,
         repo_name=repo_name,
-        fingerprint=repo_payload.get("fingerprint"),
-        content_blob=content_blob,
-        has_documentation=repo_payload.get("has_documentation"),
-        readme_excerpt=(repo_payload.get("readme") or "")[:READ_ME_EXCERPT_MAX_CHARS],
-        last_synced_at=metadata_dict.get("updated_at") if isinstance(metadata_dict, dict) else None,
+        fingerprint=fingerprint,
+        content_blob=None,  # No blob reference - files cached separately
+        has_documentation=None,  # Will be determined when files are fetched
+        readme_excerpt=None,  # Will be populated when README is cached
+        last_synced_at=repo_metadata.get("updated_at"),
     )
     table_manager.upsert_repo_metadata(row)
 
     # 2. Persist languages to normalized table
-    languages = repo_payload.get("languages", {})
+    languages = repo_metadata.get("languages", {})
     if languages and isinstance(languages, dict):
         total_bytes = sum(v for v in languages.values() if isinstance(v, (int, float)))
         lang_rows = []
@@ -208,59 +152,42 @@ def _persist_repo_metadata(job_id: str, username: str, repo_payload: Dict[str, A
             table_manager.batch_upsert_repo_languages(lang_rows)
             logger.info("[PERSIST_LANGUAGES] repo=%s languages=%d", repo_name, len(lang_rows))
 
-    # 3. Persist file types to normalized table
-    categorized = repo_payload.get("categorized_types", {})
-    if categorized and isinstance(categorized, dict):
-        file_type_rows = []
-        for category, types_list in categorized.items():
-            if not isinstance(types_list, list):
-                continue
-            file_type_rows.append(
-                RepoFileTypesRow(
-                    username=username,
-                    repo_name=repo_name,
-                    category=category,
-                    types=types_list,
-                )
-            )
-        if file_type_rows:
-            table_manager.batch_upsert_repo_file_types(file_type_rows)
-            logger.info("[PERSIST_FILE_TYPES] repo=%s categories=%d", repo_name, len(file_type_rows))
-
-    # 4. Persist GitHub metadata to normalized table
-    if isinstance(metadata_dict, dict):
-        github_row = RepoGitHubMetadataRow(
-            username=username,
-            repo_name=repo_name,
-            description=metadata_dict.get("description"),
-            topics=metadata_dict.get("topics", []),
-            homepage_url=metadata_dict.get("homepage"),
-            stars_count=metadata_dict.get("stargazers_count", 0),
-            forks_count=metadata_dict.get("forks_count", 0),
-            is_fork=metadata_dict.get("fork", False),
-            is_archived=metadata_dict.get("archived", False),
-            primary_language=metadata_dict.get("language"),
-            license_name=metadata_dict.get("license", {}).get("name") if isinstance(metadata_dict.get("license"), dict) else None,
-        )
-        table_manager.upsert_repo_github_metadata(github_row)
-        logger.info("[PERSIST_GITHUB_METADATA] repo=%s", repo_name)
+    # 3. Persist GitHub metadata to normalized table
+    github_row = RepoGitHubMetadataRow(
+        username=username,
+        repo_name=repo_name,
+        description=repo_metadata.get("description"),
+        topics=repo_metadata.get("topics", []),
+        homepage_url=repo_metadata.get("homepage"),
+        stars_count=repo_metadata.get("stargazers_count", 0),
+        forks_count=repo_metadata.get("forks_count", 0),
+        is_fork=repo_metadata.get("fork", False),
+        is_archived=repo_metadata.get("archived", False),
+        primary_language=repo_metadata.get("language"),
+        license_name=repo_metadata.get("license", {}).get("name") if isinstance(repo_metadata.get("license"), dict) else None,
+    )
+    table_manager.upsert_repo_github_metadata(github_row)
+    logger.info("[PERSIST_GITHUB_METADATA] repo=%s", repo_name)
 
 
 def _load_job_snapshot(job_id: str, username: str) -> Dict[str, Any]:
-    """Load job metadata - list fields removed in normalized schema."""
-    session = table_manager.get_job_metadata(username, job_id)
-    if session:
-        return dict(session)
-
-    cached = cache_manager.get(_job_cache_key(job_id))
-    if cached.get("status") == "valid" and isinstance(cached.get("data"), dict):
-        return dict(cached["data"])
-
-    logger.warning("Job metadata missing for %s; initializing defaults", job_id)
+    """Load job metadata from table storage (source of truth).
+    
+    Replaces cache fallback with direct table query per normalized schema.
+    """
+    job = table_manager.get_job_metadata(username, job_id)
+    if job:
+        logger.info("[LOAD_JOB_SNAPSHOT] job=%s user=%s source=table_metadata found=true", job_id, username)
+        return dict(job)
+    
+    # Job not found - return minimal defaults
+    logger.warning("[LOAD_JOB_SNAPSHOT] job=%s user=%s - Job metadata not found; initializing defaults", job_id, username)
     return {
         "job_id": job_id,
         "username": username,
         "status": "queued",
+        "created_at": None,
+        "updated_at": None,
     }
 
 
@@ -271,9 +198,12 @@ def _update_job_progress(
     sync_failed: bool = False,
     *,
     message_id: Optional[str] = None,
-    trace_id: Optional[str] = None,
 ) -> None:
-    """Update job progress by querying RepoSyncStatus - no list fields in normalized schema."""
+    """Update job progress after metadata sync completes.
+    
+    Status transitions: pending → synced (or failed).
+    Cached status updated by cache_worker.
+    """
     job_info = _load_job_snapshot(job_id, username)
 
     # Legacy: For backwards compatibility, check if old list fields exist
@@ -297,42 +227,32 @@ def _update_job_progress(
     )
 
     status_value = "failed" if sync_failed else "synced"
+    now = datetime.now(timezone.utc).isoformat()
 
-    # Update RepoSyncStatus (source of truth for job-repo relationships)
+    # Update RepoSyncStatus with sync completion
     table_manager.upsert_repo_status(
         RepoSyncStatusRow(
             job_id=job_id,
             repo_name=repo_name,
             username=username,
             status=status_value,
-            message_id=message_id,
+            sync_message_id=message_id,
+            cache_message_id=None,  # Will be set by cache_worker
             error=None,
+            synced_at=now if not sync_failed else None,
+            cached_at=None,  # Will be set by cache_worker
         )
     )
 
     # Query RepoSyncStatus to calculate progress
-    tracked = queued_repos or expected_repos
-    tracked = [name for name in tracked if isinstance(name, str) and name]
-    if not tracked and repo_name:
-        tracked = [repo_name]
-
-    synced: set[str] = set()
-    failed: set[str] = set()
-    for name in tracked:
-        row = table_manager.get_repo_status(job_id, name)
-        status = (row or {}).get("status")
-        if status == "synced":
-            synced.add(name)
-        elif status == "failed":
-            failed.add(name)
-
+    statuses = table_manager.list_repo_statuses(job_id)
+    synced = {row["repo_name"] for row in statuses if row.get("status") == "synced"}
+    failed = {row["repo_name"] for row in statuses if row.get("status") == "failed"}
+    pending = {row["repo_name"] for row in statuses if row.get("status") == "pending"}
+    
     synced_list = sorted(synced)
     failed_list = sorted(failed)
     completed = len(synced_list)
-
-    tracked_total = len([name for name in (queued_repos or expected_repos) if isinstance(name, str) and name])
-    inferred_total = tracked_total or completed
-    processed_count = len(synced | failed)
 
     # No updates to JobMetadataRow - these are derived fields computed from RepoSyncStatus
     # Only update status if needed
@@ -380,34 +300,16 @@ def _update_job_progress(
             ", ".join(sorted(pending)[:5]),
         )
 
-    # Update job status when complete
-    if should_merge:
-        logger.info(
-            "[JOB_COMPLETE] job=%s ready for merge: synced=%d failed=%d",
-            job_id,
-            len(synced_list),
-            len(failed_list),
-        )
-        table_manager.update_candidate_session(username, job_id, {"status": "synced"})
-    # Legacy cache fallback removed - no list fields to update
-
-    if should_merge:
-        if queue_manager.is_enabled():
-            enqueued = queue_manager.enqueue_merge_job(job_id, username, synced_list, trace_id=trace_id)
-            logger.info(
-                "[MERGE_ENQUEUED] job=%s with %d repos (skipped %d failed)",
-                job_id,
-                len(synced_list),
-                len(failed_list),
-            )
-            if enqueued:
-                table_manager.update_candidate_session(
-                    username,
-                    job_id,
-                    {"merge_enqueued_at": datetime.now(timezone.utc).isoformat()},
-                )
-        else:
-            logger.warning("Queue manager disabled; merge job not enqueued for %s", job_id)
+    # Update job-level status when all metadata synced
+    if not pending:
+        if synced:
+            # All repos synced metadata - job transitions to caching phase
+            table_manager.update_job_metadata(username, job_id, {"status": "caching"})
+            logger.info("[JOB_SYNCED] job=%s - All metadata synced, transitioning to caching", job_id)
+        elif failed:
+            # All failed - mark job as failed
+            table_manager.update_job_metadata(username, job_id, {"status": "failed"})
+            logger.error("[JOB_FAILED] job=%s - All repos failed", job_id)
 
 
 @bp.queue_trigger(arg_name="msg", queue_name="github-sync", connection="AzureWebJobsStorage")
@@ -447,16 +349,31 @@ def process_sync_job(msg: func.QueueMessage) -> None:
                 f"Missing required fields: username={username}, job_id={job_id}, repo_name={repo_name}"
             )
 
-        logger.info("[SYNC] Starting sync for job=%s repo=%s user=%s", job_id, repo_name, username)
-        _fetch_repo_bundle(job_id, username, repo_name, fingerprint)
-        logger.info("[SYNC] Completed sync for job=%s repo=%s", job_id, repo_name)
+        # Fetch metadata only (fast) - stored in table_manager
+        logger.info("[SYNC] Starting metadata sync for job=%s repo=%s user=%s", job_id, repo_name, username)
+        _fetch_repo_metadata(username, repo_name, fingerprint)
+        logger.info("[SYNC] Metadata sync completed for job=%s repo=%s", job_id, repo_name)
+        
+        # Enqueue file caching job (async background task)
+        logger.info("[CACHE] Enqueuing file cache for job=%s repo=%s", job_id, repo_name)
+        enqueued = queue_manager.enqueue_cache_job(
+            username=username,
+            job_id=job_id,
+            repo_name=repo_name,
+            fingerprint=fingerprint,
+            trace_id=trace_id,
+        )
+        if enqueued:
+            logger.info("[CACHE_ENQUEUED] job=%s repo=%s - File caching job enqueued", job_id, repo_name)
+        else:
+            logger.warning("[CACHE_ENQUEUE_FAILED] job=%s repo=%s - Failed to enqueue cache job", job_id, repo_name)
+ 
         _update_job_progress(
             job_id,
             username,
             repo_name,
             sync_failed=False,
             message_id=message_id,
-            trace_id=trace_id,
         )
     except ValueError as ve:
         logger.error("[SYNC_ERROR] Validation error for repo=%s: %s", repo_name or "unknown", ve)
@@ -467,7 +384,6 @@ def process_sync_job(msg: func.QueueMessage) -> None:
                 repo_name,
                 sync_failed=True,
                 message_id=message_id,
-                trace_id=trace_id,
             )
         raise
     except Exception as exc:
@@ -485,6 +401,5 @@ def process_sync_job(msg: func.QueueMessage) -> None:
                 repo_name,
                 sync_failed=True,
                 message_id=message_id,
-                trace_id=trace_id,
             )
         raise

@@ -15,6 +15,7 @@ logger.setLevel(logging.INFO)
 logger.propagate = True
 
 SYNC_QUEUE = "github-sync"
+CACHE_QUEUE = "github-cache"
 MERGE_QUEUE = "merge-results"
 TRAINING_QUEUE = "model-training"
 JOB_STATUS_QUEUE = "job-status-updates"
@@ -52,6 +53,7 @@ class QueueManager:
     ) -> None:
         self.queue_names = queue_names or {
             SYNC_QUEUE: SYNC_QUEUE,
+            CACHE_QUEUE: CACHE_QUEUE,
             MERGE_QUEUE: MERGE_QUEUE,
             TRAINING_QUEUE: TRAINING_QUEUE,
             JOB_STATUS_QUEUE: JOB_STATUS_QUEUE,
@@ -207,6 +209,43 @@ class QueueManager:
 
         return bool(self.send_message(SYNC_QUEUE, message))
 
+    def enqueue_cache_job(
+        self,
+        username: str,
+        job_id: str,
+        repo_name: str,
+        fingerprint: Optional[str] = None,
+        *,
+        trace_id: Optional[str] = None,
+    ) -> bool:
+        """Enqueue a cache job to fetch and cache file contents asynchronously.
+        
+        Args:
+            username: GitHub username
+            job_id: Unique job identifier
+            repo_name: Repository name
+            fingerprint: Optional metadata fingerprint for cache validation
+            trace_id: Optional trace ID for logging correlation
+            
+        Returns:
+            bool: True if message was enqueued successfully
+        """
+        if not repo_name:
+            logger.warning("Cannot enqueue cache job without repo_name")
+            return False
+        
+        message = {
+            "schema_version": "2025-12-01",
+            "job_id": job_id,
+            "username": username,
+            "repo_name": repo_name,
+            "fingerprint": fingerprint,
+            "trace_id": trace_id,
+            "queued_at": datetime.now(timezone.utc).isoformat(),
+        }
+        
+        return bool(self.send_message(CACHE_QUEUE, message))
+
     def enqueue_merge_job(
         self,
         job_id: str,
@@ -249,7 +288,6 @@ class QueueManager:
         using the provided cache key.
         """
         message: Dict[str, Any] = {
-            "schema_version": "2025-12-18",
             "job_id": job_id,
             "username": username,
             "experiment_name": experiment_name,

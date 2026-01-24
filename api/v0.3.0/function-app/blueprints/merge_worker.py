@@ -51,36 +51,6 @@ def _extract_repo_name(repo: Dict[str, Any]) -> Optional[str]:
     return name if isinstance(name, str) and name else None
 
 
-def _load_cached_bundle(username: str, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    _ = job_id
-    bundle_key = cache_manager.generate_cache_key(kind="bundle", username=username)
-    result = cache_manager.get(bundle_key)
-    if result.get("status") == "valid" and isinstance(result.get("data"), list):
-        logger.info(
-            "[MERGE_LOAD] user=%s job=%s source=bundle_cache repos=%d",
-            username,
-            job_id or "<unknown>",
-            len(result.get("data") or []),
-        )
-        return list(result["data"])
-    return []
-
-
-def _load_repos_from_cache(username: str, repo_names: Iterable[str], job_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    _ = job_id
-    bundles: List[Dict[str, Any]] = []
-    for repo_name in repo_names:
-        if not repo_name:
-            continue
-        repo_key = cache_manager.generate_cache_key(kind="repo", username=username, repo=repo_name)
-        repo_entry = cache_manager.get(repo_key)
-        if repo_entry.get("status") == "valid" and isinstance(repo_entry.get("data"), dict):
-            bundles.append(repo_entry["data"])
-        else:
-            logger.warning("Repo %s for %s missing or invalid in cache", repo_name, username)
-    return bundles
-
-
 def _load_repos_from_table(username: str, repo_names: Iterable[str], job_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Load repos from normalized tables - reconstructs full document from multiple tables."""
     _ = job_id  # job_id removed from RepoMetadataRow
@@ -181,11 +151,14 @@ def _save_bundle(username: str, bundle: List[Dict[str, Any]], fingerprint: str) 
 
 
 def _update_job_status(job_id: str, username: str, synced_repo_names: List[str], fingerprint: str) -> None:
-    """Update job status - list fields removed in normalized schema."""
+    """Update job status after merge completes.
+    
+    Job transitions to 'completed' status. Training enqueued separately.
+    """
     merged_count = len(synced_repo_names)
     now = datetime.now(timezone.utc).isoformat()
 
-    table_manager.update_candidate_session(
+    table_manager.update_job_metadata(
         username,
         job_id,
         {
@@ -195,7 +168,7 @@ def _update_job_status(job_id: str, username: str, synced_repo_names: List[str],
         },
     )
     logger.info(
-        "[JOB_STATUS_UPDATED] job=%s user=%s status=completed merged_repos=%d",
+        "[JOB_COMPLETED] job=%s user=%s merged_repos=%d",
         job_id,
         username,
         merged_count,
@@ -234,7 +207,11 @@ def _enqueue_training_job(
 
 
 def _resolve_fresh_repos(payload: Dict[str, Any], username: str, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Resolve repos to merge - queries RepoSyncStatus for job-repo relationships."""
+    """Resolve repos to merge - uses table_manager exclusively (no cache fallback).
+    
+    Queries RepoSyncStatus for job-repo relationships (source of truth).
+    Reconstructs full documents from normalized tables (RepoMetadata, RepoLanguages, etc.).
+    """
     fresh = payload.get("fresh_repos")
     if isinstance(fresh, list) and fresh:
         return [repo for repo in fresh if isinstance(repo, dict)]
@@ -243,7 +220,7 @@ def _resolve_fresh_repos(payload: Dict[str, Any], username: str, job_id: Optiona
     repo_names: Iterable[str] = payload.get("synced_repos") or payload.get("repo_names") or []
     
     if not repo_names and job_id:
-        # Query RepoSyncStatus to find synced repos for this job
+        # Query RepoSyncStatus to find synced repos for this job (table-only)
         status_rows = table_manager.list_repo_statuses(job_id)
         if status_rows:
             repo_names = [row.get("repo_name") for row in status_rows if row.get("status") == "synced"]

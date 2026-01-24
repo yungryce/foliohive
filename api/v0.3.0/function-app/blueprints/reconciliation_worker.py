@@ -133,11 +133,11 @@ def _reconcile_session(job: Dict[str, Any]) -> None:
             if queue_manager.enqueue_sync_job(job_id, username, repo_name, trace_id=trace_id):
                 requeued.append(repo_name)
         if requeued:
-            table_manager.update_candidate_session(
+            # Note: queued_repos removed from normalized schema - RepoSyncStatus is source of truth
+            table_manager.update_job_metadata(
                 username,
                 job_id,
                 {
-                    "queued_repos": sorted(set(expected) | set(requeued)),
                     "last_requeue_at": _utcnow().isoformat(),
                     "status": job.get("status") or "queued",
                 },
@@ -150,7 +150,7 @@ def _reconcile_session(job: Dict[str, Any]) -> None:
         if queue_manager.is_enabled():
             queued = queue_manager.enqueue_merge_job(job_id, username, sorted(synced), trace_id=trace_id)
             if queued:
-                table_manager.update_candidate_session(
+                table_manager.update_job_metadata(
                     username,
                     job_id,
                     {"merge_enqueued_at": _utcnow().isoformat(), "status": "synced"},

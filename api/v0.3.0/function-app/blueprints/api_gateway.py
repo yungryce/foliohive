@@ -116,19 +116,13 @@ def _parse_json(req: func.HttpRequest) -> Dict[str, Any]:
 # Dependency helpers
 # ---------------------------------------------------------------------------
 
-def _get_github_repo_manager(username: str) -> GitHubRepoManager:
-    token = os.getenv("GITHUB_TOKEN")
-    if not token:
-        raise ValueError("GITHUB_TOKEN environment variable is not set")
+
+def _get_repo_manager(username: str) -> GitHubRepoManager:
     if not username:
-        raise ValueError("Username is required")
+        raise ValueError("Username required")
+    token = os.getenv("GITHUB_TOKEN")
     api = GitHubAPI(token=token, username=username)
     return GitHubRepoManager(api, username=username)
-
-
-def _job_cache_key(job_id: str) -> str:
-    return f"job:{job_id}"
-
 
 def _parse_iso(timestamp: Optional[str]) -> datetime:
     if not timestamp:
@@ -158,11 +152,8 @@ def _fetch_candidate_jobs(username: str, job_id: Optional[str] = None) -> Option
     return jobs[0]
 
 
-def _record_session_candidate(trace: Dict[str, str], username: str, job_id: Optional[str]) -> None:
-    """Record session tracking for username/job_id pair.
-
-    Should be called explicitly when session tracking is desired,
-    not as a side effect of data retrieval operations.
+def _record_user_session(trace: Dict[str, str], username: str, job_id: Optional[str]) -> None:
+    """Record session tracking for user
     """
     session_id = trace.get("session_id") if trace else ""
     if not session_id or not username:
@@ -172,7 +163,7 @@ def _record_session_candidate(trace: Dict[str, str], username: str, job_id: Opti
         table_manager.upsert_session_candidate(session_id, username, job_id)
     except Exception as exc:  # pragma: no cover - safety net
         logger.warning(
-            "Failed to persist session candidate (session_id=%s user=%s job_id=%s): %s",
+            "Failed to persist user candidate (session_id=%s user=%s job_id=%s): %s",
             session_id,
             username,
             job_id or "<none>",
@@ -212,9 +203,6 @@ def _repo_row_to_bundle_entry(
     github_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Convert deserialized repo metadata row to bundle entry.
-
-    Row is already cleaned by table_manager._deserialize_repo_entity,
-    so Azure metadata fields are removed and PartitionKey/RowKey are mapped.
     """
     entry = {
         "name": row.get("repo_name"),
@@ -248,22 +236,34 @@ def _repo_row_to_bundle_entry(
 
 def _bundle_from_table(username: str, job: Dict[str, Any], repo_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Build bundle from table data - list fields computed from RepoSyncStatus."""
+    job_id = job.get("job_id") or None
     entries: List[Dict[str, Any]] = []
-    job_id = job.get("job_id")
 
     # Compute list fields from RepoSyncStatus if job_id available
     synced_repos = []
     queued_repos = []
-    expected_repos = []
 
     if job_id:
         status_rows = table_manager.list_repo_statuses(job_id)
         synced_repos = [row["repo_name"] for row in status_rows if row.get("status") == "synced"]
-        # queued/expected not tracked in RepoSyncStatus - use empty lists
+        failed_repos = [row["repo_name"] for row in status_rows if row.get("status") == "failed"]
+        pending_repos = [row["repo_name"] for row in status_rows if row.get("status") == "pending"]
+
+        if failed_repos or pending_repos:
+            logger.info(
+                "Job %s for user %s has %d synced, %d failed, %d pending repos, repo names list %d",
+                job_id,
+                username,
+                len(synced_repos),
+                len(failed_repos),
+                len(pending_repos),
+                failed_repos + pending_repos
+            )
 
     # Enrich each repo with languages and GitHub metadata that recruiters expect
     for row in repo_rows:
         repo_name = row.get("repo_name")
+        
         languages = table_manager.query_repo_languages(username, repo_name) if repo_name else []
         github_meta = table_manager.get_repo_github_metadata(username, repo_name) if repo_name else None
         entries.append(
@@ -274,6 +274,7 @@ def _bundle_from_table(username: str, job: Dict[str, Any], repo_rows: List[Dict[
             )
         )
 
+    # Compute queued repo from job refresh and size_bytes from synced repos
     return {
         "username": username,
         "job_id": job_id,
@@ -281,7 +282,7 @@ def _bundle_from_table(username: str, job: Dict[str, Any], repo_rows: List[Dict[
         "last_modified": job.get("updated_at"),
         "size_bytes": None,
         "status": job.get("status"),
-        "expected_repos": expected_repos,
+        "expected_repos": synced_repos + queued_repos,
         "queued_repos": queued_repos,
         "synced_repos": synced_repos,
         "data": entries,
@@ -289,6 +290,11 @@ def _bundle_from_table(username: str, job: Dict[str, Any], repo_rows: List[Dict[
 
 
 def _bundle_from_cache(username: str) -> Optional[Dict[str, Any]]:
+    """Load bundle from cache (not job metadata).
+    
+    Per normalized schema: only 'bundle' kind is cached to storage.
+    Job metadata queries go to table_manager exclusively.
+    """
     bundle_cache_key = cache_manager.generate_cache_key(kind="bundle", username=username)
     result = cache_manager.get(bundle_cache_key)
     if result.get("status") != "valid" or result.get("data") is None:
@@ -302,58 +308,40 @@ def _bundle_from_cache(username: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _repo_bundle_from_cache(username: str, repo: str) -> Optional[Dict[str, Any]]:
-    repo_cache_key = cache_manager.generate_cache_key(kind="repo", username=username, repo=repo)
-    result = cache_manager.get(repo_cache_key)
-    if result.get("status") != "valid" or result.get("data") is None:
-        return None
-    return {
-        "username": username,
-        "repo": repo,
-        "fingerprint": result.get("fingerprint"),
-        "last_modified": result.get("last_modified"),
-        "size_bytes": result.get("size_bytes"),
-        "data": result.get("data"),
-    }
-
-
-def _merge_session_with_cache(session: Dict[str, Any], cache_payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Merge session with cache - list fields removed in normalized schema."""
-    if not cache_payload:
-        return session
-    merged = dict(session)
-    # Only merge non-list fields (list fields removed from JobMetadataRow)
-    merged["status"] = cache_payload.get("status", merged.get("status"))
-    merged["created_at"] = cache_payload.get("created_at", merged.get("created_at"))
-    return merged
-
-
 def _identify_repo_freshness(username: str) -> Dict[str, Any]:
     """Identify stale repositories by comparing fingerprints.
-
+    
+    Uses table_manager for metadata fingerprints (lightweight, normalized).
+    No blob fetching - eliminates ~400KB transfer per freshness check.
+    
     Raises:
         ValueError: If token is missing, invalid, or rate limit is exceeded.
     """
-
-    repo_manager = _get_github_repo_manager(username)
-    bundle_cache_key = cache_manager.generate_cache_key(kind="bundle", username=username)
-    cached_bundle = cache_manager.get(bundle_cache_key)
+    repo_manager = _get_repo_manager(username)
 
     logger.info(
-        "[API_GATEWAY_FRESHNESS] user=%s with cache-key=%s - Fetching all repos metadata with languages (1 + N API calls)",
+        "[API_GATEWAY_FRESHNESS] user=%s - Fetching all repos metadata from GitHub (1 API call)",
         username,
-        bundle_cache_key,
     )
 
+    # Fetch current state from GitHub (unavoidable - freshness requires live data)
     all_repos = repo_manager.get_all_repos_metadata(username=username, include_languages=False)
     current_fingerprints = {
-        repo.get("name"): FingerprintManager.generate_metadata_fingerprint(repo) for repo in all_repos if repo.get("name")
+        repo.get("name"): FingerprintManager.generate_metadata_fingerprint(repo)
+        for repo in all_repos
+        if repo.get("name")
     }
 
-    cached_fingerprints = _extract_cached_fingerprints(cached_bundle)
+    # Query cached fingerprints from normalized table (instead of blob)
+    job_repo_metadata = table_manager.query_repo_metadata(username)
+    cached_fingerprints = {
+        row.get("repo_name"): row.get("fingerprint")
+        for row in job_repo_metadata
+        if row.get("repo_name") and row.get("fingerprint")
+    }
 
     stale_repos: List[Dict[str, Any]] = []
-    hydrated_valid_repos: List[Dict[str, Any]] = []
+    valid_repos: List[Dict[str, Any]] = []
 
     for repo_metadata in all_repos:
         repo_name = repo_metadata.get("name")
@@ -362,63 +350,64 @@ def _identify_repo_freshness(username: str) -> Dict[str, Any]:
 
         current_fingerprint = current_fingerprints.get(repo_name)
         cached_fingerprint = cached_fingerprints.get(repo_name)
-        hydrated_repo = _try_hydrate_repo(username, repo_name, current_fingerprint)
-        if hydrated_repo and (
-            current_fingerprint == cached_fingerprint or hydrated_repo.get("fingerprint") == current_fingerprint
-        ):
-            hydrated_valid_repos.append(hydrated_repo)
-            continue
 
-        stale_repos.append({**repo_metadata, "fingerprint": current_fingerprint})
-
+        # Fingerprint mismatch = stale
+        if current_fingerprint and current_fingerprint != cached_fingerprint:
+            stale_repos.append({**repo_metadata, "fingerprint": current_fingerprint})
+            logger.info(
+                "[REPO_STALE] user=%s repo=%s cached_fp=%s current_fp=%s",
+                username,
+                repo_name,
+                cached_fingerprint or "<none>",
+                current_fingerprint[:8],
+            )
+        # Fingerprint match = valid (don't re-sync)
+        elif current_fingerprint and current_fingerprint == cached_fingerprint:
+            valid_repos.append(repo_metadata)
+            logger.info(
+                "[REPO_FRESH] user=%s repo=%s fp=%s",
+                username,
+                repo_name,
+                current_fingerprint[:8],
+            )
+        # New repo (no cached fingerprint)
+        else:
+            stale_repos.append({**repo_metadata, "fingerprint": current_fingerprint})
+            logger.info(
+                "[REPO_NEW] user=%s repo=%s",
+                username,
+                repo_name,
+            )  
     logger.info(
         "Repo freshness for user=%s: stale=%d, valid=%d",
         username,
         len(stale_repos),
-        len(hydrated_valid_repos),
+        len(valid_repos),
     )
     return {
         "stale_repos": stale_repos,
-        "cached_bundle": hydrated_valid_repos,
-        "bundle_status": cached_bundle.get("status"),
+        "cached_bundle": valid_repos,
+        "bundle_status": "fresh" if not stale_repos else "stale",
     }
 
-
-def _extract_cached_fingerprints(cached_bundle: Dict[str, Any]) -> Dict[str, str]:
-    if cached_bundle.get("status") != "valid" or not isinstance(cached_bundle.get("data"), list):
-        return {}
-    fingerprints: Dict[str, str] = {}
-    for repo in cached_bundle.get("data") or []:
-        repo_name = repo.get("metadata", {}).get("name")
-        fingerprint = repo.get("fingerprint")
-        if repo_name and fingerprint:
-            fingerprints[repo_name] = fingerprint
-    return fingerprints
-
-
-def _try_hydrate_repo(username: str, repo_name: str, expected_fingerprint: Optional[str]) -> Optional[Dict[str, Any]]:
-    repo_cache_key = cache_manager.generate_cache_key(kind="repo", username=username, repo=repo_name)
-    repo_entry = cache_manager.get(repo_cache_key)
-    if repo_entry.get("status") != "valid":
-        return None
-    stored_fp = repo_entry.get("fingerprint")
-    if expected_fingerprint and stored_fp != expected_fingerprint:
-        return None
-    data = repo_entry.get("data")
-    return data if isinstance(data, dict) else None
-
-
-def _upsert_job_session_row(
+def _persist_job_metadata(
     job_id: str,
     username: str,
     *,
-    status: str,
-    force_refresh: bool,
-    created_at: str,
+    status: str = "queued",
+    force_refresh: bool = False,
+    created_at: Optional[str] = None,
     trace_id: Optional[str] = None,
     request_id: Optional[str] = None,
 ) -> None:
-    """Persist job metadata - list fields removed in normalized schema."""
+    """Persist job metadata - list fields removed in normalized schema.
+    
+    Creates or updates a job metadata row. Generates created_at timestamp if not provided.
+    Preserves existing bundle_fingerprint, trace_id, and request_id on updates.
+    """
+    if not created_at:
+        created_at = datetime.now(timezone.utc).isoformat()
+
     existing = table_manager.get_job_metadata(username, job_id)
     row = JobMetadataRow(
         username=username,
@@ -432,29 +421,6 @@ def _upsert_job_session_row(
         request_id=request_id if not existing else (existing.get("request_id") or request_id),
     )
     table_manager.upsert_job_metadata(row)
-
-
-def _persist_job_metadata(
-    job_id: str,
-    username: str,
-    *,
-    status: str = "queued",
-    force_refresh: bool = False,
-    trace_id: Optional[str] = None,
-    request_id: Optional[str] = None,
-) -> None:
-    """Persist job metadata - list fields removed in normalized schema."""
-    created_at = datetime.now(timezone.utc).isoformat()
-
-    _upsert_job_session_row(
-        job_id,
-        username,
-        status=status,
-        force_refresh=force_refresh,
-        created_at=created_at,
-        trace_id=trace_id,
-        request_id=request_id,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -544,14 +510,14 @@ def get_repo_files(req: func.HttpRequest) -> func.HttpResponse:
 
 @bp.route(route="bundles/{username}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
-    """Retrieve bundle for a username (specific job_id or latest).
-
-    Pure data retrieval - no session tracking side effects.
-    Use /session/bundle for session-aware retrieval with tracking.
+    """Retrieves candidates latest job if no job_id provided.
+        Retrieves specific job if job_id query parameter provided.
     """
     username = req.route_params.get("username")
     if not username:
         return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
+    
+    job_id = req.params.get("job_id")
 
     trace = _get_trace_context(req)
     logger.info(
@@ -559,8 +525,8 @@ def get_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
         trace["request_id"],
         username,
     )
-    candidate_job = _fetch_candidate_jobs(username)
-    job_id = candidate_job.get("job_id") if candidate_job else None
+    candidate_job = _fetch_candidate_jobs(username, job_id=job_id)
+    job_id = candidate_job.get("job_id")
 
     # Try table storage first (most recent data)
     if job_id:
@@ -590,7 +556,6 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
 
     trace = _get_trace_context(req)
-
     body = _parse_json(req)
     force_refresh = bool(body.get("force_refresh", False))
 
@@ -609,29 +574,33 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         return _create_error_response("Failed to analyze repositories", 500)
 
     stale_repos = freshness["stale_repos"]
-    cached_repos = freshness["cached_bundle"]
+    valid_repos = freshness["valid_repos"]  # Renamed from "cached_bundle"
 
+    # If nothing is stale and not forcing refresh, return early
     if not stale_repos and not force_refresh:
         logger.info(
-            "[REFRESH_RESPONSE] request_id=%s username=%s status=cached repos=%d",
+            "[REFRESH_RESPONSE] request_id=%s username=%s status=fresh repos=%d",
             trace["request_id"],
             username,
-            len(cached_repos),
+            len(valid_repos),
         )
-        return _create_success_response({"status": "cached", "repos_count": len(cached_repos)})
+        return _create_success_response({"status": "fresh", "repos_count": len(valid_repos)})
 
-    repos_to_queue = stale_repos + cached_repos if force_refresh else stale_repos
+    # Determine repos to queue: stale only, or stale + valid if force_refresh
+    repos_to_queue = stale_repos + valid_repos if force_refresh else stale_repos
     if not repos_to_queue:
-        return _create_success_response({"status": "cached", "repos_count": 0})
+        return _create_success_response({"status": "fresh", "repos_count": 0})
 
     job_id = str(uuid.uuid4())
     expected_repo_names = [repo.get("name") for repo in repos_to_queue if repo.get("name")]
 
     logger.info(
-        "[REFRESH_JOB_CREATED] request_id=%s username=%s job_id=%s expected_repos=%d",
+        "[REFRESH_JOB_CREATED] request_id=%s username=%s job_id=%s stale=%d valid=%d total_to_queue=%d",
         trace["request_id"],
         username,
         job_id,
+        len(stale_repos),
+        len(valid_repos),
         len(expected_repo_names),
     )
 
@@ -644,7 +613,6 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
     )
 
     enqueued = 0
-    enqueued_names: List[str] = []
     for repo_metadata in repos_to_queue:
         repo_name = repo_metadata.get("name")
         if not repo_name:
@@ -661,7 +629,6 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
             session_id=trace.get("session_id"),
         ):
             enqueued += 1
-            enqueued_names.append(repo_name)
 
     logger.info(
         "[REFRESH_ENQUEUED] request_id=%s username=%s job_id=%s enqueued=%d/%d",
@@ -673,16 +640,7 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
     )
 
     if enqueued == 0:
-        _persist_job_metadata(
-            job_id,
-            username,
-            trace_id=trace.get("trace_id"),
-            request_id=trace.get("request_id"),
-        )
         return _create_error_response("Failed to enqueue sync jobs", 502)
-
-    if enqueued != len(expected_repo_names):
-        logger.warning("Queued %s/%s repos for job %s", enqueued, len(expected_repo_names), job_id)
 
     _persist_job_metadata(
         job_id,
@@ -691,6 +649,7 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         trace_id=trace.get("trace_id"),
         request_id=trace.get("request_id"),
     )
+
     response = {
         "status": "processing",
         "job_id": job_id,
@@ -710,7 +669,7 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
         return _create_error_response("job_id query parameter required", 400)
 
     trace = _get_trace_context(req)
-    _record_session_candidate(trace, username, job_id)
+    _record_user_session(trace, username, job_id)
     logger.info(
         "[STATUS_REQUEST] request_id=%s session_id=%s username=%s job_id=%s",
         trace["request_id"],
@@ -719,45 +678,53 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
         job_id,
     )
 
-    session = _fetch_candidate_jobs(username, job_id)
-    cache_data: Optional[Dict[str, Any]] = None
-
-    info: Dict[str, Any] = session or {}
-    if session and cache_data:
-        info = _merge_session_with_cache(session, cache_data)
-    elif not session:
-        info = cache_data or {}
-
-    if not info:
-        return _create_error_response("Job not found or expired", 404)
-
-    total = info.get("total_repos", 0)
-    completed = info.get("completed_repos", 0)
-    status = info.get("status", "unknown")
-    if total and completed >= total and status != "completed":
-        status = "completed"
+    job = table_manager.get_job_metadata(username, job_id)
+    if not job:
+        return _create_error_response("Job not found", 404)
+    
+    # Compute progress from RepoSyncStatus (source of truth)
+    statuses = table_manager.list_repo_statuses(job_id)
+    total = len(statuses)
+    
+    pending = [row["repo_name"] for row in statuses if row.get("status") == "pending"]
+    synced = [row["repo_name"] for row in statuses if row.get("status") == "synced"]
+    cached = [row["repo_name"] for row in statuses if row.get("status") == "cached"]
+    failed = [row["repo_name"] for row in statuses if row.get("status") == "failed"]
+    
+    # Completed = synced metadata + cached files
+    completed = len(cached) + len(failed)  # Count failed as completed (terminal state)
+    
     payload = {
         "job_id": job_id,
         "username": username,
-        "status": status,
+        "status": job.get("status", "unknown"),
         "progress": {
             "total": total,
             "completed": completed,
             "percentage": int((completed / total * 100) if total else 0),
+            "pending": len(pending),
+            "synced": len(synced),  # Metadata synced, files pending
+            "cached": len(cached),  # Files cached (ready for merge)
+            "failed": len(failed),
         },
-        "created_at": info.get("created_at"),
-        "expected_repos": info.get("expected_repos", []),
-        "queued_repos": info.get("queued_repos", []),
-        "synced_repos": info.get("synced_repos", []),
+        "created_at": job.get("created_at"),
+        "repo_details": {
+            "pending": pending[:10],  # First 10 for UI
+            "synced": synced[:10],
+            "cached": cached[:10],
+            "failed": failed[:10],
+        },
     }
     logger.info(
-        "[STATUS_RESPONSE] request_id=%s username=%s job_id=%s status=%s completed=%s total=%s",
+        "[STATUS_RESPONSE] request_id=%s job=%s status=%s total=%d cached=%d synced=%d pending=%d failed=%d",
         trace["request_id"],
-        username,
         job_id,
-        payload.get("status"),
-        completed,
+        payload["status"],
         total,
+        len(cached),
+        len(synced),
+        len(pending),
+        len(failed),
     )
     return _create_success_response(payload, cache_control="no-cache")
 
@@ -791,7 +758,7 @@ def get_session_bundle(req: func.HttpRequest) -> func.HttpResponse:
     resolved_job_id = session.get("job_id") if session else requested_job_id
 
     # Record session tracking
-    _record_session_candidate(trace, username, resolved_job_id)
+    _record_user_session(trace, username, resolved_job_id)
 
     repo_rows = _query_repo_rows(username, job_id=resolved_job_id)
 
@@ -834,8 +801,6 @@ def get_session_candidates(req: func.HttpRequest) -> func.HttpResponse:
     session_id = trace.get("session_id")
     if not session_id:
         return _create_error_response("X-Session-Id required", 400)
-    if not _table_enabled():
-        return _create_success_response({"candidates": []}, cache_control="no-cache")
 
     limit = 10
     limit_param = req.params.get("limit")

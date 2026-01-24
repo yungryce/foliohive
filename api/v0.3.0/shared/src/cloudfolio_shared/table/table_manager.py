@@ -49,25 +49,6 @@ class TableNames:
     model_metadata: str = "ModelMetadata"
     repo_sync_status: str = "RepoSyncStatus"
 
-
-@dataclass
-class JobMetadataRow:
-    """Job tracking - normalized schema.
-    """
-
-    username: str
-    job_id: str
-    status: str = "queued"
-    bundle_fingerprint: Optional[str] = None
-    force_refresh: bool = False
-    merge_enqueued_at: Optional[str] = None
-    last_requeue_at: Optional[str] = None
-    trace_id: Optional[str] = None
-    request_id: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
 @dataclass
 class SessionCandidateRow:
     """Lightweight mapping of a session to recently queried candidates."""
@@ -77,6 +58,23 @@ class SessionCandidateRow:
     latest_job_id: Optional[str] = None
     last_viewed_at: Optional[str] = None
     query_count: int = 0
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+@dataclass
+class JobMetadataRow:
+    """Job tracking - normalized schema.
+    """
+
+    username: str
+    job_id: str
+    status: str = "queued" # 
+    bundle_fingerprint: Optional[str] = None
+    force_refresh: bool = False
+    merge_enqueued_at: Optional[str] = None
+    last_requeue_at: Optional[str] = None
+    trace_id: Optional[str] = None
+    request_id: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -111,7 +109,6 @@ class RepoLanguagesRow:
 
 @dataclass
 class RepoFileTypesRow:
-    """Per-repo file type categorization - normalized from RepoMetadata.categorized_types."""
 
     username: str  # PartitionKey
     repo_type_key: str  # RowKey: "{repo_name}#{category}"
@@ -149,14 +146,21 @@ class RepoGitHubMetadataRow:
 
 @dataclass
 class RepoSyncStatusRow:
-    """Per-repository sync status for a given job."""
+    """Per-repository pipeline status for a given job.
+    
+    Tracks progress through: sync (metadata) → cache (files) → merge (bundle).
+    Status transitions: pending → synced → cached → merged (or failed at any stage).
+    """
 
     job_id: str
     repo_name: str
     username: str
-    status: str  # synced | failed | pending
-    message_id: Optional[str] = None
+    status: str  # pending | synced | cached | failed
+    sync_message_id: Optional[str] = None  # Queue message ID for sync job
+    cache_message_id: Optional[str] = None  # Queue message ID for cache job
     error: Optional[str] = None
+    synced_at: Optional[str] = None  # When metadata sync completed
+    cached_at: Optional[str] = None  # When file caching completed
     updated_at: Optional[str] = None
 
 
@@ -188,7 +192,7 @@ class ModelMetadataRow:
 
 _JSON_FIELDS_MODEL = {"metadata", "training_params", "repo_names"}
 _AZURE_META_FIELDS = {"etag", "odata.etag", "odata.metadata"}
-_REPO_STATUS_ALLOWED = {"synced", "failed", "pending"}
+_REPO_STATUS_ALLOWED = {"pending", "synced", "cached", "failed"}
 
 
 def _utcnow_iso() -> str: 
@@ -298,9 +302,8 @@ class TableManager:
         return client
 
 
-
     # ------------------------------------------------------------------
-    # Session candidates
+    # Session candidates schema parsing
     # ------------------------------------------------------------------
 
     def upsert_session_candidate(self, session_id: str, username: str, job_id: Optional[str]) -> None:
@@ -362,22 +365,6 @@ class TableManager:
             return rows[:limit]
         return rows
 
-    def update_candidate_session(self, username: str, job_id: str, updates: Dict[str, Any]) -> None:
-        """Update job metadata fields - no list fields in normalized schema."""
-        table = self._get_table_client(self.table_names.job_metadata)
-        if not table or not updates:
-            return
-        logger.info(
-            "[TABLE_UPDATE_SESSION] user=%s job=%s keys=%s",
-            username,
-            job_id,
-            sorted(list(updates.keys())),
-        )
-        entity: Dict[str, Any] = {"PartitionKey": username, "RowKey": job_id, "updated_at": _utcnow_iso()}
-        for key, value in updates.items():
-            entity[key] = value if value is not None else ""
-        table.upsert_entity(entity, mode=UpdateMode.MERGE)
-
     def _deserialize_session_candidate(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
@@ -421,6 +408,47 @@ class TableManager:
             "created_at": row.created_at or now,
             "updated_at": now,
         }
+        table.upsert_entity(entity, mode=UpdateMode.MERGE)
+
+
+    def update_job_metadata(self, username: str, job_id: str, updates: Dict[str, Any]) -> None:
+        """Update job metadata fields with partial updates (MERGE mode).
+        
+        Use for incremental status transitions and timestamp updates without
+        requiring full JobMetadataRow construction. Validates job exists first.
+        
+        Args:
+            username: Job owner
+            job_id: Job identifier
+            updates: Dict of field names to values (e.g., {"status": "completed"})
+        
+        Raises:
+            ValueError: If job doesn't exist
+        """
+        table = self._get_table_client(self.table_names.job_metadata)
+        if not table or not updates:
+            return
+        
+        # Validate job exists before updating
+        existing = self.get_job_metadata(username, job_id)
+        if not existing:
+            raise ValueError(f"Cannot update non-existent job: username={username}, job_id={job_id}")
+        
+        logger.info(
+            "[TABLE_UPDATE_JOB_METADATA] user=%s job=%s keys=%s",
+            username,
+            job_id,
+            sorted(list(updates.keys())),
+        )
+        
+        entity: Dict[str, Any] = {
+            "PartitionKey": username,
+            "RowKey": job_id,
+            "updated_at": _utcnow_iso()
+        }
+        for key, value in updates.items():
+            entity[key] = value if value is not None else ""
+        
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
 
 
@@ -580,8 +608,11 @@ class TableManager:
             "RowKey": row.repo_name,
             "username": row.username,
             "status": status,
-            "message_id": row.message_id or "",
+            "sync_message_id": row.sync_message_id or "",
+            "cache_message_id": row.cache_message_id or "",
             "error": row.error or "",
+            "synced_at": row.synced_at or "",
+            "cached_at": row.cached_at or "",
             "updated_at": row.updated_at or now,
         }
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
@@ -609,34 +640,29 @@ class TableManager:
         if not table:
             return []
         query = table.list_entities(filter=f"PartitionKey eq '{job_id}'")
-        rows = [self._deserialize_repo_status(e) for e in query]
+        results = list(query)
+        logger.info("[TABLE_LIST_REPO_STATUSES] job=%s found=%d", job_id, len(results))
+        return [self._deserialize_repo_status(e) for e in results]
 
-        # Defense-in-depth: if an emulator/provider ignores filters, avoid cross-job leakage.
-        filtered = [row for row in rows if row.get("job_id") == job_id]
-        if rows and len(filtered) != len(rows):
-            logger.warning(
-                "table-manager: list_repo_statuses filter mismatch (requested=%s returned=%d kept=%d)",
-                job_id,
-                len(rows),
-                len(filtered),
-            )
-        return filtered
 
     def _deserialize_repo_status(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
-        payload["job_id"] = payload.get("PartitionKey")
-        payload["repo_name"] = payload.get("RowKey")
+        payload["job_id"] = payload.get("PartitionKey", None)
+        payload["repo_name"] = payload.get("RowKey", None)
         payload["username"] = payload.get("username") or None
         payload["status"] = (payload.get("status") or "").lower() or None
-        payload["message_id"] = payload.get("message_id") or None
+        payload["sync_message_id"] = payload.get("sync_message_id") or None
+        payload["cache_message_id"] = payload.get("cache_message_id") or None
+        payload["synced_at"] = payload.get("synced_at") or None
+        payload["cached_at"] = payload.get("cached_at") or None
         payload["error"] = payload.get("error") or None
         payload["updated_at"] = payload.get("updated_at") or None
         return payload
 
     # ------------------------------------------------------------------
-    # Normalized repo tables: Languages, File Types, GitHub Metadata
+    # Repo languages
     # ------------------------------------------------------------------
     def upsert_repo_languages(self, row: RepoLanguagesRow) -> None:
         """Store language statistics for a repository."""
@@ -700,6 +726,11 @@ class TableManager:
         # RowKey is composite, extract from individual fields
         payload.pop("RowKey", None)
         return payload
+
+
+    # -------------------------------------------------------------------
+    # Repo file types
+    # -------------------------------------------------------------------
 
     def upsert_repo_file_types(self, row: RepoFileTypesRow) -> None:
         """Store file type categorization for a repository."""
@@ -765,6 +796,10 @@ class TableManager:
         except json.JSONDecodeError:
             payload["types"] = []
         return payload
+    
+    # ------------------------------------------------------------------
+    # Repo GitHub metadata
+    # ------------------------------------------------------------------
 
     def upsert_repo_github_metadata(self, row: RepoGitHubMetadataRow) -> None:
         """Store GitHub API metadata for a repository."""
