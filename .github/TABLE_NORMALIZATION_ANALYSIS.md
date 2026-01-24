@@ -22,6 +22,7 @@ Current architecture violates multiple normalization principles:
 ## Table-by-Table Analysis
 
 ### 1. JobMetadataRow (JobMetadata Table)
+This table has been **normalized**
 
 **PartitionKey:** `username`  
 **RowKey:** `job_id`
@@ -113,6 +114,7 @@ class JobMetadataRow:
 ---
 
 ### 2. SessionCandidateRow (SessionCandidates Table)
+This table has been **normalized**
 
 **PartitionKey:** `session_id`  
 **RowKey:** `username`
@@ -140,8 +142,6 @@ class JobMetadataRow:
 
 #### Recommended Schema (No Changes Needed)
 
-This table is **already well-normalized**. Only improvement needed is FK validation:
-
 ```python
 def upsert_session_candidate(self, session_id: str, username: str, job_id: Optional[str]) -> None:
     # Add FK validation
@@ -156,6 +156,7 @@ def upsert_session_candidate(self, session_id: str, username: str, job_id: Optio
 ---
 
 ### 3. RepoMetadataRow (RepoMetadata Table)
+This table has been **normalized**
 
 **PartitionKey:** `username`  
 **RowKey:** `repo_name`
@@ -304,6 +305,7 @@ class RepoAPIUsageRow:
 ---
 
 ### 4. RepoSyncStatusRow (RepoSyncStatus Table)
+This table is **accepted normalized**
 
 **PartitionKey:** `job_id`  
 **RowKey:** `repo_name`
@@ -359,6 +361,7 @@ class RepoSyncStatusRow:
 ---
 
 ### 5. ModelMetadataRow (ModelMetadata Table)
+**Skip this table**
 
 **PartitionKey:** `username`  
 **RowKey:** `fingerprint`

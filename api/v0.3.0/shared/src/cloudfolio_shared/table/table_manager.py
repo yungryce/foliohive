@@ -310,6 +310,18 @@ class TableManager:
         if not session_id or not username:
             return
 
+        # Validate FK: if job_id provided, verify it exists in JobMetadata
+        if job_id:
+            job = self.get_job_metadata(username, job_id)
+            if not job:
+                raise ValueError(f"Invalid job_id '{job_id}' for user '{username}' - job not found in JobMetadata")
+            logger.info(
+                "[TABLE_VALIDATE_SESSION_FK] session=%s user=%s job=%s - FK validation passed",
+                session_id,
+                username,
+                job_id,
+            )
+
         now = _utcnow_iso()
         existing_count = 0
         created_at = now
@@ -330,6 +342,13 @@ class TableManager:
             "updated_at": now,
         }
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
+        logger.info(
+            "[TABLE_UPSERT_SESSION_CANDIDATE] session=%s user=%s job=%s query_count=%d",
+            session_id,
+            username,
+            job_id or "<none>",
+            existing_count + 1,
+        )
 
     def list_session_candidates(self, session_id: str, *, limit: int = 10) -> List[Dict[str, Any]]:
         table = self._get_table_client(self.table_names.session_candidates)
