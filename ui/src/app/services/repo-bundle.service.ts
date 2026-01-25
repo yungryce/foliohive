@@ -37,12 +37,25 @@ export interface RefreshResponse {
 export interface JobStatusResponse {
   job_id: string;
   username: string;
-  status: string;
-  progress: { total: number; completed: number; percentage: number };
-  expected_repos?: string[];
-  queued_repos?: string[];
-  synced_repos?: string[];
+  status: string;  // "queued" | "syncing" | "metadata_ready" | "completed" | "failed"
+  metadata_ready: boolean;  // True when first repo cached (can display metadata)
+  files_ready: boolean;     // True when all files cached (can display README)
+  progress: {
+    total: number;
+    completed: number;
+    percentage: number;
+    pending: number;
+    synced: number;
+    cached: number;
+    failed: number;
+  };
   created_at?: string;
+  repo_details?: {
+    pending: string[];
+    synced: string[];
+    cached: string[];
+    failed: string[];
+  };
 }
 
 export interface SessionCandidate {
@@ -58,9 +71,9 @@ export class RepoBundleService {
   private config = inject(ConfigService);
   private cache = inject(CacheService);
 
-  /** POST /bundles/{username}/refresh */
+  /** POST /candidate/{username}/refresh */
   startBuild(username: string, force = true): Observable<RefreshResponse> {
-    const url = `${this.config.apiUrl}/bundles/${encodeURIComponent(username)}/refresh`;
+    const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/refresh`;
     console.debug('[startBuild] request', { username, force, url });
     return this.http.post<any>(url, { force_refresh: force }).pipe(
       map((res: any) => {
@@ -71,9 +84,9 @@ export class RepoBundleService {
     );
   }
 
-  /** GET /bundles/{username}/status?job_id=... */
+  /** GET /candidate/{username}/status?job_id=... */
   getJobStatus(username: string, jobId: string): Observable<JobStatusResponse | null> {
-    const url = `${this.config.apiUrl}/bundles/${encodeURIComponent(username)}/status`;
+    const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/status`;
     const params = new HttpParams().set('job_id', jobId);
     return this.http.get<any>(url, { params }).pipe(
       map((res: any) => {
@@ -87,9 +100,9 @@ export class RepoBundleService {
     );
   }
 
-  /** GET /bundles/{username} - check if bundle exists (no cache) */
+  /** GET /candidate/{username} - check if bundle exists (no cache) */
   checkBundle(username: string): Observable<boolean> {
-    const url = `${this.config.apiUrl}/bundles/${encodeURIComponent(username)}`;
+    const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}`;
     console.debug('[checkBundle] request', { username, url });
     return this.http.get<any>(url).pipe(
       map((res: any) => {
@@ -101,9 +114,9 @@ export class RepoBundleService {
     );
   }
 
-  /** GET /bundles/{username}?job_id=... */
+  /** GET /candidate/{username}?job_id=... */
   getUserBundle(username: string, jobId?: string, useCache = true): Observable<RepoBundleResponse> {
-    const url = `${this.config.apiUrl}/bundles/${encodeURIComponent(username)}`;
+    const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}`;
     const cacheKey = `bundle-${username}-${jobId || 'latest'}`;
 
     if (useCache) {
@@ -132,9 +145,9 @@ export class RepoBundleService {
     );
   }
 
-  /** GET /bundles/{username}/{repo}?job_id=... */
+  /** GET /candidate/{username}/{repo}/files */
   getUserSingleRepoBundle(username: string, repo: string, jobId?: string, useCache = true): Observable<SingleRepoBundleResponse> {
-    const url = `${this.config.apiUrl}/bundles/${encodeURIComponent(username)}/${encodeURIComponent(repo)}`;
+    const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/${encodeURIComponent(repo)}/files`;
     const cacheKey = `repo-bundle-${username}-${repo}-${jobId || 'latest'}`;
 
     if (useCache) {

@@ -12,18 +12,20 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections import defaultdict
 from typing import Any, Dict, Optional
 
 import azure.functions as func
 
 from cloudfolio_shared import (
     cache_manager,
+    FingerprintManager,
     GitHubAPI,
     GitHubRepoManager,
     queue_manager,
     table_manager,
 )
-from cloudfolio_shared.table import RepoSyncStatusRow
+from cloudfolio_shared.table import RepoAPIUsageRow
 
 logger = logging.getLogger("cloudfolio.cache_worker")
 logger.setLevel(logging.INFO)
@@ -34,6 +36,12 @@ bp = func.Blueprint()
 STANDARD_CONFIG_FETCH_LIMIT = 20
 STANDARD_CONFIG_MAX_CHARS = 4000
 READ_ME_EXCERPT_MAX_CHARS = 4096
+TRAINING_PARAMS = {"batch_size": 8, "epochs": 2}
+
+
+def _is_training_enabled() -> bool:
+    """Check if training feature is enabled via environment variable."""
+    return os.getenv("CF_TRAINING_ENABLED", "false").lower() == "true"
 
 
 def _get_repo_manager(username: str) -> GitHubRepoManager:
@@ -64,7 +72,38 @@ def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     return payload
 
 
-def _fetch_and_cache_files(username: str, repo_name: str) -> bool:
+def _calculate_bundle_fingerprint(username: str, job_id: str) -> str:
+    """Calculate bundle fingerprint from repo statuses.
+    
+    Uses repo fingerprints from RepoSyncStatus table to generate
+    a deterministic bundle-level fingerprint.
+    """
+    statuses = table_manager.list_repo_statuses(job_id)
+    cached_repos = [s for s in statuses if s.get("status") == "cached"]
+    
+    # Sort by repo name for consistency
+    cached_repos.sort(key=lambda r: r.get("repo_name", ""))
+    
+    fingerprints = []
+    for repo_status in cached_repos:
+        repo_name = repo_status.get("repo_name")
+        if not repo_name:
+            continue
+        
+        # Get repo metadata to extract fingerprint
+        repo_rows = table_manager.query_repo_metadata(username, repo_names=[repo_name])
+        if repo_rows and repo_rows[0].get("fingerprint"):
+            fingerprints.append(repo_rows[0]["fingerprint"])
+    
+    if fingerprints:
+        return FingerprintManager.generate_bundle_fingerprint(fingerprints)
+    
+    # Fallback: use repo names if no fingerprints available
+    repo_names = [r.get("repo_name") for r in cached_repos if r.get("repo_name")]
+    return FingerprintManager.generate_content_fingerprint({"repos": sorted(repo_names)})
+
+
+def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] = None) -> Dict[str, Any]:
     """Fetch and cache file contents (readme + config) - stored in cache_manager.
     
     Fetches:
@@ -73,6 +112,9 @@ def _fetch_and_cache_files(username: str, repo_name: str) -> bool:
     
     Individual files cached separately (kind="file") for selective retrieval.
     This operation is expensive and runs asynchronously from metadata sync.
+    
+    Returns:
+        Dict with 'cached_count' and 'api_usage' keys
     """
     logger.info(
         "[FILES_FETCH_START] repo=%s - Fetching file contents (readme + config)",
@@ -96,6 +138,7 @@ def _fetch_and_cache_files(username: str, repo_name: str) -> bool:
     config_files = discovery.get("config_files", {})
     readme_files = discovery.get("readme_files", {})
     primary_readme = discovery.get("readme", "")
+    api_usage = discovery.get("api_usage", {})
     
     # Cache individual file blobs for selective retrieval
     cached_count = 0
@@ -145,7 +188,52 @@ def _fetch_and_cache_files(username: str, repo_name: str) -> bool:
         cached_count,
     )
     
-    return True
+    # Record API usage if job_id provided
+    if job_id and api_usage:
+        _record_api_usage_for_file_cache(username, job_id, repo_name, api_usage)
+    
+    return {
+        "cached_count": cached_count,
+        "api_usage": api_usage,
+    }
+
+
+def _record_api_usage_for_file_cache(
+    username: str,
+    job_id: str,
+    repo_name: str,
+    api_usage_dict: Dict[str, Any],
+) -> None:
+    """Record API usage for file caching operation."""
+    from datetime import datetime, timezone
+    
+    totals = api_usage_dict.get("totals", {})
+    file_targets = api_usage_dict.get("file_targets", {})
+    cache_hits = sum(target.get("cache_hits", 0) for target in file_targets.values())
+    
+    now = datetime.now(timezone.utc).isoformat()
+    operation_key = f"file_cache#{now}#{repo_name}"
+    
+    row = RepoAPIUsageRow(
+        username=username,
+        operation_key=operation_key,
+        operation="file_cache",
+        job_id=job_id,
+        repo_name=repo_name,
+        api_calls_rest=totals.get("requests", 0),
+        api_calls_graphql=0,
+        cache_hits=cache_hits,
+        created_at=now,
+    )
+    
+    table_manager.upsert_api_usage(row)
+    logger.info(
+        "[API_USAGE_RECORDED] operation=file_cache job=%s repo=%s rest_calls=%d cache_hits=%d",
+        job_id,
+        repo_name,
+        row.api_calls_rest,
+        cache_hits,
+    )
 
 
 def _update_cache_progress(
@@ -156,6 +244,7 @@ def _update_cache_progress(
     *,
     message_id: Optional[str] = None,
     trace_id: Optional[str] = None,
+    error: Optional[str] = None,
 ) -> None:
     """Update job progress after file caching completes.
     
@@ -167,27 +256,36 @@ def _update_cache_progress(
     status_value = "failed" if cache_failed else "cached"
     now = datetime.now(timezone.utc).isoformat()
     
-    # Update RepoSyncStatus with cache completion
-    existing = table_manager.get_repo_status(job_id, repo_name)
-    table_manager.upsert_repo_status(
-        RepoSyncStatusRow(
-            job_id=job_id,
-            repo_name=repo_name,
-            username=username,
-            status=status_value,
-            sync_message_id=existing.get("sync_message_id") if existing else None,
-            cache_message_id=message_id,
-            error=None,
-            synced_at=existing.get("synced_at") if existing else None,
-            cached_at=now if not cache_failed else None,
-        )
+    # Update RepoSyncStatus with cache completion (partial update)
+    update_dict = {
+        "status": status_value,
+        "cache_message_id": message_id,
+        "cached_at": now if not cache_failed else None,
+    }
+    if error:
+        update_dict["error"] = error
+    
+    table_manager.update_repo_status(
+        job_id,
+        repo_name,
+        update_dict
     )
     
     # Query RepoSyncStatus to calculate caching progress
     statuses = table_manager.list_repo_statuses(job_id)
-    cached = [row["repo_name"] for row in statuses if row.get("status") == "cached"]
-    failed = [row["repo_name"] for row in statuses if row.get("status") == "failed"]
-    synced = [row["repo_name"] for row in statuses if row.get("status") == "synced"]
+
+    status_counts = defaultdict(int)
+    status_lists = defaultdict(list)
+
+    for row in statuses:
+        status = row.get("status")
+        if status in ("cached", "failed", "synced"):
+            status_counts[status] += 1
+            status_lists[status].append(row["repo_name"])
+
+    cached = status_lists["cached"]
+    failed = status_lists["failed"]
+    synced = status_lists["synced"]
     
     logger.info(
         "[CACHE_PROGRESS] job=%s cached=%d synced=%d failed=%d",
@@ -197,29 +295,66 @@ def _update_cache_progress(
         len(failed),
     )
     
-    # Trigger merge when all files are cached
+    # Get current job status to check for transitions
+    job = table_manager.get_job_metadata(username, job_id)
+    current_status = job.get("status") if job else "queued"
+    
+    # Set metadata_ready when first repo cached (metadata available for display)
+    if cached and current_status not in ("metadata_ready", "completed"):
+        table_manager.update_job_metadata(
+            username,
+            job_id,
+            {"status": "metadata_ready"},
+        )
+        logger.info(
+            "[JOB_METADATA_READY] job=%s - First repo cached (%d/%d), metadata available for display",
+            job_id,
+            len(cached),
+            len(statuses),
+        )
+    
+    # Complete job when all files are cached (merge worker eliminated)
     if not synced:  # No repos still in 'synced' state means all are cached or failed
         if cached:
             logger.info(
-                "[JOB_CACHED] job=%s - All files cached, enqueuing merge with %d repos (skipped %d failed)",
+                "[JOB_CACHED] job=%s - All files cached, completing job with %d repos (skipped %d failed)",
                 job_id,
                 len(cached),
                 len(failed),
             )
-            table_manager.update_job_metadata(username, job_id, {"status": "merging"})
             
-            enqueued = queue_manager.enqueue_merge_job(
-                job_id,
+            # Calculate bundle fingerprint from table data
+            fingerprint = _calculate_bundle_fingerprint(username, job_id)
+            
+            # Mark job complete
+            table_manager.update_job_metadata(
                 username,
-                cached,  # Only merge successfully cached repos
-                trace_id=trace_id,
+                job_id,
+                {
+                    "status": "completed",
+                    "bundle_fingerprint": fingerprint,
+                    "completed_at": now,
+                },
             )
-            if enqueued:
-                table_manager.update_job_metadata(
-                    username,
-                    job_id,
-                    {"merge_enqueued_at": now},
+            logger.info("[JOB_COMPLETED] job=%s repos=%d fingerprint=%s", job_id, len(cached), fingerprint)
+            
+            # Enqueue training job if feature is enabled
+            if _is_training_enabled():
+                enqueued = queue_manager.enqueue_training_job(
+                    job_id=job_id,
+                    username=username,
+                    repo_names=cached,
+                    bundle_fingerprint=fingerprint,
+                    training_params=TRAINING_PARAMS,
+                    experiment_name=os.getenv("TRAINING_EXPERIMENT", "default"),
+                    trace_id=trace_id,
                 )
+                if enqueued:
+                    logger.info("[TRAINING_ENQUEUED] job=%s - Training job enqueued", job_id)
+                else:
+                    logger.warning("[TRAINING_ENQUEUE_FAILED] job=%s - Failed to enqueue training", job_id)
+            else:
+                logger.info("[TRAINING_DISABLED] job=%s - Training feature disabled", job_id)
         elif failed:
             table_manager.update_job_metadata(username, job_id, {"status": "failed"})
             logger.error("[JOB_FAILED] job=%s - All cache jobs failed", job_id)
@@ -265,7 +400,7 @@ def process_cache_job(msg: func.QueueMessage) -> None:
 
         # Fetch and cache file contents
         logger.info("[CACHE] Starting file cache for job=%s repo=%s user=%s", job_id, repo_name, username)
-        _fetch_and_cache_files(username, repo_name)
+        _fetch_and_cache_files(username, repo_name, job_id=job_id)
         logger.info("[CACHE] File cache completed for job=%s repo=%s", job_id, repo_name)
         
         # Update progress tracking
@@ -279,7 +414,6 @@ def process_cache_job(msg: func.QueueMessage) -> None:
         )
 
     except ValueError as ve:
-        logger.error("[CACHE_ERROR] Validation error for repo=%s: %s", repo_name or "unknown", ve)
         if job_id and username and repo_name:
             _update_cache_progress(
                 job_id,
@@ -288,16 +422,10 @@ def process_cache_job(msg: func.QueueMessage) -> None:
                 cache_failed=True,
                 message_id=queue_message_id,
                 trace_id=trace_id,
+                error=str(ve),
             )
         raise
     except Exception as exc:
-        logger.error(
-            "[CACHE_ERROR] Failed to cache files for repo=%s job=%s: %s",
-            repo_name or "unknown",
-            job_id or "unknown",
-            exc,
-            exc_info=True,
-        )
         if job_id and username and repo_name:
             _update_cache_progress(
                 job_id,
@@ -306,5 +434,7 @@ def process_cache_job(msg: func.QueueMessage) -> None:
                 cache_failed=True,
                 message_id=queue_message_id,
                 trace_id=trace_id,
+                error=str(exc),
             )
         raise
+

@@ -56,11 +56,16 @@ def _compute_missing_repos(
     return expected_set - processed
 
 
-def _should_enqueue_merge(
+def _should_trigger_cache_jobs(
     expected: Iterable[str],
     synced: Iterable[str],
     failed: Iterable[str],
 ) -> bool:
+    """Check if all expected repos are synced and ready for cache jobs.
+    
+    With merge worker removed, reconciliation now only ensures cache jobs
+    are enqueued after sync completes. Cache worker handles final completion.
+    """
     expected_set = {name for name in expected if name}
     if not expected_set:
         return False
@@ -79,6 +84,13 @@ def _should_requeue(last_requeue_at: Optional[str], cooldown_seconds: int) -> bo
 
 
 def _collect_job_sets(job_id: str, repo_names: Iterable[str]) -> Tuple[Set[str], Set[str]]:
+    """Collect repos that completed metadata sync vs failed.
+    
+    Returns:
+        Tuple of (synced_or_cached, failed) repo name sets
+        synced_or_cached: Repos that completed metadata sync (may or may not have files cached)
+        failed: Repos that failed at any stage
+    """
     synced: Set[str] = set()
     failed: Set[str] = set()
     for repo_name in repo_names:
@@ -86,7 +98,8 @@ def _collect_job_sets(job_id: str, repo_names: Iterable[str]) -> Tuple[Set[str],
             continue
         row = table_manager.get_repo_status(job_id, repo_name)
         status = (row or {}).get("status")
-        if status == "synced":
+        # Count synced or cached repos as successfully processed for metadata
+        if status in ("synced", "cached"):
             synced.add(repo_name)
         elif status == "failed":
             failed.add(repo_name)
@@ -94,22 +107,30 @@ def _collect_job_sets(job_id: str, repo_names: Iterable[str]) -> Tuple[Set[str],
 
 
 def _reconcile_session(job: Dict[str, Any]) -> None:
+    """Reconcile a job session by re-enqueuing missing repos and triggering cache jobs.
+    
+    Uses RepoSyncStatus as source of truth for expected repos (normalized schema).
+    Supports current job statuses: queued, syncing, metadata_ready, completed, failed.
+    """
     job_id = job.get("job_id")
     username = job.get("username")
     trace_id = job.get("trace_id")
     if not job_id or not username:
         return
 
-    expected = job.get("expected_repos") or job.get("queued_repos") or []
-    if not expected:
+    # Get expected repos from RepoSyncStatus table (normalized schema)
+    statuses = table_manager.list_repo_statuses(job_id)
+    if not statuses:
         return
+    
+    expected = [s.get("repo_name") for s in statuses if s.get("repo_name")]
 
     logger.info(
         "[RECONCILE_CHECK] job=%s user=%s status=%s expected=%d",
         job_id,
         username,
         job.get("status") or "<unknown>",
-        len(expected) if isinstance(expected, list) else 0,
+        len(expected),
     )
 
     synced, failed = _collect_job_sets(job_id, expected)
@@ -127,46 +148,62 @@ def _reconcile_session(job: Dict[str, Any]) -> None:
     requeue_cooldown = _env_int("CF_RECONCILE_REQUEUE_COOLDOWN_SECONDS", 600)
     can_requeue = _should_requeue(job.get("last_requeue_at"), requeue_cooldown)
 
-    if missing and can_requeue and queue_manager.is_enabled():
+    if missing and can_requeue:
         requeued: List[str] = []
         for repo_name in sorted(missing):
             if queue_manager.enqueue_sync_job(job_id, username, repo_name, trace_id=trace_id):
                 requeued.append(repo_name)
         if requeued:
-            # Note: queued_repos removed from normalized schema - RepoSyncStatus is source of truth
+            # Preserve current job status when requeuing
+            current_status = job.get("status", "queued")
             table_manager.update_job_metadata(
                 username,
                 job_id,
-                {
-                    "last_requeue_at": _utcnow().isoformat(),
-                    "status": job.get("status") or "queued",
-                },
+                {"last_requeue_at": _utcnow().isoformat()},
             )
-            logger.info("[RECONCILE] job=%s requeued=%d", job_id, len(requeued))
+            logger.info(
+                "[RECONCILE] job=%s status=%s requeued=%d",
+                job_id,
+                current_status,
+                len(requeued),
+            )
 
-    if _should_enqueue_merge(expected, synced, failed):
-        if job.get("merge_enqueued_at"):
-            return
-        if queue_manager.is_enabled():
-            queued = queue_manager.enqueue_merge_job(job_id, username, sorted(synced), trace_id=trace_id)
-            if queued:
-                table_manager.update_job_metadata(
-                    username,
-                    job_id,
-                    {"merge_enqueued_at": _utcnow().isoformat(), "status": "synced"},
-                )
-                logger.info("[RECONCILE] job=%s merge enqueued", job_id)
+    # Note: With merge worker removed, cache jobs are now enqueued by sync_worker.
+    # Reconciliation only ensures missing cache jobs are triggered if sync completed
+    # but cache jobs were never enqueued (edge case recovery).
+    if _should_trigger_cache_jobs(expected, synced, failed):
+        # Check if cache jobs were already enqueued by looking at RepoSyncStatus
+        statuses = table_manager.list_repo_statuses(job_id)
+        has_cached = any(s.get("status") in ("cached", "failed") for s in statuses)
+        
+        if not has_cached:
+            # Edge case: sync completed but no cache jobs were enqueued
+            # This shouldn't happen in normal flow, but reconciliation ensures recovery
+            logger.warning(
+                "[RECONCILE] job=%s - Sync completed but no cache progress detected, triggering cache jobs",
+                job_id,
+            )
+            for repo_name in sorted(synced):
+                if queue_manager.enqueue_cache_job(
+                    username=username,
+                    job_id=job_id,
+                    repo_name=repo_name,
+                    trace_id=trace_id,
+                ):
+                    logger.info("[RECONCILE] job=%s repo=%s - Cache job enqueued", job_id, repo_name)
 
 
 @bp.timer_trigger(arg_name="timer", schedule=DEFAULT_SCHEDULE, run_on_startup=False)
 def reconcile_jobs(timer: func.TimerRequest) -> None:
-    if not table_manager.is_enabled():
-        logger.warning("[RECONCILE] Table manager disabled; skipping")
-        return
+    """Reconcile incomplete jobs by re-enqueuing missing repos.
+    
+    Monitors jobs in active states (not completed/failed) to ensure all repos are processed.
+    Current job statuses: queued, syncing, metadata_ready, completed, failed.
+    """
     min_age_seconds = _env_int("CF_RECONCILE_MIN_AGE_SECONDS", 180)
     updated_before = (_utcnow() - timedelta(seconds=min_age_seconds)).isoformat()
     jobs = table_manager.list_jobs_metadata_by_status(
-        ["queued", "processing", "synced"],
+        ["queued", "syncing", "metadata_ready"],
         updated_before=updated_before,
     )
     if not jobs:

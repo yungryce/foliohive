@@ -86,25 +86,51 @@ export class ProjectsComponent implements OnInit, OnDestroy {
     this.building = true;
     this.buildMessage = 'Starting build… This may take a few minutes.';
     this.repoBundleService.startBuild(this.username, true).subscribe({
-      next: () => {
+      next: (response) => {
+        const jobId = response.job_id;
+        if (!jobId) {
+          this.building = false;
+          this.buildMessage = 'Build started but no job ID returned.';
+          return;
+        }
+
         this.candidateContext.upsertCandidate({ username: this.username });
 
-        // Begin a light polling loop to refresh the bundle for ~2 minutes
-        timer(5000, 5000).pipe(
+        // Poll job status API for progress updates
+        timer(0, 5000).pipe(
           takeWhile((_, i) => i < 24), // 24*5s ≈ 2 minutes
-          switchMap(() => this.repoBundleService.getUserBundle(this.username, undefined, false))
+          switchMap(() => this.repoBundleService.getJobStatus(this.username, jobId))
         ).subscribe({
-          next: b => {
-            // Stop polling when data appears
-            if (Array.isArray(b?.data) && b.data.length > 0) {
+          next: status => {
+            if (!status) {
+              this.building = false;
+              this.buildMessage = 'Job status unavailable.';
+              return;
+            }
+
+            // Update progress message
+            this.buildMessage = `Building… ${status.progress?.percentage ?? 0}% complete (${status.progress?.completed ?? 0}/${status.progress?.total ?? 0} repos)`;
+
+            // Load metadata as soon as first repo is cached
+            if (status.metadata_ready && this.bundleEmpty) {
+              console.log('[ProjectsComponent] Metadata ready, loading candidate data');
+              this.loadRepoBundle();
+            }
+
+            // Stop polling when all files are ready
+            if (status.files_ready || status.status === 'completed') {
               this.building = false;
               this.buildMessage = '';
               this.loadRepoBundle();
-            } else {
-              this.buildMessage = 'Still building… please keep this tab open.';
+            } else if (status.status === 'failed') {
+              this.building = false;
+              this.buildMessage = 'Build failed. Please try again.';
             }
           },
-          error: () => { this.building = false; }
+          error: () => {
+            this.building = false;
+            this.buildMessage = 'Failed to poll job status.';
+          }
         });
       },
       error: () => {

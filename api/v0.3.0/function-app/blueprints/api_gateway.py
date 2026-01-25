@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -25,7 +26,7 @@ from cloudfolio_shared import (
     table_manager,
 )
 
-from cloudfolio_shared.table import JobMetadataRow
+from cloudfolio_shared.table import JobMetadataRow, RepoSyncStatusRow, RepoAPIUsageRow
 
 try:  # Azure SDK may be unavailable in local dev; ignore import failures gracefully
     from azure.core.exceptions import ResourceNotFoundError
@@ -234,7 +235,7 @@ def _repo_row_to_bundle_entry(
     return entry
 
 
-def _bundle_from_table(username: str, job: Dict[str, Any], repo_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Build bundle from table data - list fields computed from RepoSyncStatus."""
     job_id = job.get("job_id") or None
     entries: List[Dict[str, Any]] = []
@@ -308,7 +309,7 @@ def _bundle_from_cache(username: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _identify_repo_freshness(username: str) -> Dict[str, Any]:
+def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Identify stale repositories by comparing fingerprints.
     
     Uses table_manager for metadata fingerprints (lightweight, normalized).
@@ -326,6 +327,10 @@ def _identify_repo_freshness(username: str) -> Dict[str, Any]:
 
     # Fetch current state from GitHub (unavoidable - freshness requires live data)
     all_repos = repo_manager.get_all_repos_metadata(username=username, include_languages=False)
+    
+    # Track API usage for freshness check
+    api_usage = all_repos[0].get("api_usage") if all_repos and isinstance(all_repos, list) and isinstance(all_repos[0], dict) else {}
+    
     current_fingerprints = {
         repo.get("name"): FingerprintManager.generate_metadata_fingerprint(repo)
         for repo in all_repos
@@ -384,6 +389,30 @@ def _identify_repo_freshness(username: str) -> Dict[str, Any]:
         len(stale_repos),
         len(valid_repos),
     )
+    
+    # Record API usage if we have trace context
+    if api_usage and trace:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        operation_key = f"freshness_check#{now}#all_repos"
+        
+        totals = api_usage.get("totals", {})
+        file_targets = api_usage.get("file_targets", {})
+        cache_hits = sum(target.get("cache_hits", 0) for target in file_targets.values())
+        
+        row = RepoAPIUsageRow(
+            username=username,
+            operation_key=operation_key,
+            operation="freshness_check",
+            job_id=None,  # No job_id for freshness checks
+            repo_name=None,  # User-level operation
+            api_calls_rest=totals.get("requests", 0),
+            api_calls_graphql=0,
+            cache_hits=cache_hits,
+            created_at=now,
+        )
+        table_manager.upsert_api_usage(row)
+    
     return {
         "stale_repos": stale_repos,
         "cached_bundle": valid_repos,
@@ -438,14 +467,40 @@ def health_check(req: func.HttpRequest) -> func.HttpResponse:
     return _create_success_response(status, cache_control="no-cache")
 
 
-@bp.route(route="bundles/{username}/{repo}/files", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+@bp.route(route="candidate/{username}/{repo}/files", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_repo_files(req: func.HttpRequest) -> func.HttpResponse:
-    """Retrieve files (readme, config, etc.) for a specific repository.
-
+    """Retrieve file contents for a specific repository.
+    
+    Returns cached file contents (README, config files) without loading entire
+    portfolio. Files are cached by cache_worker after metadata sync completes.
+    
     Query parameters:
-        type: File type to retrieve (readme, config, all). Default: readme
-
-    Returns full file content from blob cache without loading entire bundle.
+        type (optional): File type to retrieve
+            - "readme" (default): Primary README + additional README files
+            - "config": Configuration files (Dockerfile, package.json, etc.)
+            - "all": Both README and config files
+    
+    Returns:
+        200: Files retrieved successfully
+        404: Repository not cached (trigger refresh first)
+        400: Invalid parameters
+    
+    Response structure:
+        {
+            "username": str,
+            "repo": str,
+            "fingerprint": str,
+            "primary_readme": str,      // When type=readme or all
+            "readme_files": {           // When type=readme or all
+                "path/to/readme.md": str
+            },
+            "config_files": {           // When type=config or all
+                "Dockerfile": str,
+                "package.json": str
+            }
+        }
+    
+    Cache-Control: public, max-age=3600 (files are immutable per fingerprint)
     """
     username = req.route_params.get("username")
     repo = req.route_params.get("repo")
@@ -508,10 +563,29 @@ def get_repo_files(req: func.HttpRequest) -> func.HttpResponse:
     return _create_success_response(response_payload, cache_control="public, max-age=3600")
 
 
-@bp.route(route="bundles/{username}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
-    """Retrieves candidates latest job if no job_id provided.
-        Retrieves specific job if job_id query parameter provided.
+@bp.route(route="candidate/{username}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_candidate(req: func.HttpRequest) -> func.HttpResponse:
+    """Retrieve candidate portfolio metadata.
+    
+    Returns repository metadata for a GitHub username. If no job_id is provided,
+    returns the latest completed job. Queries normalized tables for real-time data.
+    
+    Query parameters:
+        job_id (optional): Specific job ID to retrieve
+    
+    Returns:
+        200: Candidate metadata with repository list
+        404: No job found or job still in progress
+        400: Invalid request (missing username)
+    
+    Response structure:
+        {
+            "username": str,
+            "job_id": str,
+            "fingerprint": str,
+            "status": str,
+            "data": [repo_metadata...]
+        }
     """
     username = req.route_params.get("username")
     if not username:
@@ -521,7 +595,7 @@ def get_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
 
     trace = _get_trace_context(req)
     logger.info(
-        "[BUNDLE_REQUEST] request_id=%s username=%s",
+        "[CANDIDATE_REQUEST] request_id=%s username=%s",
         trace["request_id"],
         username,
     )
@@ -533,24 +607,63 @@ def get_repo_bundle(req: func.HttpRequest) -> func.HttpResponse:
         repo_rows = _query_repo_rows(username, job_id=job_id)
         if repo_rows:
             logger.info(
-                "[BUNDLE_RESPONSE] request_id=%s username=%s job_id=%s source=table repos=%d",
+                "[CANDIDATE_RESPONSE] request_id=%s username=%s job_id=%s source=table repos=%d",
                 trace["request_id"],
                 username,
                 job_id,
                 len(repo_rows),
             )
-            payload = _bundle_from_table(username, candidate_job, repo_rows)
+            payload = _get_candidate_metadata(username, candidate_job, repo_rows)
             return _create_success_response(payload)
         
         # Job exists but no repo data yet
-        return _create_error_response(f"Bundle for '{username}' not ready (job in progress)", 404)
+        return _create_error_response(f"Candidate for '{username}' not ready (job in progress)", 404)
 
     # No job found for username
-    return _create_error_response(f"No bundle found for '{username}'. Trigger refresh first.", 404)
+    return _create_error_response(f"No candidate found for '{username}'. Trigger refresh first.", 404)
 
-
-@bp.route(route="bundles/{username}/refresh", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
-def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
+@bp.route(route="candidate/{username}/refresh", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
+def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
+    """Trigger refresh of candidate portfolio data.
+    
+    Analyzes repository freshness by comparing GitHub metadata fingerprints with
+    cached data. Enqueues sync jobs only for stale repositories unless force_refresh
+    is specified.
+    
+    Request body:
+        {
+            "force_refresh": bool (default: false)
+        }
+    
+    Behavior:
+        - force_refresh=false: Only syncs repositories with changed metadata
+        - force_refresh=true: Syncs all repositories regardless of freshness
+        - Returns early if no stale repos and not forcing refresh
+    
+    Returns:
+        202: Refresh job started successfully
+            Response: {
+                "status": "processing",
+                "job_id": str,
+                "repos_queued": int,
+                "status_url": str
+            }
+        200: No refresh needed (all repos fresh)
+            Response: {
+                "status": "fresh",
+                "repos_count": int
+            }
+        400: Invalid request (missing username)
+        500: Failed to analyze repository freshness
+        502: Failed to enqueue sync jobs
+    
+    Flow:
+        1. Fetch current GitHub metadata (unavoidable for freshness check)
+        2. Compare fingerprints with table_manager cached data
+        3. Create job metadata and RepoSyncStatus rows (audit trail)
+        4. Enqueue sync jobs for stale/all repos
+        5. Return job_id and status polling URL
+    """
     username = req.route_params.get("username")
     if not username:
         return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
@@ -568,7 +681,7 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
     )
 
     try:
-        freshness = _identify_repo_freshness(username)
+        freshness = _identify_repo_freshness(username, trace=trace)
     except Exception as exc:
         logger.error("Failed to analyze repo freshness: %s", exc, exc_info=True)
         return _create_error_response("Failed to analyze repositories", 500)
@@ -612,6 +725,26 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
         request_id=trace.get("request_id"),
     )
 
+    # Create pending status rows for all repos upfront (before enqueuing)
+    # This provides full audit trail: pending → synced → cached
+    for repo_metadata in repos_to_queue:
+        repo_name = repo_metadata.get("name")
+        if repo_name:
+            table_manager.upsert_repo_status(
+                RepoSyncStatusRow(
+                    job_id=job_id,
+                    repo_name=repo_name,
+                    username=username,
+                    status="pending",
+                )
+            )
+    logger.info(
+        "[REFRESH_PENDING_CREATED] job=%s user=%s repos=%d",
+        job_id,
+        username,
+        len(expected_repo_names),
+    )
+
     enqueued = 0
     for repo_metadata in repos_to_queue:
         repo_name = repo_metadata.get("name")
@@ -642,25 +775,61 @@ def trigger_bundle_refresh(req: func.HttpRequest) -> func.HttpResponse:
     if enqueued == 0:
         return _create_error_response("Failed to enqueue sync jobs", 502)
 
-    _persist_job_metadata(
-        job_id,
-        username,
-        force_refresh=force_refresh,
-        trace_id=trace.get("trace_id"),
-        request_id=trace.get("request_id"),
-    )
-
     response = {
         "status": "processing",
         "job_id": job_id,
         "repos_queued": enqueued,
-        "status_url": f"/api/bundles/{username}/status?job_id={job_id}",
+        "status_url": f"/api/candidate/{username}/status?job_id={job_id}",
     }
     return _create_success_response(response, status_code=202, cache_control="no-cache")
 
 
-@bp.route(route="bundles/{username}/status", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+@bp.route(route="candidate/{username}/status", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
+    """Poll job progress and status.
+    
+    Returns real-time progress tracking for a specific job. Uses job-level status
+    from JobMetadata table with detailed repo-level progress from RepoSyncStatus.
+    
+    Query parameters:
+        job_id (required): Job ID to check status for
+    
+    Returns:
+        200: Job status retrieved successfully
+        404: Job not found
+        400: Missing required parameters
+    
+    Response structure:
+        {
+            "job_id": str,
+            "username": str,
+            "status": str,  // "queued" | "syncing" | "metadata_ready" | "completed" | "failed"
+            "metadata_ready": bool,  // True when first repo cached (can display metadata)
+            "files_ready": bool,     // True when all files cached (can display README)
+            "progress": {
+                "total": int,
+                "completed": int,       // cached + failed
+                "percentage": int,
+                "pending": int,         // Waiting to sync
+                "synced": int,          // Metadata synced, files pending
+                "cached": int,          // Files cached (ready)
+                "failed": int           // Terminal failure state
+            },
+            "created_at": str,
+            "repo_details": {
+                "pending": [str...],    // First 10 repos
+                "synced": [str...],
+                "cached": [str...],
+                "failed": [str...]
+            }
+        }
+    
+    Status progression:
+        queued → syncing → metadata_ready → completed
+               ↘ failed (terminal)
+    
+    Cache-Control: no-cache (always fetch fresh status)
+    """
     username = req.route_params.get("username")
     job_id = req.params.get("job_id")
     if not username:
@@ -669,7 +838,6 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
         return _create_error_response("job_id query parameter required", 400)
 
     trace = _get_trace_context(req)
-    _record_user_session(trace, username, job_id)
     logger.info(
         "[STATUS_REQUEST] request_id=%s session_id=%s username=%s job_id=%s",
         trace["request_id"],
@@ -682,29 +850,44 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
     if not job:
         return _create_error_response("Job not found", 404)
     
-    # Compute progress from RepoSyncStatus (source of truth)
+    job_status = job.get("status", "unknown")
+    
+    # Compute detailed progress from RepoSyncStatus (for UI progress bars)
     statuses = table_manager.list_repo_statuses(job_id)
     total = len(statuses)
     
-    pending = [row["repo_name"] for row in statuses if row.get("status") == "pending"]
-    synced = [row["repo_name"] for row in statuses if row.get("status") == "synced"]
-    cached = [row["repo_name"] for row in statuses if row.get("status") == "cached"]
-    failed = [row["repo_name"] for row in statuses if row.get("status") == "failed"]
+    # Single pass to collect repo names by status
+    status_counts = defaultdict(int)
+    status_lists = defaultdict(list)
     
-    # Completed = synced metadata + cached files
-    completed = len(cached) + len(failed)  # Count failed as completed (terminal state)
+    for row in statuses:
+        status = row.get("status")
+        repo_name = row.get("repo_name")
+        if status in ("pending", "synced", "cached", "failed") and repo_name:
+            status_counts[status] += 1
+            status_lists[status].append(repo_name)
+    
+    pending = status_lists["pending"]
+    synced = status_lists["synced"]
+    cached = status_lists["cached"]
+    failed = status_lists["failed"]
+    
+    # Completed = cached files + failed (terminal states)
+    completed = len(cached) + len(failed)
     
     payload = {
         "job_id": job_id,
         "username": username,
-        "status": job.get("status", "unknown"),
+        "status": job_status,
+        "metadata_ready": job_status in ("metadata_ready", "completed"),
+        "files_ready": job_status == "completed",
         "progress": {
             "total": total,
             "completed": completed,
             "percentage": int((completed / total * 100) if total else 0),
             "pending": len(pending),
             "synced": len(synced),  # Metadata synced, files pending
-            "cached": len(cached),  # Files cached (ready for merge)
+            "cached": len(cached),  # Files cached (ready)
             "failed": len(failed),
         },
         "created_at": job.get("created_at"),
@@ -716,10 +899,12 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
         },
     }
     logger.info(
-        "[STATUS_RESPONSE] request_id=%s job=%s status=%s total=%d cached=%d synced=%d pending=%d failed=%d",
+        "[STATUS_RESPONSE] request_id=%s job=%s status=%s metadata_ready=%s files_ready=%s total=%d cached=%d synced=%d pending=%d failed=%d",
         trace["request_id"],
         job_id,
         payload["status"],
+        payload["metadata_ready"],
+        payload["files_ready"],
         total,
         len(cached),
         len(synced),
@@ -771,7 +956,7 @@ def get_session_bundle(req: func.HttpRequest) -> func.HttpResponse:
             resolved_job_id or "<unknown>",
             len(repo_rows),
         )
-        payload = _bundle_from_table(username, session, repo_rows)
+        payload = _get_candidate_metadata(username, session, repo_rows)
         return _create_success_response(payload)
 
     cache_payload = _bundle_from_cache(username)
@@ -839,7 +1024,7 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
     job_id = session.get("job_id") if session else None
     repo_rows = _query_repo_rows(username, job_id=job_id) if session else []
     if session and repo_rows:
-        table_bundle = _bundle_from_table(username, session, repo_rows)
+        table_bundle = _get_candidate_metadata(username, session, repo_rows)
         repos_bundle = table_bundle.get("data")
 
     if not repos_bundle:

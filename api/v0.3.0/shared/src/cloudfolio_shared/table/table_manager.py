@@ -28,6 +28,7 @@ __all__ = [
     "RepoFileTypesRow",
     "RepoGitHubMetadataRow",
     "RepoSyncStatusRow",
+    "RepoAPIUsageRow",
     "ModelMetadataRow",
     "table_manager",
 ]
@@ -48,6 +49,7 @@ class TableNames:
     repo_github_metadata: str = "RepoGitHubMetadata"
     model_metadata: str = "ModelMetadata"
     repo_sync_status: str = "RepoSyncStatus"
+    repo_api_usage: str = "RepoAPIUsage"
 
 @dataclass
 class SessionCandidateRow:
@@ -68,7 +70,7 @@ class JobMetadataRow:
 
     username: str
     job_id: str
-    status: str = "queued" # 
+    status: str = "queued" # "queued" | "syncing" | "metadata_ready" | "completed" | "failed"
     bundle_fingerprint: Optional[str] = None
     force_refresh: bool = False
     merge_enqueued_at: Optional[str] = None
@@ -162,6 +164,30 @@ class RepoSyncStatusRow:
     synced_at: Optional[str] = None  # When metadata sync completed
     cached_at: Optional[str] = None  # When file caching completed
     updated_at: Optional[str] = None
+
+
+@dataclass
+class RepoAPIUsageRow:
+    """GitHub API usage tracking per operation.
+    
+    Tracks API calls, rate limits, and cache hits for observability and cost analysis.
+    
+    PartitionKey: username (enables querying all operations for a user)
+    RowKey: {operation}#{timestamp}#{repo_name} (composite for uniqueness)
+    """
+    
+    username: str  # PartitionKey
+    operation_key: str  # RowKey: e.g., "freshness#2026-01-25T10:30:00#repo1"
+    operation: str  # "freshness_check" | "metadata_sync" | "file_cache"
+    job_id: Optional[str] = None  # Associated job (None for freshness checks)
+    repo_name: Optional[str] = None  # Specific repo (None for user-level operations)
+    api_calls_rest: int = 0  # REST API calls made
+    api_calls_graphql: int = 0  # GraphQL API calls made
+    cache_hits: int = 0  # Number of cache hits (avoided API calls)
+    rate_limit_remaining: Optional[int] = None  # Remaining rate limit after operation
+    rate_limit_reset: Optional[str] = None  # When rate limit resets (ISO timestamp)
+    error: Optional[str] = None  # Error message if operation failed
+    created_at: Optional[str] = None  # When operation started
 
 
 @dataclass
@@ -282,6 +308,7 @@ class TableManager:
             self.table_names.repo_github_metadata,
             self.table_names.model_metadata,
             self.table_names.repo_sync_status,
+            self.table_names.repo_api_usage,
         ):
             try:
                 client = self._service_client.get_table_client(name)
@@ -644,6 +671,52 @@ class TableManager:
         logger.info("[TABLE_LIST_REPO_STATUSES] job=%s found=%d", job_id, len(results))
         return [self._deserialize_repo_status(e) for e in results]
 
+    def update_repo_status(self, job_id: str, repo_name: str, updates: Dict[str, Any]) -> None:
+        """Update repo sync status fields with partial updates (MERGE mode).
+        
+        Use for incremental status transitions and timestamp updates without
+        requiring full RepoSyncStatusRow construction. Validates status exists first.
+        
+        Args:
+            job_id: Job identifier (PartitionKey)
+            repo_name: Repository name (RowKey)
+            updates: Dict of field names to values (e.g., {"status": "cached", "cached_at": "..."})
+        
+        Raises:
+            ValueError: If repo status doesn't exist or invalid status provided
+        """
+        table = self._get_table_client(self.table_names.repo_sync_status)
+        if not table or not updates:
+            return
+        
+        # Validate status exists before updating
+        existing = self.get_repo_status(job_id, repo_name)
+        if not existing:
+            raise ValueError(f"Cannot update non-existent repo status: job_id={job_id}, repo_name={repo_name}")
+        
+        # Validate status value if provided
+        if "status" in updates:
+            status = (updates["status"] or "").strip().lower()
+            if status not in _REPO_STATUS_ALLOWED:
+                raise ValueError(f"Invalid repo sync status: {status}")
+            updates["status"] = status
+        
+        logger.info(
+            "[TABLE_UPDATE_REPO_STATUS] job=%s repo=%s keys=%s",
+            job_id,
+            repo_name,
+            sorted(list(updates.keys())),
+        )
+        
+        entity: Dict[str, Any] = {
+            "PartitionKey": job_id,
+            "RowKey": repo_name,
+            "updated_at": _utcnow_iso()
+        }
+        for key, value in updates.items():
+            entity[key] = value if value is not None else ""
+        
+        table.upsert_entity(entity, mode=UpdateMode.MERGE)
 
     def _deserialize_repo_status(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
@@ -847,6 +920,95 @@ class TableManager:
             payload["topics"] = json.loads(payload.get("topics") or "[]")
         except json.JSONDecodeError:
             payload["topics"] = []
+        return payload
+
+    # ------------------------------------------------------------------
+    # Repo API usage tracking
+    # ------------------------------------------------------------------
+    
+    def upsert_api_usage(self, row: RepoAPIUsageRow) -> None:
+        """Record GitHub API usage for an operation.
+        
+        Tracks API calls, cache hits, and rate limits for cost analysis and observability.
+        """
+        table = self._get_table_client(self.table_names.repo_api_usage)
+        if not table:
+            logger.warning("[TABLE_UPSERT_API_USAGE] No table client, skipping")
+            return
+        
+        now = _utcnow_iso()
+        entity = {
+            "PartitionKey": row.username,
+            "RowKey": row.operation_key,
+            "operation": row.operation,
+            "job_id": row.job_id,
+            "repo_name": row.repo_name,
+            "api_calls_rest": row.api_calls_rest,
+            "api_calls_graphql": row.api_calls_graphql,
+            "cache_hits": row.cache_hits,
+            "rate_limit_remaining": row.rate_limit_remaining,
+            "rate_limit_reset": row.rate_limit_reset,
+            "error": row.error,
+            "created_at": row.created_at or now,
+        }
+        table.upsert_entity(entity, mode=UpdateMode.REPLACE)
+        logger.info(
+            "[TABLE_UPSERT_API_USAGE] user=%s operation=%s job=%s repo=%s rest=%d graphql=%d cache_hits=%d",
+            row.username,
+            row.operation,
+            row.job_id or "<none>",
+            row.repo_name or "<all>",
+            row.api_calls_rest,
+            row.api_calls_graphql,
+            row.cache_hits,
+        )
+    
+    def list_api_usage(
+        self,
+        username: str,
+        *,
+        job_id: Optional[str] = None,
+        operation: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List API usage records for a username.
+        
+        Args:
+            username: User to query
+            job_id: Optional filter by job
+            operation: Optional filter by operation type
+            limit: Maximum records to return
+        
+        Returns:
+            List of API usage records sorted by created_at descending
+        """
+        table = self._get_table_client(self.table_names.repo_api_usage)
+        if not table:
+            return []
+        
+        query = f"PartitionKey eq '{username}'"
+        if job_id:
+            query += f" and job_id eq '{job_id}'"
+        if operation:
+            query += f" and operation eq '{operation}'"
+        
+        try:
+            entities = list(table.query_entities(query, results_per_page=limit))
+            results = [self._deserialize_api_usage(e) for e in entities]
+            # Sort by created_at descending
+            results.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+            return results[:limit]
+        except Exception as exc:
+            logger.error("[TABLE_LIST_API_USAGE] Query failed: %s", exc, exc_info=True)
+            return []
+    
+    def _deserialize_api_usage(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        """Deserialize API usage entity."""
+        payload = dict(entity)
+        for meta_key in _AZURE_META_FIELDS:
+            payload.pop(meta_key, None)
+        payload["username"] = payload.pop("PartitionKey", None)
+        payload["operation_key"] = payload.pop("RowKey", None)
         return payload
 
     # ------------------------------------------------------------------

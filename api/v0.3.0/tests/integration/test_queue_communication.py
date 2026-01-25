@@ -109,7 +109,7 @@ class TestQueueMessageFormats:
         assert "details" in message
 
         # Validate status values
-        valid_statuses = ["queued", "processing", "synced", "completed", "failed"]
+        valid_statuses = ["queued", "syncing", "metadata_ready", "completed", "failed"]
         assert message["status"] in valid_statuses
 
 
@@ -298,7 +298,7 @@ class TestInterWorkerCommunication:
             "total_repos": total_repos,
             "completed_repos": 0,
             "synced_repos": [],
-            "status": "processing",
+            "status": "syncing",
         }
 
         # Simulate each sync completion

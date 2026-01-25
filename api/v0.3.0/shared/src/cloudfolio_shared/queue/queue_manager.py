@@ -272,26 +272,24 @@ class QueueManager:
         self,
         *,
         username: str,
-        bundle_cache_key: str,
+        job_id: str,
+        repo_names: List[str],
+        bundle_fingerprint: str,
         training_params: Optional[Dict] = None,
-        job_id: Optional[str] = None,
-        repo_names: Optional[List[str]] = None,
-        bundle_fingerprint: Optional[str] = None,
         experiment_name: str = "default",
         trace_id: Optional[str] = None,
         request_id: Optional[str] = None,
         session_id: Optional[str] = None,
     ) -> bool:
-        """Enqueue a training job without embedding large payloads.
+        """Enqueue a training job.
 
-        The training worker fetches the actual repository bundle from blob storage
-        using the provided cache key.
+        Training worker will query tables using job_id to reconstruct
+        the bundle from normalized table data (no blob dependency).
         """
         message: Dict[str, Any] = {
             "job_id": job_id,
             "username": username,
             "experiment_name": experiment_name,
-            "bundle_cache_key": bundle_cache_key,
             "bundle_fingerprint": bundle_fingerprint,
             "repo_names": repo_names or [],
             "training_params": training_params or {},

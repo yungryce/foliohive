@@ -297,7 +297,7 @@ class TestSyncWorkerIntegration:
             'total_repos': 2,
             'completed_repos': 0,
             'synced_repos': [],
-            'status': 'processing',
+            'status': 'syncing',
         })
 
         # Simulate first repo sync completion

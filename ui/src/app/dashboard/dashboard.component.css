@@ -1,0 +1,20 @@
+/* Dashboard-specific styles */
+.dashboard-container {
+  min-height: 100vh;
+}
+
+.stat-card {
+  transition: transform 0.2s ease-in-out;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+}
+
+.job-card {
+  transition: all 0.2s ease-in-out;
+}
+
+.job-card:hover {
+  box-shadow: 0 4px 6px -1px rgba(168, 85, 247, 0.1);
+}

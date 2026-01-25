@@ -1,0 +1,15 @@
+/* Admin panel styles */
+aside {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+nav a {
+  font-weight: 500;
+}
+
+nav a.active {
+  background-color: rgba(147, 51, 234, 1);
+}

@@ -1,0 +1,4 @@
+/* Monitoring dashboard styles */
+.success-rate-bar {
+  transition: width 0.3s ease-in-out;
+}

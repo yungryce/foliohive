@@ -266,7 +266,7 @@ class TestCrossWorkerCacheConsistency:
         # Sync worker updates progress
         job_data = cache_store.get(job_key)["data"]
         job_data["completed_repos"] = 1
-        job_data["status"] = "processing"
+        job_data["status"] = "syncing"
         cache_store.save(job_key, job_data)
 
         # Merge worker reads progress
@@ -410,13 +410,13 @@ class TestCacheIsolation:
         job2_id = str(uuid.uuid4())
 
         cache_store.save(f"job:{job1_id}", {"status": "completed"})
-        cache_store.save(f"job:{job2_id}", {"status": "processing"})
+        cache_store.save(f"job:{job2_id}", {"status": "syncing"})
 
         result1 = cache_store.get(f"job:{job1_id}")
         result2 = cache_store.get(f"job:{job2_id}")
 
         assert result1["data"]["status"] == "completed"
-        assert result2["data"]["status"] == "processing"
+        assert result2["data"]["status"] == "syncing"
 
     def test_repo_caches_are_isolated_per_user(self, cache_store):
         """Verify same repo name for different users is isolated."""

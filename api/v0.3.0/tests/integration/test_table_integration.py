@@ -250,7 +250,7 @@ class TestJobProgressTracking:
         row = JobMetadataRow(
             username=username,
             job_id=job_id,
-            status='processing',
+            status='syncing',
             total_repos=3,
             completed_repos=0,
             expected_repos=['repo-1', 'repo-2', 'repo-3'],
@@ -289,7 +289,7 @@ class TestJobProgressTracking:
         row = JobMetadataRow(
             username=username,
             job_id=job_id,
-            status='processing',
+            status='syncing',
             total_repos=2,
             completed_repos=2,
             expected_repos=['repo-x', 'repo-y'],
@@ -441,7 +441,7 @@ class TestEdgeCases:
         row = JobMetadataRow(
             username=username,
             job_id=job_id,
-            status='processing',
+            status='syncing',
             total_repos=5,
             completed_repos=0,
             expected_repos=['repo-1', 'repo-2', 'repo-3', 'repo-4', 'repo-5'],

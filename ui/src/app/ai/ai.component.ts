@@ -127,17 +127,23 @@ export class AiComponent implements OnInit, OnDestroy {
         }
 
         this.status = statusResponse;
-        console.log(`[AiComponent] Job status: ${statusResponse.status}, progress: ${statusResponse.progress?.completed}/${statusResponse.progress?.total}`);
+        console.log(`[AiComponent] Job status: ${statusResponse.status}, metadata_ready: ${statusResponse.metadata_ready}, progress: ${statusResponse.progress?.percentage}%`);
 
-        // Check if job is complete
-        if (statusResponse.status === 'completed') {
-          console.log(`[AiComponent] Job completed, loading bundle`);
+        // Load metadata as soon as first repo is cached
+        if (statusResponse.metadata_ready && !this.noRepositories) {
+          console.log(`[AiComponent] Metadata ready, loading candidate data`);
+          this.loadMetadataOnly();
+        }
+
+        // Check if all files are complete
+        if (statusResponse.files_ready || statusResponse.status === 'completed') {
+          console.log(`[AiComponent] All files ready, job completed`);
           this.stopPollingAndCheck();
         } else if (statusResponse.status === 'failed') {
           console.error(`[AiComponent] Job failed`);
           this.stopPollingAndCheck();
         }
-        // Continue polling if status is 'processing' or 'queued'
+        // Continue polling for 'queued', 'syncing', or 'metadata_ready' status
       },
       error: (err) => {
         console.error('[AiComponent] Job status polling error:', err);
@@ -168,6 +174,25 @@ export class AiComponent implements OnInit, OnDestroy {
     
     this.activeJobId = null;
     this.checkBundleStatusIfReady();
+  }
+
+  private loadMetadataOnly(): void {
+    const username = this.activeUsername;
+    if (!username) return;
+
+    console.log(`[AiComponent] Loading metadata for ${username}`);
+    this.repoService.getUserBundle(username, undefined, true).subscribe(bundle => {
+      const hasRepos = Array.isArray(bundle?.data) && bundle.data.length > 0;
+      this.noRepositories = !hasRepos;
+      
+      if (hasRepos) {
+        console.log(`[AiComponent] Metadata loaded with ${bundle.data.length} repositories`);
+        this.loadSuggestions();
+      } else {
+        console.log(`[AiComponent] No repositories found for ${username}`);
+        this.suggested = [];
+      }
+    });
   }
 
   private checkBundleStatusIfReady(): void {

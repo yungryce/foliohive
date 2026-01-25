@@ -3,6 +3,7 @@ import { provideRouter } from '@angular/router';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { MarkdownModule } from 'ngx-markdown';
 import { ConfigService } from './services/config.service';
+import { AuthService } from './services/auth.service';
 import { firstValueFrom } from 'rxjs';
 import { sessionIdInterceptor } from './services/session-id.interceptor';
 import { requestIdInterceptor } from './services/request-id.interceptor';
@@ -18,6 +19,13 @@ export const appConfig: ApplicationConfig = {
       MarkdownModule.forRoot()
     ),
     provideAppInitializer(() => {
+      const authService = inject(AuthService);
+      
+      // Initialize authentication on app startup
+      // This fetches user identity from /.auth/me endpoint
+      return firstValueFrom(authService.initializeAuth());
+    }),
+    provideAppInitializer(() => {
       const configService = inject(ConfigService);
       // const preFetchService = inject(PreFetchService);
       
@@ -28,3 +36,4 @@ export const appConfig: ApplicationConfig = {
     })
   ]
 };
+

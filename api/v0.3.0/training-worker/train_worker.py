@@ -96,28 +96,109 @@ class TrainingWorker:
     # ----------------------------------------------------------------------------------
     # Core processing
     # ----------------------------------------------------------------------------------
+    def _load_repos_from_tables(self, username: str, job_id: str) -> list[Dict[str, Any]]:
+        """Load repos from normalized tables - reconstructs full document from multiple tables.
+        
+        Queries table_manager to reconstruct bundle from job_id reference.
+        This provides immutability through reference (job data never changes once completed).
+        """
+        if not table_manager:
+            raise RuntimeError("table_manager not available - cannot query tables")
+        
+        # Get repo names for this job from RepoSyncStatus
+        statuses = table_manager.list_repo_statuses(job_id)
+        cached_repos = [s for s in statuses if s.get("status") == "cached"]
+        repo_names = [s.get("repo_name") for s in cached_repos if s.get("repo_name")]
+        
+        if not repo_names:
+            logger.warning("No cached repos found for job=%s", job_id)
+            return []
+        
+        # Query core repo metadata
+        rows = table_manager.query_repo_metadata(username, repo_names=repo_names)
+        documents: list[Dict[str, Any]] = []
+        
+        for row in rows:
+            repo_name = row.get("repo_name") or row.get("RowKey")
+            if not repo_name:
+                continue
+
+            # Start with core metadata fields
+            entry: Dict[str, Any] = {
+                "name": repo_name,
+                "fingerprint": row.get("fingerprint"),
+                "has_documentation": bool(row.get("has_documentation")),
+                "readme_excerpt": row.get("readme_excerpt"),
+                "content_blob": row.get("content_blob"),
+            }
+
+            # Query normalized tables to reconstruct full document
+            # 1. Languages
+            lang_rows = table_manager.query_repo_languages(username, repo_name)
+            if lang_rows:
+                entry["languages"] = {row["language"]: row["bytes_count"] for row in lang_rows}
+            else:
+                entry["languages"] = {}
+
+            # 2. File types
+            file_type_rows = table_manager.query_repo_file_types(username, repo_name)
+            if file_type_rows:
+                entry["categorized_types"] = {row["category"]: row["types"] for row in file_type_rows}
+            else:
+                entry["categorized_types"] = {}
+
+            # 3. GitHub metadata
+            github_meta = table_manager.get_repo_github_metadata(username, repo_name)
+            if github_meta:
+                entry["metadata"] = {
+                    "name": repo_name,
+                    "description": github_meta.get("description"),
+                    "topics": github_meta.get("topics", []),
+                    "homepage": github_meta.get("homepage_url"),
+                    "stargazers_count": github_meta.get("stars_count"),
+                    "forks_count": github_meta.get("forks_count"),
+                    "fork": github_meta.get("is_fork"),
+                    "archived": github_meta.get("is_archived"),
+                    "language": github_meta.get("primary_language"),
+                    "license": {"name": github_meta.get("license_name")} if github_meta.get("license_name") else None,
+                    "updated_at": row.get("last_synced_at"),
+                }
+            else:
+                entry["metadata"] = {"name": repo_name}
+
+            documents.append(entry)
+        
+        logger.info(
+            "[TRAINING_LOAD] user=%s job=%s source=normalized_tables repos=%d",
+            username,
+            job_id,
+            len(documents),
+        )
+        return documents
+
     def process_training_job(self, message: Dict[str, Any]) -> bool:
         username = message.get("username")
-        repos_bundle = message.get("repos_bundle")
-        if not isinstance(repos_bundle, list):
-            repos_bundle = None
-        bundle_cache_key = message.get("bundle_cache_key")
+        job_id = message.get("job_id")
         experiment_name = message.get("experiment_name", "default")
         custom_params = message.get("training_params") or {}
 
         if not username:
             raise ValueError("username missing from training job")
+        if not job_id:
+            raise ValueError("job_id missing from training job")
 
-        if repos_bundle is None:
-            if not isinstance(bundle_cache_key, str) or not bundle_cache_key.strip():
-                raise ValueError("bundle_cache_key missing from training job")
-            repos_bundle = self._load_bundle_from_blob(bundle_cache_key.strip())
-            logger.info(
-                "Loaded training bundle from blob (%s repos) user=%s job=%s",
-                len(repos_bundle),
-                username,
-                message.get("job_id", "unknown"),
-            )
+        # Load repos from tables using job_id reference (immutability through reference)
+        repos_bundle = self._load_repos_from_tables(username, job_id)
+        if not repos_bundle:
+            logger.warning("No repos found for job=%s user=%s", job_id, username)
+            return False
+        
+        logger.info(
+            "Loaded training bundle from tables (%s repos) user=%s job=%s",
+            len(repos_bundle),
+            username,
+            job_id,
+        )
 
         documented_repos = [repo for repo in repos_bundle if repo.get("has_documentation")]
         if len(documented_repos) < 3:
@@ -301,7 +382,6 @@ class TrainingWorker:
 
         return queue_client_cls.from_connection_string(conn_str=self.connection_string, queue_name=queue_name)
 
-    @staticmethod
     def _create_blob_service(self) -> Any:
         try:
             module = importlib.import_module("azure.storage.blob")
