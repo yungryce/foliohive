@@ -220,15 +220,20 @@ def _persist_repo_metadata(
         repo_name=repo_name,
         fingerprint=fingerprint,
         description=repo_metadata.get("description"),
+        topics=repo_metadata.get("topics", []),
         html_url=repo_metadata.get("html_url"),
-        homepage=repo_metadata.get("homepage"),
-        stars=repo_metadata.get("stargazers_count", 0),
-        forks=repo_metadata.get("forks_count", 0),
+        homepage_url=repo_metadata.get("homepage"),
+        stars_count=repo_metadata.get("stargazers_count", 0),
+        forks_count=repo_metadata.get("forks_count", 0),
         open_issues=repo_metadata.get("open_issues_count", 0),
         watchers=repo_metadata.get("watchers_count", 0),
+        primary_language=repo_metadata.get("language"),
         is_fork=repo_metadata.get("fork", False),
         is_archived=repo_metadata.get("archived", False),
         license_name=repo_metadata.get("license", {}).get("name") if isinstance(repo_metadata.get("license"), dict) else None,
+        github_created_at=repo_metadata.get("created_at"),
+        github_updated_at=repo_metadata.get("updated_at"),
+        github_pushed_at=repo_metadata.get("pushed_at"),
     )
     table_manager.upsert_repo_github_metadata(github_row)
     logger.info("[PERSIST_GITHUB_METADATA] repo=%s fingerprint=%s", repo_name, fingerprint)

@@ -157,21 +157,26 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   }
 
   private toCardVM(r: any): RepoCardVM | null {
-    const pid = r?.repoContext?.project_identity ?? {};
-    const type = r?.repoContext?.type ?? pid?.type ?? 'Unknown';
-    const description = r?.repoContext?.description ?? pid?.description ?? 'No description';
+    // Extract data from API response structure (RepoGitHubMetadataRow + repoContext)
+    const type = r?.repoContext?.type ?? 'repository';
+    const description = r?.repoContext?.description ?? r?.metadata?.description ?? 'No description';
+    
+    // Languages are returned as {language: bytes_count} from _repo_row_to_bundle_entry
     const langs = r?.languages ?? {};
     const total = Object.values(langs).reduce((a: number, b: any) => a + Number(b), 0) || 1;
     const languagesPct = Object.entries(langs)
       .map(([k, v]) => ({ k, pct: Math.round((Number(v) / total) * 100) }))
       .sort((a, b) => b.pct - a.pct);
 
+    // Primary tech stack from repoContext (inferred from primary_language)
+    const primaryStack = r?.repoContext?.tech_stack?.primary ?? [];
+
     return {
-      name: r?.name ?? r?.metadata?.name ?? 'unknown',
-      updatedAt: r?.metadata?.updated_at ?? r?.metadata?.pushed_at,
+      name: r?.name ?? 'unknown',
+      updatedAt: r?.metadata?.updated_at ?? r?.metadata?.pushed_at ?? r?.updated_at,
       type,
       description,
-      primaryStack: r?.repoContext?.tech_stack?.primary ?? [],
+      primaryStack,
       languagesPct,
       htmlUrl: r?.metadata?.html_url,
       isFork: !!r?.metadata?.fork,

@@ -114,21 +114,15 @@ class RepoGitHubMetadataRow:
     username: str  # PartitionKey
     repo_name: str  # RowKey
     fingerprint: Optional[str] = None  # Content fingerprint for versioning
-    full_name: Optional[str] = None
     description: Optional[str] = None
     topics: Optional[List[str]] = None
     html_url: Optional[str] = None
-    homepage: Optional[str] = None
     homepage_url: Optional[str] = None
-    stars: int = 0
     stars_count: int = 0
-    forks: int = 0
     forks_count: int = 0
-    open_issues: int = 0
     watchers: int = 0
-    default_branch: Optional[str] = None
+    open_issues: int = 0
     primary_language: Optional[str] = None
-    is_private: bool = False
     is_fork: bool = False
     is_archived: bool = False
     license_name: Optional[str] = None
@@ -230,6 +224,34 @@ def _azure_safe_timestamp(iso_timestamp: Optional[str] = None) -> str:
     if iso_timestamp is None:
         iso_timestamp = _utcnow_iso()
     return iso_timestamp.replace(":", "-").replace("+", "_")
+
+
+def _restore_iso_timestamp(safe_timestamp: Optional[str]) -> Optional[str]:
+    """Restore ISO format from Azure Table-safe timestamp.
+    
+    Converts sanitized timestamp back to valid ISO 8601 format for JSON serialization.
+    
+    Args:
+        safe_timestamp: Sanitized timestamp with - for : and _ for +
+    
+    Returns:
+        ISO format timestamp string, or None if input is None/empty
+    """
+    if not safe_timestamp:
+        return None
+    
+    # First handle timezone indicator: _ → +
+    restored = safe_timestamp.replace("_", "+")
+    
+    # Split into date and time portions at "T"
+    if "T" in restored:
+        date_part, time_part = restored.split("T", 1)
+        # Date part already has correct hyphens (2026-01-26), leave it unchanged
+        # Time part needs hyphens converted to colons (03-47-23Z → 03:47:23Z)
+        time_part = time_part.replace("-", ":")
+        restored = f"{date_part}T{time_part}"
+    
+    return restored
 
 
 def _safe_json_dump(value: Any) -> str:
@@ -557,13 +579,19 @@ class TableManager:
             "fingerprint": row.fingerprint,
             "description": (row.description or "")[:4096],
             "topics": _safe_json_dump_limited(row.topics or [], label="github_metadata.topics"),
+            "html_url": (row.html_url or "")[:2048],
             "homepage_url": (row.homepage_url or "")[:2048],
             "stars_count": int(row.stars_count or 0),
             "forks_count": int(row.forks_count or 0),
+            "watchers": int(row.watchers or 0),
+            "open_issues": int(row.open_issues or 0),
             "is_fork": bool(row.is_fork),
             "is_archived": bool(row.is_archived),
             "primary_language": (row.primary_language or "")[:128],
             "license_name": (row.license_name or "")[:256],
+            "github_created_at": _azure_safe_timestamp(row.github_created_at) if row.github_created_at else None,
+            "github_updated_at": _azure_safe_timestamp(row.github_updated_at) if row.github_updated_at else None,
+            "github_pushed_at": _azure_safe_timestamp(row.github_pushed_at) if row.github_pushed_at else None,
             "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
             "updated_at": now,
         }
@@ -600,6 +628,16 @@ class TableManager:
             payload["topics"] = json.loads(payload.get("topics") or "[]")
         except json.JSONDecodeError:
             payload["topics"] = []
+        
+        # Ensure numeric fields are properly typed
+        payload["stars_count"] = int(payload.get("stars_count", 0))
+        payload["forks_count"] = int(payload.get("forks_count", 0))
+        
+        # Restore ISO format timestamps from Azure-safe format
+        for ts_field in ["github_created_at", "github_updated_at", "github_pushed_at"]:
+            if ts_field in payload:
+                payload[ts_field] = _restore_iso_timestamp(payload[ts_field])
+        
         return payload
 
 

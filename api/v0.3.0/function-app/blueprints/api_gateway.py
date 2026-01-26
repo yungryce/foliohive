@@ -243,22 +243,63 @@ def _repo_row_to_bundle_entry(
     }
 
     if languages:
-        entry["languages"] = languages
+        # Transform list to dict format expected by frontend: {language: bytes_count}
+        entry["languages"] = {lang["language"]: lang["bytes_count"] for lang in languages if lang.get("language")}
 
     if github_metadata:
-        entry["github"] = {
+        # Map GitHub metadata to expected frontend structure
+        entry["metadata"] = {
+            "name": github_metadata.get("repo_name"),
             "description": github_metadata.get("description"),
-            "topics": github_metadata.get("topics", []),
-            "homepage_url": github_metadata.get("homepage_url"),
-            "stars_count": github_metadata.get("stars_count"),
-            "forks_count": github_metadata.get("forks_count"),
-            "watchers_count": github_metadata.get("watchers_count"),
-            "primary_language": github_metadata.get("primary_language"),
-            "license_name": github_metadata.get("license_name"),
-            "html_url": github_metadata.get("html_url") or github_metadata.get("homepage_url"),
+            "html_url": github_metadata.get("html_url"),
+            "homepage": github_metadata.get("homepage_url"),
+            "fork": github_metadata.get("is_fork", False),
+            "archived": github_metadata.get("is_archived", False),
+            "updated_at": github_metadata.get("github_updated_at"),
+            "pushed_at": github_metadata.get("github_pushed_at"),
+            "created_at": github_metadata.get("github_created_at"),
+            "stargazers_count": github_metadata.get("stars_count", 0),
+            "forks_count": github_metadata.get("forks_count", 0),
+            "watchers_count": github_metadata.get("watchers", 0),
+            "open_issues_count": github_metadata.get("open_issues", 0),
+        }
+        
+        # Infer type from primary language and topics
+        primary_lang = github_metadata.get("primary_language", "")
+        topics = github_metadata.get("topics", [])
+        repo_type = _infer_repo_type(primary_lang, topics)
+        
+        # Use repoContext structure for backward compatibility but populate from GitHub metadata
+        entry["repoContext"] = {
+            "type": repo_type,
+            "description": github_metadata.get("description") or "No description",
+            "tech_stack": {
+                "primary": [primary_lang] if primary_lang else []
+            }
         }
 
     return entry
+
+
+def _infer_repo_type(primary_language: str, topics: list) -> str:
+    """Infer repository type from language and topics."""
+    if not primary_language:
+        return "repository"
+    
+    topics_lower = [t.lower() for t in (topics or [])]
+    
+    # Check for common framework/library indicators
+    if any(kw in topics_lower for kw in ["library", "package", "sdk", "api-wrapper"]):
+        return "library"
+    if any(kw in topics_lower for kw in ["framework", "boilerplate", "template"]):
+        return "framework"
+    if any(kw in topics_lower for kw in ["cli", "tool", "utility"]):
+        return "tool"
+    if any(kw in topics_lower for kw in ["webapp", "website", "application", "app"]):
+        return "application"
+    
+    # Default fallback
+    return "repository"
 
 
 def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
