@@ -16,7 +16,6 @@ interface RepoCardVM {
   languagesPct: { k: string; pct: number }[];
   htmlUrl?: string;
   isFork?: boolean;
-  hasDocumentation: boolean;
 }
 
 @Component({
@@ -158,11 +157,6 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   }
 
   private toCardVM(r: any): RepoCardVM | null {
-    if (!r?.has_documentation) {
-      console.log('Excluding:', r?.name, 'due to missing documentation');
-      return null; // Exclude repositories without documentation
-    }
-
     const pid = r?.repoContext?.project_identity ?? {};
     const type = r?.repoContext?.type ?? pid?.type ?? 'Unknown';
     const description = r?.repoContext?.description ?? pid?.description ?? 'No description';
@@ -181,7 +175,6 @@ export class ProjectsComponent implements OnInit, OnDestroy {
       languagesPct,
       htmlUrl: r?.metadata?.html_url,
       isFork: !!r?.metadata?.fork,
-      hasDocumentation: !!r?.has_documentation,
     };
   }
 

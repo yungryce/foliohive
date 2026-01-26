@@ -22,7 +22,7 @@ from cloudfolio_shared import (
     queue_manager,
     table_manager,
 )
-from cloudfolio_shared.table import RepoMetadataRow, RepoLanguagesRow, RepoGitHubMetadataRow, RepoAPIUsageRow
+from cloudfolio_shared.table import RepoLanguagesRow, RepoGitHubMetadataRow, RepoAPIUsageRow
 
 logger = logging.getLogger("cloudfolio.sync_worker")
 logger.setLevel(logging.INFO)
@@ -173,32 +173,19 @@ def _persist_repo_metadata(
     repo_metadata: Dict[str, Any],
     fingerprint: str,
 ) -> None:
-    """Persist repo metadata to normalized tables only (no file caching).
+    """Persist repo metadata to normalized tables.
     
     Persists to table_manager:
-    - RepoMetadata: core metadata fields
     - RepoLanguages: language statistics
-    - RepoGitHubMetadata: GitHub API fields
+    - RepoGitHubMetadata: GitHub API fields + fingerprint
     
-    File contents are handled separately by _fetch_and_cache_files.
+    File contents are handled separately by cache_worker._fetch_and_cache_files.
     """
     if not repo_name:
         logger.warning("Cannot persist repo metadata without repo_name")
         return
 
-    # 1. Persist core repo metadata (normalized - no nested JSON)
-    row = RepoMetadataRow(
-        username=username,
-        repo_name=repo_name,
-        fingerprint=fingerprint,
-        content_blob=None,  # No blob reference - files cached separately
-        has_documentation=None,  # Will be determined when files are fetched
-        readme_excerpt=None,  # Will be populated when README is cached
-        last_synced_at=repo_metadata.get("updated_at"),
-    )
-    table_manager.upsert_repo_metadata(row)
-
-    # 2. Persist languages to normalized table
+    # 1. Persist languages to normalized table
     languages = repo_metadata.get("languages", {})
     if languages and isinstance(languages, dict):
         total_bytes = sum(v for v in languages.values() if isinstance(v, (int, float)))
@@ -227,10 +214,11 @@ def _persist_repo_metadata(
             table_manager.batch_upsert_repo_languages(lang_rows)
             logger.info("[PERSIST_LANGUAGES] repo=%s languages=%d", repo_name, len(lang_rows))
 
-    # 3. Persist GitHub metadata to normalized table
+    # 2. Persist GitHub metadata to normalized table (includes fingerprint)
     github_row = RepoGitHubMetadataRow(
         username=username,
         repo_name=repo_name,
+        fingerprint=fingerprint,
         description=repo_metadata.get("description"),
         html_url=repo_metadata.get("html_url"),
         homepage=repo_metadata.get("homepage"),
@@ -243,7 +231,7 @@ def _persist_repo_metadata(
         license_name=repo_metadata.get("license", {}).get("name") if isinstance(repo_metadata.get("license"), dict) else None,
     )
     table_manager.upsert_repo_github_metadata(github_row)
-    logger.info("[PERSIST_GITHUB_METADATA] repo=%s", repo_name)
+    logger.info("[PERSIST_GITHUB_METADATA] repo=%s fingerprint=%s", repo_name, fingerprint)
 
 
 def _update_job_progress(

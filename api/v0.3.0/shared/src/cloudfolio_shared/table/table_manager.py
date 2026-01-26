@@ -23,7 +23,6 @@ __all__ = [
     "TableNames",
     "JobMetadataRow",
     "SessionCandidateRow",
-    "RepoMetadataRow",
     "RepoLanguagesRow",
     "RepoFileTypesRow",
     "RepoGitHubMetadataRow",
@@ -81,22 +80,6 @@ class JobMetadataRow:
 
 
 @dataclass
-class RepoMetadataRow:
-    """Lightweight per-repository metadata - normalized schema.
-    """
-
-    username: str
-    repo_name: str
-    fingerprint: Optional[str]
-    content_blob: Optional[str] = None
-    has_documentation: Optional[bool] = None
-    readme_excerpt: Optional[str] = None
-    created_at: Optional[str] = None
-    last_synced_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-@dataclass
 class RepoLanguagesRow:
     """Per-repo language statistics - normalized from RepoMetadata.languages."""
 
@@ -123,10 +106,14 @@ class RepoFileTypesRow:
 
 @dataclass
 class RepoGitHubMetadataRow:
-    """GitHub-specific metadata - normalized from RepoMetadata.metadata."""
+    """GitHub-specific metadata - normalized from RepoMetadata.metadata.
+    
+    Includes fingerprint for content versioning and cache invalidation.
+    """
 
     username: str  # PartitionKey
     repo_name: str  # RowKey
+    fingerprint: Optional[str] = None  # Content fingerprint for versioning
     full_name: Optional[str] = None
     description: Optional[str] = None
     topics: Optional[List[str]] = None
@@ -322,7 +309,6 @@ class TableManager:
         for name in (
             self.table_names.job_metadata,
             self.table_names.session_candidates,
-            self.table_names.repo_metadata,
             self.table_names.repo_languages,
             self.table_names.repo_file_types,
             self.table_names.repo_github_metadata,
@@ -556,89 +542,64 @@ class TableManager:
 
 
     # ------------------------------------------------------------------
-    # Repo metadata
+    # Repo GitHub metadata
     # ------------------------------------------------------------------
 
-    def upsert_repo_metadata(self, row: RepoMetadataRow) -> None:
-        self.batch_upsert_repo_metadata([row])
-
-    def batch_upsert_repo_metadata(self, rows: Sequence[RepoMetadataRow]) -> None:
-        table = self._get_table_client(self.table_names.repo_metadata)
-        if not table or not rows:
-            return
-        operations = []
-        for row in rows:
-            entity = self._serialize_repo_row(row)
-            operations.append(("upsert", entity, {"mode": UpdateMode.MERGE}))
-            if len(operations) == 100:
-                table.submit_transaction(operations)
-                operations = []
-        if operations:
-            table.submit_transaction(operations)
-
-    def query_repo_metadata(
-        self,
-        username: str,
-        *,
-        repo_names: Optional[Iterable[str]] = None,
-    ) -> List[Dict[str, Any]]:
-        """Query repo metadata - job_id filter removed (use RepoSyncStatus)."""
-        table = self._get_table_client(self.table_names.repo_metadata)
+    def upsert_repo_github_metadata(self, row: RepoGitHubMetadataRow) -> None:
+        """Store GitHub API metadata for a repository."""
+        table = self._get_table_client(self.table_names.repo_github_metadata)
         if not table:
-            return []
-        filters = [f"PartitionKey eq '{username}'"]
-        if repo_names:
-            names = list(repo_names)
-            if names:
-                name_filters = [f"RowKey eq '{name}'" for name in names]
-                filters.append(f"({' or '.join(name_filters)})")
-        filter_str = " and ".join(filters)
-        entities = table.list_entities(filter=filter_str)
-
-        return [self._deserialize_repo_entity(e) for e in entities]
-
-
-    def _serialize_repo_row(self, row: RepoMetadataRow) -> Dict[str, Any]:
+            return
         now = _azure_safe_timestamp()
         entity: Dict[str, Any] = {
             "PartitionKey": row.username,
             "RowKey": row.repo_name,
-            "fingerprint": row.fingerprint or "",
-            "content_blob": row.content_blob or "",
-            "has_documentation": bool(row.has_documentation),
-            "readme_excerpt": (row.readme_excerpt or "")[:16384],
+            "fingerprint": row.fingerprint,
+            "description": (row.description or "")[:4096],
+            "topics": _safe_json_dump_limited(row.topics or [], label="github_metadata.topics"),
+            "homepage_url": (row.homepage_url or "")[:2048],
+            "stars_count": int(row.stars_count or 0),
+            "forks_count": int(row.forks_count or 0),
+            "is_fork": bool(row.is_fork),
+            "is_archived": bool(row.is_archived),
+            "primary_language": (row.primary_language or "")[:128],
+            "license_name": (row.license_name or "")[:256],
             "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
-            "last_synced_at": _azure_safe_timestamp(row.last_synced_at) if row.last_synced_at else now,
-            "updated_at": _azure_safe_timestamp(row.updated_at) if row.updated_at else now,
+            "updated_at": now,
         }
-        logger.debug(
-            "[TABLE_SERIALIZE_REPO_METADATA] PartitionKey=%s RowKey=%s entity=%s",
-            entity["PartitionKey"],
-            entity["RowKey"],
-            entity
-        )
-        return entity
+        table.upsert_entity(entity, mode=UpdateMode.REPLACE)
+        logger.info("[TABLE_UPSERT_GITHUB_METADATA] user=%s repo=%s", row.username, row.repo_name)
 
-    def _deserialize_repo_entity(self, entity: Dict[str, Any]) -> Dict[str, Any]:
-        """Deserialize Azure Table entity to clean dictionary - normalized schema."""
+    def get_repo_github_metadata(self, username: str, repo_name: str) -> Optional[Dict[str, Any]]:
+        """Get GitHub metadata for a repository."""
+        table = self._get_table_client(self.table_names.repo_github_metadata)
+        if not table:
+            return None
+        try:
+            entity = table.get_entity(partition_key=username, row_key=repo_name)
+        except ResourceNotFoundError:
+            return None
+        return self._deserialize_repo_github_metadata(entity)
+
+    def query_repo_github_metadata(self, username: str) -> List[Dict[str, Any]]:
+        """Query all GitHub metadata for a user's repositories."""
+        table = self._get_table_client(self.table_names.repo_github_metadata)
+        if not table:
+            return []
+        filter_str = f"PartitionKey eq '{username}'"
+        entities = table.list_entities(filter=filter_str)
+        return [self._deserialize_repo_github_metadata(e) for e in entities]
+
+    def _deserialize_repo_github_metadata(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
-        
-        # Remove Azure metadata fields
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
-        
-        # Map Azure keys to application fields
-        payload["repo_name"] = payload.pop("RowKey", None)
         payload["username"] = payload.pop("PartitionKey", None)
-        
-        # Normalize optional fields
-        payload["fingerprint"] = payload.get("fingerprint") or None
-        payload["content_blob"] = payload.get("content_blob") or None
-        payload["readme_excerpt"] = payload.get("readme_excerpt") or None
-        payload["has_documentation"] = bool(payload.get("has_documentation"))
-        payload["created_at"] = payload.get("created_at") or None
-        payload["last_synced_at"] = payload.get("last_synced_at") or None
-        payload["updated_at"] = payload.get("updated_at") or None
+        payload["repo_name"] = payload.pop("RowKey", None)
+        try:
+            payload["topics"] = json.loads(payload.get("topics") or "[]")
+        except json.JSONDecodeError:
+            payload["topics"] = []
         return payload
 
 
@@ -900,58 +861,6 @@ class TableManager:
             payload["types"] = json.loads(payload.get("types") or "[]")
         except json.JSONDecodeError:
             payload["types"] = []
-        return payload
-    
-    # ------------------------------------------------------------------
-    # Repo GitHub metadata
-    # ------------------------------------------------------------------
-
-    def upsert_repo_github_metadata(self, row: RepoGitHubMetadataRow) -> None:
-        """Store GitHub API metadata for a repository."""
-        table = self._get_table_client(self.table_names.repo_github_metadata)
-        if not table:
-            return
-        now = _azure_safe_timestamp()
-        entity: Dict[str, Any] = {
-            "PartitionKey": row.username,
-            "RowKey": row.repo_name,
-            "repo_name": row.repo_name,
-            "description": (row.description or "")[:4096],
-            "topics": _safe_json_dump_limited(row.topics or [], label="github_metadata.topics"),
-            "homepage_url": (row.homepage_url or "")[:2048],
-            "stars_count": int(row.stars_count or 0),
-            "forks_count": int(row.forks_count or 0),
-            "is_fork": bool(row.is_fork),
-            "is_archived": bool(row.is_archived),
-            "primary_language": (row.primary_language or "")[:128],
-            "license_name": (row.license_name or "")[:256],
-            "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
-            "updated_at": now,
-        }
-        table.upsert_entity(entity, mode=UpdateMode.REPLACE)
-        logger.info("[TABLE_UPSERT_GITHUB_METADATA] user=%s repo=%s", row.username, row.repo_name)
-
-    def get_repo_github_metadata(self, username: str, repo_name: str) -> Optional[Dict[str, Any]]:
-        """Get GitHub metadata for a repository."""
-        table = self._get_table_client(self.table_names.repo_github_metadata)
-        if not table:
-            return None
-        try:
-            entity = table.get_entity(partition_key=username, row_key=repo_name)
-        except ResourceNotFoundError:
-            return None
-        return self._deserialize_repo_github_metadata(entity)
-
-    def _deserialize_repo_github_metadata(self, entity: Dict[str, Any]) -> Dict[str, Any]:
-        payload = dict(entity)
-        for meta_key in _AZURE_META_FIELDS:
-            payload.pop(meta_key, None)
-        payload["username"] = payload.pop("PartitionKey", None)
-        payload["repo_name"] = payload.pop("RowKey", None)
-        try:
-            payload["topics"] = json.loads(payload.get("topics") or "[]")
-        except json.JSONDecodeError:
-            payload["topics"] = []
         return payload
 
     # ------------------------------------------------------------------

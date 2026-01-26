@@ -17,13 +17,13 @@ import pytest
 
 @pytest.fixture
 def mock_table_manager():
-    """Mock table_manager with JobMetadata, RepoMetadata, ModelMetadata tables."""
+    """Mock table_manager with JobMetadata, RepoGitHubMetadata, ModelMetadata tables."""
     manager = MagicMock()
     manager.is_enabled.return_value = True
     
     # In-memory stores for each table
     job_metadata: Dict[tuple, Dict[str, Any]] = {}
-    repo_metadata: Dict[tuple, Dict[str, Any]] = {}
+    repo_github_metadata: Dict[tuple, Dict[str, Any]] = {}
     model_metadata: Dict[tuple, Dict[str, Any]] = {}
     
     def upsert_job_metadata(row):
@@ -55,27 +55,36 @@ def mock_table_manager():
             job_metadata[key].update(updates)
             job_metadata[key]['updated_at'] = datetime.now(timezone.utc).isoformat()
     
-    def upsert_repo_metadata(row):
+    def upsert_repo_github_metadata(row):
         key = (row.username, row.repo_name)
-        repo_metadata[key] = {
+        repo_github_metadata[key] = {
             'PartitionKey': row.username,
             'RowKey': row.repo_name,
             'username': row.username,
             'repo_name': row.repo_name,
-            'fingerprint': row.fingerprint,
-            'content_blob': row.content_blob,
-            'has_documentation': row.has_documentation,
-            'readme_excerpt': row.readme_excerpt,
-            'created_at': row.created_at,
-            'last_synced_at': row.last_synced_at,
-            'updated_at': datetime.now(timezone.utc).isoformat(),
+            'fingerprint': getattr(row, 'fingerprint', None),
+            'full_name': getattr(row, 'full_name', None),
+            'description': getattr(row, 'description', None),
+            'topics': getattr(row, 'topics', None),
+            'html_url': getattr(row, 'html_url', None),
+            'homepage': getattr(row, 'homepage', None),
+            'stars': getattr(row, 'stars', 0),
+            'forks': getattr(row, 'forks', 0),
+            'is_fork': getattr(row, 'is_fork', False),
+            'is_archived': getattr(row, 'is_archived', False),
+            'license_name': getattr(row, 'license_name', None),
+            'github_created_at': getattr(row, 'github_created_at', None),
+            'github_updated_at': getattr(row, 'github_updated_at', None),
+            'github_pushed_at': getattr(row, 'github_pushed_at', None),
         }
     
-    def query_repo_metadata(username: str, repo_names: List[str] = None):
+    def get_repo_github_metadata(username: str, repo_name: str):
+        return repo_github_metadata.get((username, repo_name))
+    
+    def query_repo_github_metadata(username: str):
         results = [
-            meta for key, meta in repo_metadata.items()
+            meta for key, meta in repo_github_metadata.items()
             if key[0] == username
-            and (not repo_names or meta.get('repo_name') in repo_names)
         ]
         return results
     
@@ -101,8 +110,9 @@ def mock_table_manager():
     manager.get_job_metadata = get_job_metadata
     manager.list_jobs_metadata = list_jobs_metadata
     manager.update_job_metadata = update_job_metadata
-    manager.upsert_repo_metadata = upsert_repo_metadata
-    manager.query_repo_metadata = query_repo_metadata
+    manager.upsert_repo_github_metadata = upsert_repo_github_metadata
+    manager.get_repo_github_metadata = get_repo_github_metadata
+    manager.query_repo_github_metadata = query_repo_github_metadata
     manager.upsert_model_metadata = upsert_model_metadata
     manager.get_model_metadata = get_model_metadata
     
@@ -113,64 +123,60 @@ class TestTableFirstArchitecture:
     """Test that workers read from tables first, fall back to cache."""
 
     def test_sync_worker_persists_repo_metadata_to_table(self, mock_table_manager):
-        """Verify sync worker creates RepoMetadata rows per plan-dataProcessingArchitecture.prompt.md."""
-        from cloudfolio_shared.table import RepoMetadataRow
+        """Verify sync worker creates RepoGitHubMetadata rows with fingerprint."""
+        from cloudfolio_shared.table import RepoGitHubMetadataRow
         
         username = 'testuser'
         repo_name = 'test-repo'
         
-        row = RepoMetadataRow(
+        row = RepoGitHubMetadataRow(
             username=username,
             repo_name=repo_name,
             fingerprint='fp_123',
-            has_documentation=True,
-            readme_excerpt='# Test Repo',
-            content_blob='blob://ephemeral/test.jsonl',
-            created_at=datetime.now(timezone.utc).isoformat(),
+            description='Test repository',
+            is_fork=False,
         )
         
-        mock_table_manager.upsert_repo_metadata(row)
+        mock_table_manager.upsert_repo_github_metadata(row)
         
         # Verify row exists
-        results = mock_table_manager.query_repo_metadata(username, repo_names=[repo_name])
-        assert len(results) == 1
-        assert results[0]['repo_name'] == repo_name
-        assert results[0]['fingerprint'] == 'fp_123'
-        assert results[0]['has_documentation'] is True
+        result = mock_table_manager.get_repo_github_metadata(username, repo_name)
+        assert result is not None
+        assert result['repo_name'] == repo_name
+        assert result['fingerprint'] == 'fp_123'
 
     def test_merge_worker_queries_table_first_before_cache(self, mock_table_manager):
-        """Verify merge worker prefers table metadata over cache per architectural plan."""
-        from cloudfolio_shared.table import RepoMetadataRow
+        """Verify merge worker queries GitHub metadata table for all repos."""
+        from cloudfolio_shared.table import RepoGitHubMetadataRow
         
         username = 'testuser'
         
-        # Seed table with repo metadata
+        # Seed table with GitHub metadata
         for i in range(3):
-            row = RepoMetadataRow(
+            row = RepoGitHubMetadataRow(
                 username=username,
                 repo_name=f'repo-{i}',
                 fingerprint=f'fp_{i}',
-                has_documentation=True,
-                readme_excerpt=f'# Repo {i}',
-                content_blob=None,
-                created_at=datetime.now(timezone.utc).isoformat(),
+                description=f'Repository {i}',
+                is_fork=False,
             )
-            mock_table_manager.upsert_repo_metadata(row)
+            mock_table_manager.upsert_repo_github_metadata(row)
         
         # Query should return all 3 repos
-        results = mock_table_manager.query_repo_metadata(username)
+        results = mock_table_manager.query_repo_github_metadata(username)
         assert len(results) == 3
         assert all(r['username'] == username for r in results)
+        assert all(r['fingerprint'] for r in results)
 
     def test_api_gateway_reads_bundle_from_table(self, mock_table_manager):
-        """Verify API gateway serves bundle data from JobSessions + RepoMetadata tables."""
-        from cloudfolio_shared.table import JobMetadataRow, RepoMetadataRow
+        """Verify API gateway serves bundle data from JobMetadata + RepoGitHubMetadata tables."""
+        from cloudfolio_shared.table import JobMetadataRow, RepoGitHubMetadataRow
         
         username = 'testuser'
         job_id = str(uuid.uuid4())
         
-        # Create session
-        session_row = JobMetadataRow(
+        # Create job metadata
+        job_row = JobMetadataRow(
             username=username,
             job_id=job_id,
             status='completed',
@@ -182,27 +188,25 @@ class TestTableFirstArchitecture:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=None,
         )
-        mock_table_manager.upsert_job_metadata(session_row)
+        mock_table_manager.upsert_job_metadata(job_row)
         
-        # Create repo metadata
+        # Create GitHub metadata
         for repo_name in ['repo-a', 'repo-b']:
-            repo_row = RepoMetadataRow(
+            repo_row = RepoGitHubMetadataRow(
                 username=username,
                 repo_name=repo_name,
                 fingerprint=f'fp_{repo_name}',
-                has_documentation=True,
-                readme_excerpt=f'# {repo_name}',
-                content_blob=None,
-                created_at=datetime.now(timezone.utc).isoformat(),
+                description=f'Repository {repo_name}',
+                is_fork=False,
             )
-            mock_table_manager.upsert_repo_metadata(repo_row)
+            mock_table_manager.upsert_repo_github_metadata(repo_row)
         
-        # API gateway reads session + repos
-        session = mock_table_manager.get_job_metadata(username, job_id)
-        assert session['status'] == 'completed'
-        assert session['bundle_fingerprint'] == 'bundle_fp_xyz'
+        # API gateway reads job + repos
+        job = mock_table_manager.get_job_metadata(username, job_id)
+        assert job['status'] == 'completed'
+        assert job['bundle_fingerprint'] == 'bundle_fp_xyz'
         
-        repos = mock_table_manager.query_repo_metadata(username)
+        repos = mock_table_manager.query_repo_github_metadata(username)
         assert len(repos) == 2
         assert {r['repo_name'] for r in repos} == {'repo-a', 'repo-b'}
 
@@ -350,7 +354,7 @@ class TestEdgeCases:
         
         # Should not raise
         if mock_table_manager.is_enabled():
-            mock_table_manager.query_repo_metadata('user', job_id='job')
+            mock_table_manager.query_repo_github_metadata('user')
         
         # Verify fallback path (cache) would be invoked
         assert not mock_table_manager.is_enabled()
@@ -427,30 +431,28 @@ class TestEdgeCases:
         assert updated['status'] == 'metadata_ready'
 
     def test_fingerprint_mismatch_triggers_resync(self, mock_table_manager):
-        """Verify stale fingerprints detected and repos re-queued."""
-        from cloudfolio_shared.table import RepoMetadataRow
+        """Verify stale fingerprints in GitHub metadata detected."""
+        from cloudfolio_shared.table import RepoGitHubMetadataRow
         
         username = 'testuser'
         
-        # Old fingerprint in table
-        row = RepoMetadataRow(
+        # Old fingerprint in GitHub metadata table
+        row = RepoGitHubMetadataRow(
             username=username,
             repo_name='test-repo',
             fingerprint='old_fp',
-            has_documentation=False,
-            readme_excerpt='',
-            content_blob=None,
-            created_at=datetime.now(timezone.utc).isoformat(),
+            description='Test repo',
+            is_fork=False,
         )
-        mock_table_manager.upsert_repo_metadata(row)
+        mock_table_manager.upsert_repo_github_metadata(row)
         
         # Simulate freshness check detecting new fingerprint
-        stored = mock_table_manager.query_repo_metadata(username, repo_names=['test-repo'])
-        assert stored[0]['fingerprint'] == 'old_fp'
+        stored = mock_table_manager.get_repo_github_metadata(username, 'test-repo')
+        assert stored['fingerprint'] == 'old_fp'
         
-        # New fingerprint from GitHub
+        # New fingerprint from GitHub would be different
         expected_fp = 'new_fp'
-        assert stored[0]['fingerprint'] != expected_fp
+        assert stored['fingerprint'] != expected_fp
         # Would trigger re-enqueue in actual API gateway logic
 
 
@@ -607,9 +609,8 @@ class TestMultiTableQueries:
     """Test queries that span multiple tables for complete data views."""
 
     def test_complete_repo_profile_query(self, mock_table_manager):
-        """Verify querying complete repo profile across RepoMetadata + RepoLanguages + RepoGitHubMetadata."""
+        """Verify querying complete repo profile across RepoGitHubMetadata + RepoLanguages tables."""
         from cloudfolio_shared.table import (
-            RepoMetadataRow,
             RepoLanguagesRow,
             RepoGitHubMetadataRow,
         )
@@ -618,23 +619,8 @@ class TestMultiTableQueries:
         repo_name = 'full-stack-app'
         
         # Mock all repo-related tables
-        repo_metadata: Dict[tuple, Dict] = {}
-        repo_languages: Dict[tuple, Dict] = {}
         repo_github: Dict[tuple, Dict] = {}
-        
-        def upsert_repo_metadata(row):
-            repo_metadata[(row.username, row.repo_name)] = {
-                'username': row.username,
-                'repo_name': row.repo_name,
-                'fingerprint': row.fingerprint,
-                'has_documentation': row.has_documentation,
-            }
-        
-        def query_repo_metadata(username: str, repo_names: List[str] = None):
-            return [
-                meta for key, meta in repo_metadata.items()
-                if key[0] == username and (not repo_names or key[1] in repo_names)
-            ]
+        repo_languages: Dict[tuple, Dict] = {}
         
         def batch_upsert_repo_languages(rows):
             for row in rows:
@@ -656,29 +642,18 @@ class TestMultiTableQueries:
             repo_github[(row.username, row.repo_name)] = {
                 'username': row.username,
                 'repo_name': row.repo_name,
-                'stars': row.stars,
-                'description': row.description,
+                'fingerprint': getattr(row, 'fingerprint', None),
+                'stars': getattr(row, 'stars', 0),
+                'description': getattr(row, 'description', None),
             }
         
         def get_repo_github_metadata(username: str, repo_name: str):
             return repo_github.get((username, repo_name))
         
-        mock_table_manager.upsert_repo_metadata = upsert_repo_metadata
-        mock_table_manager.query_repo_metadata = query_repo_metadata
         mock_table_manager.batch_upsert_repo_languages = batch_upsert_repo_languages
         mock_table_manager.query_repo_languages = query_repo_languages
         mock_table_manager.upsert_repo_github_metadata = upsert_repo_github_metadata
         mock_table_manager.get_repo_github_metadata = get_repo_github_metadata
-        
-        # Insert repo metadata
-        mock_table_manager.upsert_repo_metadata(
-            RepoMetadataRow(
-                username=username,
-                repo_name=repo_name,
-                fingerprint='fp_xyz',
-                has_documentation=True,
-            )
-        )
         
         # Insert language data
         mock_table_manager.batch_upsert_repo_languages([
@@ -698,23 +673,23 @@ class TestMultiTableQueries:
             ),
         ])
         
-        # Insert GitHub metadata
+        # Insert GitHub metadata with fingerprint
         mock_table_manager.upsert_repo_github_metadata(
             RepoGitHubMetadataRow(
                 username=username,
                 repo_name=repo_name,
+                fingerprint='fp_xyz',
                 stars=500,
                 description='A full-stack application',
             )
         )
         
         # Query complete profile
-        metadata = mock_table_manager.query_repo_metadata(username, repo_names=[repo_name])[0]
         languages = mock_table_manager.query_repo_languages(username, repo_name)
         github = mock_table_manager.get_repo_github_metadata(username, repo_name)
         
         # Verify complete profile
-        assert metadata['fingerprint'] == 'fp_xyz'
+        assert github['fingerprint'] == 'fp_xyz'
         assert len(languages) == 2
         assert {lang['language'] for lang in languages} == {'Python', 'TypeScript'}
         assert github['stars'] == 500
@@ -726,20 +701,18 @@ class TestBatchOperationsAndErrorHandling:
 
     def test_empty_batch_operations(self, mock_table_manager):
         """Verify batch operations handle empty lists gracefully."""
-        from cloudfolio_shared.table import RepoMetadataRow
-        
         # Mock batch operation
         batch_calls = []
         
-        def batch_upsert_repo_metadata(rows):
+        def batch_upsert_repo_github_metadata(rows):
             batch_calls.append(len(rows))
             # Should handle empty gracefully
             pass
         
-        mock_table_manager.batch_upsert_repo_metadata = batch_upsert_repo_metadata
+        mock_table_manager.batch_upsert_repo_github_metadata = batch_upsert_repo_github_metadata
         
         # Call with empty list
-        mock_table_manager.batch_upsert_repo_metadata([])
+        mock_table_manager.batch_upsert_repo_github_metadata([])
         
         assert len(batch_calls) == 1
         assert batch_calls[0] == 0
@@ -828,40 +801,40 @@ class TestBatchOperationsAndErrorHandling:
 
     def test_special_characters_in_keys(self, mock_table_manager):
         """Verify special characters in partition/row keys are handled."""
-        from cloudfolio_shared.table import RepoMetadataRow
+        from cloudfolio_shared.table import RepoGitHubMetadataRow
         
         # Repo name with special characters
         username = 'test-user'
         repo_name = 'repo.with-special_chars'
         
-        row = RepoMetadataRow(
+        row = RepoGitHubMetadataRow(
             username=username,
             repo_name=repo_name,
             fingerprint='fp_123',
         )
         
-        mock_table_manager.upsert_repo_metadata(row)
+        mock_table_manager.upsert_repo_github_metadata(row)
         
-        results = mock_table_manager.query_repo_metadata(username, repo_names=[repo_name])
-        assert len(results) == 1
-        assert results[0]['repo_name'] == repo_name
+        result = mock_table_manager.get_repo_github_metadata(username, repo_name)
+        assert result is not None
+        assert result['repo_name'] == repo_name
 
     def test_null_optional_fields(self, mock_table_manager):
         """Verify null/None values in optional fields are handled correctly."""
-        from cloudfolio_shared.table import RepoMetadataRow
+        from cloudfolio_shared.table import RepoGitHubMetadataRow
         
-        row = RepoMetadataRow(
+        row = RepoGitHubMetadataRow(
             username='testuser',
             repo_name='minimal-repo',
             fingerprint='fp_xyz',
-            content_blob=None,  # Optional
-            has_documentation=None,  # Optional
-            readme_excerpt=None,  # Optional
+            description=None,  # Optional
+            homepage=None,  # Optional
+            license_name=None,  # Optional
         )
         
-        mock_table_manager.upsert_repo_metadata(row)
+        mock_table_manager.upsert_repo_github_metadata(row)
         
-        results = mock_table_manager.query_repo_metadata('testuser', repo_names=['minimal-repo'])
-        assert len(results) == 1
+        result = mock_table_manager.get_repo_github_metadata('testuser', 'minimal-repo')
+        assert result is not None
         # Verify None fields don't cause errors
-        assert results[0]['fingerprint'] == 'fp_xyz'
+        assert result['fingerprint'] == 'fp_xyz'

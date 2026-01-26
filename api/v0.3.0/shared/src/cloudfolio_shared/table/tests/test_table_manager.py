@@ -11,7 +11,6 @@ from cloudfolio_shared.table import (  # type: ignore
     RepoFileTypesRow,
     RepoGitHubMetadataRow,
     RepoLanguagesRow,
-    RepoMetadataRow,
     RepoSyncStatusRow,
     SessionCandidateRow,
     TableManager,
@@ -137,34 +136,35 @@ def test_candidate_session_roundtrip(table_manager: TableManager) -> None:
     assert stored["force_refresh"] is False
 
 
-def test_repo_metadata_query(table_manager: TableManager) -> None:
-    table_manager.batch_upsert_repo_metadata(
-        [
-            RepoMetadataRow(
-                username="alice",
-                repo_name="api",
-                fingerprint="abc",
-                has_documentation=True,
-                readme_excerpt="# API",
-            ),
-            RepoMetadataRow(
-                username="alice",
-                repo_name="web",
-                fingerprint="def",
-                has_documentation=False,
-            ),
-        ]
+def test_repo_github_metadata_fingerprint_query(table_manager: TableManager) -> None:
+    table_manager.upsert_repo_github_metadata(
+        RepoGitHubMetadataRow(
+            username="alice",
+            repo_name="api",
+            fingerprint="fp_abc",
+            description="API repo",
+            is_fork=False,
+        )
+    )
+    table_manager.upsert_repo_github_metadata(
+        RepoGitHubMetadataRow(
+            username="alice",
+            repo_name="web",
+            fingerprint="fp_def",
+            description="Web repo",
+            is_fork=False,
+        )
     )
 
-    results = table_manager.query_repo_metadata("alice")
+    results = table_manager.query_repo_github_metadata("alice")
     assert len(results) == 2
     api_repo = [r for r in results if r["repo_name"] == "api"][0]
-    assert api_repo["fingerprint"] == "abc"
-    assert api_repo["has_documentation"] is True
+    assert api_repo["fingerprint"] == "fp_abc"
+    assert api_repo["description"] == "API repo"
 
-    filtered = table_manager.query_repo_metadata("alice", repo_names=["web"])
-    assert len(filtered) == 1
-    assert filtered[0]["repo_name"] == "web"
+    single = table_manager.get_repo_github_metadata("alice", "web")
+    assert single is not None
+    assert single["fingerprint"] == "fp_def"
 
 
 def test_model_metadata(table_manager: TableManager) -> None:
@@ -483,20 +483,25 @@ def test_list_jobs_metadata_by_status(table_manager: TableManager) -> None:
     assert all(j["status"] in ["completed", "failed"] for j in completed)
 
 
-def test_repo_metadata_with_blob_reference(table_manager: TableManager) -> None:
-    """Test RepoMetadata storing blob references."""
-    row = RepoMetadataRow(
+def test_repo_github_metadata_comprehensive(table_manager: TableManager) -> None:
+    """Test RepoGitHubMetadata storing comprehensive GitHub API data with fingerprint."""
+    row = RepoGitHubMetadataRow(
         username="alice",
         repo_name="large-repo",
         fingerprint="fp_abc123",
-        content_blob="blob://ephemeral/alice/large-repo.jsonl",
-        has_documentation=True,
-        readme_excerpt="# Large Repo\n\nThis repo has lots of content...",
+        full_name="alice/large-repo",
+        description="Large repo with many features",
+        html_url="https://github.com/alice/large-repo",
+        stars_count=1500,
+        forks_count=120,
+        is_fork=False,
+        license_name="MIT",
     )
     
-    table_manager.upsert_repo_metadata(row)
+    table_manager.upsert_repo_github_metadata(row)
     
-    results = table_manager.query_repo_metadata("alice", repo_names=["large-repo"])
-    assert len(results) == 1
-    assert results[0]["content_blob"] == "blob://ephemeral/alice/large-repo.jsonl"
-    assert "Large Repo" in results[0]["readme_excerpt"]
+    result = table_manager.get_repo_github_metadata("alice", "large-repo")
+    assert result is not None
+    assert result["fingerprint"] == "fp_abc123"
+    assert result["stars_count"] == 1500
+    assert result["license_name"] == "MIT"

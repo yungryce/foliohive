@@ -75,7 +75,7 @@ def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
 def _calculate_bundle_fingerprint(username: str, job_id: str) -> str:
     """Calculate bundle fingerprint from repo statuses.
     
-    Uses repo fingerprints from RepoSyncStatus table to generate
+    Uses repo fingerprints from RepoGitHubMetadata table to generate
     a deterministic bundle-level fingerprint.
     """
     statuses = table_manager.list_repo_statuses(job_id)
@@ -90,10 +90,10 @@ def _calculate_bundle_fingerprint(username: str, job_id: str) -> str:
         if not repo_name:
             continue
         
-        # Get repo metadata to extract fingerprint
-        repo_rows = table_manager.query_repo_metadata(username, repo_names=[repo_name])
-        if repo_rows and repo_rows[0].get("fingerprint"):
-            fingerprints.append(repo_rows[0]["fingerprint"])
+        # Get GitHub metadata to extract fingerprint
+        github_metadata = table_manager.get_repo_github_metadata(username, repo_name)
+        if github_metadata and github_metadata.get("fingerprint"):
+            fingerprints.append(github_metadata["fingerprint"])
     
     if fingerprints:
         return FingerprintManager.generate_bundle_fingerprint(fingerprints)

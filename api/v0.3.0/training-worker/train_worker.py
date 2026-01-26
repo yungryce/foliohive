@@ -114,22 +114,19 @@ class TrainingWorker:
             logger.warning("No cached repos found for job=%s", job_id)
             return []
         
-        # Query core repo metadata
-        rows = table_manager.query_repo_metadata(username, repo_names=repo_names)
         documents: list[Dict[str, Any]] = []
         
-        for row in rows:
-            repo_name = row.get("repo_name") or row.get("RowKey")
-            if not repo_name:
+        for repo_name in repo_names:
+            # Query GitHub metadata (which now includes fingerprint)
+            github_meta = table_manager.get_repo_github_metadata(username, repo_name)
+            if not github_meta:
+                logger.warning("No GitHub metadata for repo=%s", repo_name)
                 continue
 
-            # Start with core metadata fields
+            # Start with metadata fields from GitHub table
             entry: Dict[str, Any] = {
                 "name": repo_name,
-                "fingerprint": row.get("fingerprint"),
-                "has_documentation": bool(row.get("has_documentation")),
-                "readme_excerpt": row.get("readme_excerpt"),
-                "content_blob": row.get("content_blob"),
+                "fingerprint": github_meta.get("fingerprint"),
             }
 
             # Query normalized tables to reconstruct full document
@@ -147,24 +144,19 @@ class TrainingWorker:
             else:
                 entry["categorized_types"] = {}
 
-            # 3. GitHub metadata
-            github_meta = table_manager.get_repo_github_metadata(username, repo_name)
-            if github_meta:
-                entry["metadata"] = {
-                    "name": repo_name,
-                    "description": github_meta.get("description"),
-                    "topics": github_meta.get("topics", []),
-                    "homepage": github_meta.get("homepage_url"),
-                    "stargazers_count": github_meta.get("stars_count"),
-                    "forks_count": github_meta.get("forks_count"),
-                    "fork": github_meta.get("is_fork"),
-                    "archived": github_meta.get("is_archived"),
-                    "language": github_meta.get("primary_language"),
-                    "license": {"name": github_meta.get("license_name")} if github_meta.get("license_name") else None,
-                    "updated_at": row.get("last_synced_at"),
-                }
-            else:
-                entry["metadata"] = {"name": repo_name}
+            # 3. GitHub metadata fields
+            entry["metadata"] = {
+                "name": repo_name,
+                "description": github_meta.get("description"),
+                "topics": github_meta.get("topics", []),
+                "homepage": github_meta.get("homepage"),
+                "stargazers_count": github_meta.get("stars"),
+                "forks_count": github_meta.get("forks"),
+                "fork": github_meta.get("is_fork"),
+                "archived": github_meta.get("is_archived"),
+                "license": {"name": github_meta.get("license_name")} if github_meta.get("license_name") else None,
+                "updated_at": github_meta.get("github_updated_at"),
+            }
 
             documents.append(entry)
         

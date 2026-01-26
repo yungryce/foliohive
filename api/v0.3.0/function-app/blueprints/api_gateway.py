@@ -176,24 +176,50 @@ def _query_repo_rows(
     job_id: Optional[str] = None,
     repo_names: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Query repo metadata from table storage.
+    """Query repo GitHub metadata from table storage.
 
-    Simplified wrapper that delegates to table_manager with error handling.
-    Deserialization is fully handled by table_manager - no post-processing needed.
+    Queries RepoGitHubMetadata table (which now contains fingerprint).
+    Uses RepoSyncStatus to map job_id to repo names in normalized schema.
 
     Args:
         username: Required username filter
-        job_id: Optional job_id filter
+        job_id: Job ID to get repos for (queries RepoSyncStatus first)
         repo_names: Optional list of specific repo names to retrieve
 
     Returns:
-        List of fully deserialized repo metadata dicts (no Azure artifacts)
+        List of GitHub metadata dicts with fingerprint
     """
     try:
-        # job_id removed from normalized schema - use RepoSyncStatus for job-repo relationships
-        return table_manager.query_repo_metadata(username, repo_names=repo_names)
+        # Determine which repos to query
+        target_repo_names = repo_names
+        
+        # If job_id provided, get repo list from RepoSyncStatus
+        if job_id and not target_repo_names:
+            logger.info("Querying RepoSyncStatus for job=%s to get repo list", job_id)
+            status_rows = table_manager.list_repo_statuses(job_id)
+            # Include synced and cached repos (metadata exists in tables)
+            # Skip pending (not yet synced) and failed repos
+            target_repo_names = [
+                row["repo_name"] for row in status_rows 
+                if row.get("status") in ("synced", "cached") and row.get("repo_name")
+            ]
+            logger.info("Found %d ready repos for job=%s (statuses: synced/cached)", len(target_repo_names), job_id)
+        
+        if target_repo_names:
+            logger.info("Querying GitHub metadata for user=%s repos=%d", username, len(target_repo_names))
+            # Query specific repos
+            result = []
+            for repo_name in target_repo_names:
+                meta = table_manager.get_repo_github_metadata(username, repo_name)
+                if meta:
+                    result.append(meta)
+            return result
+        else:
+            # No job_id or repo_names provided - cannot query
+            logger.warning("No job_id or repo_names provided for GitHub metadata query")
+            return []
     except Exception:  # pragma: no cover - degraded path
-        logger.warning("Failed to query repo metadata for user=%s job_id=%s", username, job_id or "<none>", exc_info=True)
+        logger.warning("Failed to query GitHub metadata for user=%s job=%s", username, job_id or "none", exc_info=True)
         return []
 
 
@@ -203,17 +229,17 @@ def _repo_row_to_bundle_entry(
     languages: Optional[List[Dict[str, Any]]] = None,
     github_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Convert deserialized repo metadata row to bundle entry.
+    """Convert repo metadata to bundle entry.
+    
+    Note: row parameter is deprecated (kept for compatibility), use github_metadata instead.
+    Fingerprint now comes from github_metadata.
     """
     entry = {
-        "name": row.get("repo_name"),
-        "fingerprint": row.get("fingerprint"),
-        "content_blob": row.get("content_blob"),
-        "readme_excerpt": row.get("readme_excerpt"),
-        "has_documentation": row.get("has_documentation"),
-        "created_at": row.get("created_at"),
-        "last_synced_at": row.get("last_synced_at"),
-        "updated_at": row.get("updated_at"),
+        "name": github_metadata.get("repo_name") if github_metadata else row.get("repo_name"),
+        "fingerprint": github_metadata.get("fingerprint") if github_metadata else row.get("fingerprint"),
+        "created_at": github_metadata.get("github_created_at") if github_metadata else row.get("created_at"),
+        "last_synced_at": github_metadata.get("updated_at") if github_metadata else row.get("last_synced_at"),
+        "updated_at": github_metadata.get("github_updated_at") if github_metadata else row.get("updated_at"),
     }
 
     if languages:
@@ -236,7 +262,11 @@ def _repo_row_to_bundle_entry(
 
 
 def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Build bundle from table data - list fields computed from RepoSyncStatus."""
+    """Build bundle from table data - list fields computed from RepoSyncStatus.
+    
+    Args:
+        repo_rows: GitHub metadata dicts (from RepoGitHubMetadata table)
+    """
     job_id = job.get("job_id") or None
     entries: List[Dict[str, Any]] = []
 
@@ -261,15 +291,16 @@ def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[
                 failed_repos + pending_repos
             )
 
-    # Enrich each repo with languages and GitHub metadata that recruiters expect
-    for row in repo_rows:
-        repo_name = row.get("repo_name")
+    # Build entries from GitHub metadata (repo_rows now contains RepoGitHubMetadata)
+    for github_meta in repo_rows:
+        repo_name = github_meta.get("repo_name")
+        if not repo_name:
+            continue
         
-        languages = table_manager.query_repo_languages(username, repo_name) if repo_name else []
-        github_meta = table_manager.get_repo_github_metadata(username, repo_name) if repo_name else None
+        languages = table_manager.query_repo_languages(username, repo_name)
         entries.append(
             _repo_row_to_bundle_entry(
-                row,
+                {},  # Empty dict (deprecated parameter)
                 languages=languages,
                 github_metadata=github_meta,
             )
@@ -337,11 +368,11 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
         if repo.get("name")
     }
 
-    # Query cached fingerprints from normalized table (instead of blob)
-    job_repo_metadata = table_manager.query_repo_metadata(username)
+    # Query cached fingerprints from GitHub metadata table
+    github_metadata_rows = table_manager.query_repo_github_metadata(username)
     cached_fingerprints = {
         row.get("repo_name"): row.get("fingerprint")
-        for row in job_repo_metadata
+        for row in github_metadata_rows
         if row.get("repo_name") and row.get("fingerprint")
     }
 
