@@ -11,9 +11,12 @@ import { AuthService } from '../services/auth.service';
   styleUrls: ['./admin.component.css']
 })
 export class AdminComponent {
-  public readonly username = this.authService.getCurrentUser()?.username || 'Admin';
+  public username: string = 'Admin';
 
-  constructor(private authService: AuthService) {}
+  constructor(private authService: AuthService) {
+    const user = this.authService.getCurrentUser();
+    this.username = user?.username || 'Admin';
+  }
 
   logout(): void {
     this.authService.logout('/');

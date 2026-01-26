@@ -252,7 +252,7 @@ def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[
 
         if failed_repos or pending_repos:
             logger.info(
-                "Job %s for user %s has %d synced, %d failed, %d pending repos, repo names list %d",
+                "Job %s for user %s has %d synced, %d failed, %d pending repos: %s",
                 job_id,
                 username,
                 len(synced_repos),
@@ -394,7 +394,9 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
     if api_usage and trace:
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).isoformat()
-        operation_key = f"freshness_check#{now}#all_repos"
+        # Sanitize timestamp for Azure Table RowKey (no :, /, \, #, ?)
+        safe_timestamp = now.replace(":", "-").replace("+", "_")
+        operation_key = f"freshness_check|{safe_timestamp}|all_repos"
         
         totals = api_usage.get("totals", {})
         file_targets = api_usage.get("file_targets", {})
@@ -409,7 +411,7 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
             api_calls_rest=totals.get("requests", 0),
             api_calls_graphql=0,
             cache_hits=cache_hits,
-            created_at=now,
+            created_at=safe_timestamp,  # Use sanitized timestamp
         )
         table_manager.upsert_api_usage(row)
     
@@ -600,6 +602,8 @@ def get_candidate(req: func.HttpRequest) -> func.HttpResponse:
         username,
     )
     candidate_job = _fetch_candidate_jobs(username, job_id=job_id)
+    if candidate_job is None:
+        return _create_error_response("No job found for user", 404)
     job_id = candidate_job.get("job_id")
 
     # Try table storage first (most recent data)
@@ -687,7 +691,7 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
         return _create_error_response("Failed to analyze repositories", 500)
 
     stale_repos = freshness["stale_repos"]
-    valid_repos = freshness["valid_repos"]  # Renamed from "cached_bundle"
+    valid_repos = freshness["cached_bundle"]  # Valid (non-stale) repos from cache
 
     # If nothing is stale and not forcing refresh, return early
     if not stale_repos and not force_refresh:

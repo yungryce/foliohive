@@ -9,6 +9,7 @@ from .table_manager import (
     RepoLanguagesRow,
     RepoFileTypesRow,
     RepoGitHubMetadataRow,
+    RepoAPIUsageRow,
     TableManager,
     TableNames,
     table_manager,
@@ -24,6 +25,7 @@ __all__ = [
     "RepoLanguagesRow",
     "RepoFileTypesRow",
     "RepoGitHubMetadataRow",
+    "RepoAPIUsageRow",
     "ModelMetadataRow",
     "table_manager",
 ]

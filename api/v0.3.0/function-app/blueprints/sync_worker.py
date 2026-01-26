@@ -1,8 +1,7 @@
 """Sync worker blueprint.
 
 Consumes messages from the ``github-sync`` queue, fetches repository context
-using shared managers, and persists results to the cache. Once all repositories
-for a job are processed the worker enqueues a merge job.
+using shared managers, and persists results to the cache. 
 """
 
 from __future__ import annotations
@@ -85,10 +84,12 @@ def _record_api_usage_from_tracker(
     file_targets = api_usage_dict.get("file_targets", {})
     cache_hits = sum(target.get("cache_hits", 0) for target in file_targets.values())
     
-    # Generate operation key: {operation}#{timestamp}#{repo_name}
+    # Generate operation key: {operation}|{timestamp}|{repo_name}
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
-    operation_key = f"{operation}#{now}#{repo_name}"
+    # Sanitize timestamp for Azure Table RowKey (no :, /, \, #, ?)
+    safe_timestamp = now.replace(":", "-").replace("+", "_")
+    operation_key = f"{operation}|{safe_timestamp}|{repo_name}"
     
     row = RepoAPIUsageRow(
         username=username,
@@ -101,7 +102,7 @@ def _record_api_usage_from_tracker(
         cache_hits=cache_hits,
         rate_limit_remaining=None,  # Would need to extract from last request
         rate_limit_reset=None,
-        created_at=now,
+        created_at=safe_timestamp,  # Use sanitized timestamp
     )
     
     table_manager.upsert_api_usage(row)
@@ -209,6 +210,7 @@ def _persist_repo_metadata(
             lang_rows.append(
                 RepoLanguagesRow(
                     username=username,
+                    repo_language_key=f"{repo_name}|{lang}",
                     repo_name=repo_name,
                     language=lang,
                     bytes_count=int(byte_count),
@@ -216,6 +218,12 @@ def _persist_repo_metadata(
                 )
             )
         if lang_rows:
+            logger.info(
+                "[PERSIST_LANGUAGES_ROWS] repo=%s count=%d rows=%s",
+                repo_name,
+                len(lang_rows),
+                [(r.repo_language_key, r.language, r.bytes_count, r.percentage) for r in lang_rows]
+            )
             table_manager.batch_upsert_repo_languages(lang_rows)
             logger.info("[PERSIST_LANGUAGES] repo=%s languages=%d", repo_name, len(lang_rows))
 
@@ -224,13 +232,14 @@ def _persist_repo_metadata(
         username=username,
         repo_name=repo_name,
         description=repo_metadata.get("description"),
-        topics=repo_metadata.get("topics", []),
-        homepage_url=repo_metadata.get("homepage"),
-        stars_count=repo_metadata.get("stargazers_count", 0),
-        forks_count=repo_metadata.get("forks_count", 0),
+        html_url=repo_metadata.get("html_url"),
+        homepage=repo_metadata.get("homepage"),
+        stars=repo_metadata.get("stargazers_count", 0),
+        forks=repo_metadata.get("forks_count", 0),
+        open_issues=repo_metadata.get("open_issues_count", 0),
+        watchers=repo_metadata.get("watchers_count", 0),
         is_fork=repo_metadata.get("fork", False),
         is_archived=repo_metadata.get("archived", False),
-        primary_language=repo_metadata.get("language"),
         license_name=repo_metadata.get("license", {}).get("name") if isinstance(repo_metadata.get("license"), dict) else None,
     )
     table_manager.upsert_repo_github_metadata(github_row)
@@ -301,16 +310,13 @@ def _update_job_progress(
     )
 
     has_synced_repos = status_counts["synced"] > 0
-    has_pending = status_counts["pending"] > 0
-    should_merge = has_synced_repos and not has_pending
 
     logger.info(
-        "[JOB_PROGRESS] job=%s synced=%d failed=%d pending=%d should_merge=%s",
+        "[JOB_PROGRESS] job=%s synced=%d failed=%d pending=%d",
         job_id,
         len(synced_list),
         len(failed_list),
         len(pending_list),
-        should_merge,
     )
     if failed_list:
         logger.warning(

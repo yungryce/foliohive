@@ -26,13 +26,13 @@
             <span class="text-sm font-medium">Building portfolio...</span>
           </div>
           <div class="text-xs text-(--muted) mb-2">
-            Processing {{ status.progress?.completed || 0 }} of {{ status.progress?.total || 0 }} repositories
-            ({{ status.progress?.percentage || 0 }}%)
+            Processing {{ status.progress.completed || 0 }} of {{ status.progress.total || 0 }} repositories
+            ({{ status.progress.percentage || 0 }}%)
           </div>
           <div class="h-2 rounded-full bg-(--border) overflow-hidden">
             <div 
               class="h-full bg-(--primary) transition-all duration-300" 
-              [style.width.%]="status.progress?.percentage || 0"
+              [style.width.%]="status.progress.percentage || 0"
             ></div>
           </div>
         </div>

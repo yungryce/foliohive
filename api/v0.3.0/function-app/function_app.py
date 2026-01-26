@@ -4,7 +4,6 @@ This Function App hosts:
 - HTTP API routes (former api-gateway)
 - Queue-trigger workers (sync-worker, cache-worker, reconciliation-worker)
 
-Note: merge-worker removed - job completion now handled by cache-worker.
 
 Logical separation is maintained via Azure Functions Blueprints.
 """

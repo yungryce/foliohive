@@ -1,6 +1,6 @@
 """Timer-trigger reconciliation worker.
 
-Re-enqueues missing repo sync jobs and ensures merge is triggered once per job.
+Re-enqueues missing repo sync jobs
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def _should_trigger_cache_jobs(
 ) -> bool:
     """Check if all expected repos are synced and ready for cache jobs.
     
-    With merge worker removed, reconciliation now only ensures cache jobs
+    Reconciliation now only ensures cache jobs
     are enqueued after sync completes. Cache worker handles final completion.
     """
     expected_set = {name for name in expected if name}
@@ -168,7 +168,6 @@ def _reconcile_session(job: Dict[str, Any]) -> None:
                 len(requeued),
             )
 
-    # Note: With merge worker removed, cache jobs are now enqueued by sync_worker.
     # Reconciliation only ensures missing cache jobs are triggered if sync completed
     # but cache jobs were never enqueued (edge case recovery).
     if _should_trigger_cache_jobs(expected, synced, failed):

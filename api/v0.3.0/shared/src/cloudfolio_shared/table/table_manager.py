@@ -73,7 +73,6 @@ class JobMetadataRow:
     status: str = "queued" # "queued" | "syncing" | "metadata_ready" | "completed" | "failed"
     bundle_fingerprint: Optional[str] = None
     force_refresh: bool = False
-    merge_enqueued_at: Optional[str] = None
     last_requeue_at: Optional[str] = None
     trace_id: Optional[str] = None
     request_id: Optional[str] = None
@@ -105,8 +104,10 @@ class RepoLanguagesRow:
     repo_language_key: str  # RowKey: "{repo_name}#{language}"
     repo_name: str
     language: str
-    bytes: int
+    bytes_count: int
     percentage: Optional[float] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 @dataclass
@@ -128,13 +129,18 @@ class RepoGitHubMetadataRow:
     repo_name: str  # RowKey
     full_name: Optional[str] = None
     description: Optional[str] = None
+    topics: Optional[List[str]] = None
     html_url: Optional[str] = None
     homepage: Optional[str] = None
+    homepage_url: Optional[str] = None
     stars: int = 0
+    stars_count: int = 0
     forks: int = 0
+    forks_count: int = 0
     open_issues: int = 0
     watchers: int = 0
     default_branch: Optional[str] = None
+    primary_language: Optional[str] = None
     is_private: bool = False
     is_fork: bool = False
     is_archived: bool = False
@@ -223,6 +229,20 @@ _REPO_STATUS_ALLOWED = {"pending", "synced", "cached", "failed"}
 
 def _utcnow_iso() -> str: 
     return datetime.now(timezone.utc).isoformat()
+
+
+def _azure_safe_timestamp(iso_timestamp: Optional[str] = None) -> str:
+    """Return Azure Table-safe timestamp (no :, /, \, #, ? characters).
+    
+    Args:
+        iso_timestamp: ISO format timestamp string. If None, uses current UTC time.
+    
+    Returns:
+        Sanitized timestamp with : replaced by - and + replaced by _
+    """
+    if iso_timestamp is None:
+        iso_timestamp = _utcnow_iso()
+    return iso_timestamp.replace(":", "-").replace("+", "_")
 
 
 def _safe_json_dump(value: Any) -> str:
@@ -352,7 +372,7 @@ class TableManager:
                 job_id,
             )
 
-        now = _utcnow_iso()
+        now = _azure_safe_timestamp()
         existing_count = 0
         created_at = now
         try:
@@ -421,14 +441,13 @@ class TableManager:
             row.job_id,
             row.status,
         )
-        now = _utcnow_iso()
+        now = _azure_safe_timestamp()
         entity = {
             "PartitionKey": row.username,
             "RowKey": row.job_id,
             "status": row.status,
             "bundle_fingerprint": row.bundle_fingerprint or "",
             "force_refresh": bool(row.force_refresh),
-            "merge_enqueued_at": row.merge_enqueued_at or "",
             "last_requeue_at": row.last_requeue_at or "",
             "trace_id": row.trace_id or "",
             "request_id": row.request_id or "",
@@ -471,7 +490,7 @@ class TableManager:
         entity: Dict[str, Any] = {
             "PartitionKey": username,
             "RowKey": job_id,
-            "updated_at": _utcnow_iso()
+            "updated_at": _azure_safe_timestamp()
         }
         for key, value in updates.items():
             entity[key] = value if value is not None else ""
@@ -527,7 +546,6 @@ class TableManager:
         payload["username"] = payload.get("PartitionKey")
         payload["job_id"] = payload.get("RowKey")
         payload["bundle_fingerprint"] = payload.get("bundle_fingerprint") or None
-        payload["merge_enqueued_at"] = payload.get("merge_enqueued_at") or None
         payload["last_requeue_at"] = payload.get("last_requeue_at") or None
         payload["trace_id"] = payload.get("trace_id") or None
         payload["request_id"] = payload.get("request_id") or None
@@ -581,7 +599,7 @@ class TableManager:
 
 
     def _serialize_repo_row(self, row: RepoMetadataRow) -> Dict[str, Any]:
-        now = _utcnow_iso()
+        now = _azure_safe_timestamp()
         entity: Dict[str, Any] = {
             "PartitionKey": row.username,
             "RowKey": row.repo_name,
@@ -589,10 +607,16 @@ class TableManager:
             "content_blob": row.content_blob or "",
             "has_documentation": bool(row.has_documentation),
             "readme_excerpt": (row.readme_excerpt or "")[:16384],
-            "created_at": row.created_at or now,
-            "last_synced_at": row.last_synced_at or now,
-            "updated_at": row.updated_at or now,
+            "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
+            "last_synced_at": _azure_safe_timestamp(row.last_synced_at) if row.last_synced_at else now,
+            "updated_at": _azure_safe_timestamp(row.updated_at) if row.updated_at else now,
         }
+        logger.debug(
+            "[TABLE_SERIALIZE_REPO_METADATA] PartitionKey=%s RowKey=%s entity=%s",
+            entity["PartitionKey"],
+            entity["RowKey"],
+            entity
+        )
         return entity
 
     def _deserialize_repo_entity(self, entity: Dict[str, Any]) -> Dict[str, Any]:
@@ -629,7 +653,7 @@ class TableManager:
         if status not in _REPO_STATUS_ALLOWED:
             raise ValueError(f"Invalid repo sync status: {status}")
 
-        now = _utcnow_iso()
+        now = _azure_safe_timestamp()
         entity: Dict[str, Any] = {
             "PartitionKey": row.job_id,
             "RowKey": row.repo_name,
@@ -711,7 +735,7 @@ class TableManager:
         entity: Dict[str, Any] = {
             "PartitionKey": job_id,
             "RowKey": repo_name,
-            "updated_at": _utcnow_iso()
+            "updated_at": _azure_safe_timestamp()
         }
         for key, value in updates.items():
             entity[key] = value if value is not None else ""
@@ -742,17 +766,25 @@ class TableManager:
         table = self._get_table_client(self.table_names.repo_languages)
         if not table:
             return
-        now = _utcnow_iso()
+        now = _azure_safe_timestamp()
         entity: Dict[str, Any] = {
             "PartitionKey": row.username,
-            "RowKey": f"{row.repo_name}#{row.language}",
+            "RowKey": f"{row.repo_name}|{row.language}",
             "repo_name": row.repo_name,
             "language": row.language,
             "bytes_count": int(row.bytes_count or 0),
             "percentage": float(row.percentage or 0.0),
-            "created_at": row.created_at or now,
+            "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
             "updated_at": now,
         }
+        logger.debug(
+            "[TABLE_UPSERT_REPO_LANGUAGES] PartitionKey=%s RowKey=%s repo_name=%s language=%s entity=%s",
+            entity["PartitionKey"],
+            entity["RowKey"],
+            row.repo_name,
+            row.language,
+            entity
+        )
         table.upsert_entity(entity, mode=UpdateMode.REPLACE)
 
     def batch_upsert_repo_languages(self, rows: List[RepoLanguagesRow]) -> None:
@@ -810,10 +842,10 @@ class TableManager:
         table = self._get_table_client(self.table_names.repo_file_types)
         if not table:
             return
-        now = _utcnow_iso()
+        now = _azure_safe_timestamp()
         entity: Dict[str, Any] = {
             "PartitionKey": row.username,
-            "RowKey": f"{row.repo_name}#{row.category}",
+            "RowKey": f"{row.repo_name}|{row.category}",
             "repo_name": row.repo_name,
             "category": row.category,
             "types": _safe_json_dump_limited(row.types or [], label="file_types.types"),
@@ -879,7 +911,7 @@ class TableManager:
         table = self._get_table_client(self.table_names.repo_github_metadata)
         if not table:
             return
-        now = _utcnow_iso()
+        now = _azure_safe_timestamp()
         entity: Dict[str, Any] = {
             "PartitionKey": row.username,
             "RowKey": row.repo_name,
@@ -893,7 +925,7 @@ class TableManager:
             "is_archived": bool(row.is_archived),
             "primary_language": (row.primary_language or "")[:128],
             "license_name": (row.license_name or "")[:256],
-            "created_at": row.created_at or now,
+            "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
             "updated_at": now,
         }
         table.upsert_entity(entity, mode=UpdateMode.REPLACE)
@@ -936,7 +968,7 @@ class TableManager:
             logger.warning("[TABLE_UPSERT_API_USAGE] No table client, skipping")
             return
         
-        now = _utcnow_iso()
+        now = _azure_safe_timestamp()
         entity = {
             "PartitionKey": row.username,
             "RowKey": row.operation_key,
@@ -951,6 +983,20 @@ class TableManager:
             "error": row.error,
             "created_at": row.created_at or now,
         }
+        
+        logger.debug(
+            "[TABLE_UPSERT_API_USAGE_ENTITY] PartitionKey=%s RowKey=%s operation=%s job_id=%s repo_name=%s",
+            entity.get("PartitionKey"),
+            entity.get("RowKey"),
+            entity.get("operation"),
+            entity.get("job_id"),
+            entity.get("repo_name"),
+        )
+        logger.debug(
+            "[TABLE_UPSERT_API_USAGE_ENTITY_FULL] %s",
+            entity,
+        )
+        
         table.upsert_entity(entity, mode=UpdateMode.REPLACE)
         logger.info(
             "[TABLE_UPSERT_API_USAGE] user=%s operation=%s job=%s repo=%s rest=%d graphql=%d cache_hits=%d",
@@ -1018,7 +1064,7 @@ class TableManager:
         table = self._get_table_client(self.table_names.model_metadata)
         if not table:
             return
-        now = _utcnow_iso()
+        now = _azure_safe_timestamp()
         entity: Dict[str, Any] = {
             "PartitionKey": row.username,
             "RowKey": row.fingerprint or row.model_fingerprint,
@@ -1027,7 +1073,7 @@ class TableManager:
             "artifact_blob": row.artifact_blob or "",
             "repos_count": int(row.repos_count or 0),
             "trained_at": row.trained_at or "",
-            "updated_at": row.updated_at or now,
+            "updated_at": _azure_safe_timestamp(row.updated_at) if row.updated_at else now,
         }
         for field_name in _JSON_FIELDS_MODEL:
             entity[field_name] = _safe_json_dump(getattr(row, field_name, {}))

@@ -16,19 +16,12 @@ logger.propagate = True
 
 SYNC_QUEUE = "github-sync"
 CACHE_QUEUE = "github-cache"
-MERGE_QUEUE = "merge-results"
 TRAINING_QUEUE = "model-training"
 JOB_STATUS_QUEUE = "job-status-updates"
 
 
 def _clean_queue_name(name: str) -> str:
     return name.strip().lower()
-
-
-def _trace_map_key(trace_id: str) -> str:
-    safe = str(trace_id).strip().replace(" ", "_")
-    return f"trace_queue_map:{safe}"
-
 
 def _extract_send_message_id(send_result: Any) -> Optional[str]:
     if send_result is None:
@@ -54,8 +47,7 @@ class QueueManager:
         self.queue_names = queue_names or {
             SYNC_QUEUE: SYNC_QUEUE,
             CACHE_QUEUE: CACHE_QUEUE,
-            MERGE_QUEUE: MERGE_QUEUE,
-            TRAINING_QUEUE: TRAINING_QUEUE,
+            # TRAINING_QUEUE: TRAINING_QUEUE,
             JOB_STATUS_QUEUE: JOB_STATUS_QUEUE,
         }
         self.service_client = service_client or self._create_service_client()
@@ -246,27 +238,27 @@ class QueueManager:
         
         return bool(self.send_message(CACHE_QUEUE, message))
 
-    def enqueue_merge_job(
-        self,
-        job_id: str,
-        username: str,
-        synced_repos: List[str],
-        *,
-        trace_id: Optional[str] = None,
-        request_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-    ) -> bool:
-        message = {
-            "job_id": job_id,
-            "username": username,
-            "synced_repos": synced_repos,
-            "trigger_source": "sync_complete",
-            "trace_id": trace_id,
-            "request_id": request_id,
-            "session_id": session_id,
-            "queued_at": datetime.now(timezone.utc).isoformat(),
-        }
-        return bool(self.send_message(MERGE_QUEUE, message))
+    # def enqueue_merge_job(
+    #     self,
+    #     job_id: str,
+    #     username: str,
+    #     synced_repos: List[str],
+    #     *,
+    #     trace_id: Optional[str] = None,
+    #     request_id: Optional[str] = None,
+    #     session_id: Optional[str] = None,
+    # ) -> bool:
+    #     message = {
+    #         "job_id": job_id,
+    #         "username": username,
+    #         "synced_repos": synced_repos,
+    #         "trigger_source": "sync_complete",
+    #         "trace_id": trace_id,
+    #         "request_id": request_id,
+    #         "session_id": session_id,
+    #         "queued_at": datetime.now(timezone.utc).isoformat(),
+    #     }
+    #     return bool(self.send_message(MERGE_QUEUE, message))
 
     def enqueue_training_job(
         self,

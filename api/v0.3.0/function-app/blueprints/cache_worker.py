@@ -212,7 +212,9 @@ def _record_api_usage_for_file_cache(
     cache_hits = sum(target.get("cache_hits", 0) for target in file_targets.values())
     
     now = datetime.now(timezone.utc).isoformat()
-    operation_key = f"file_cache#{now}#{repo_name}"
+    # Sanitize timestamp for Azure Table (no :, /, \, #, ? in any field)
+    safe_timestamp = now.replace(":", "-").replace("+", "_")
+    operation_key = f"file_cache|{safe_timestamp}|{repo_name}"
     
     row = RepoAPIUsageRow(
         username=username,
@@ -223,7 +225,20 @@ def _record_api_usage_for_file_cache(
         api_calls_rest=totals.get("requests", 0),
         api_calls_graphql=0,
         cache_hits=cache_hits,
-        created_at=now,
+        created_at=safe_timestamp,  # Use sanitized timestamp
+    )
+    
+    logger.info(
+        "[RECORD_API_USAGE_ROW] username=%s operation_key=%s operation=%s job_id=%s repo_name=%s rest=%d graphql=%d cache_hits=%d created_at=%s",
+        username,
+        operation_key,
+        "file_cache",
+        job_id,
+        repo_name,
+        totals.get("requests", 0),
+        0,
+        cache_hits,
+        now,
     )
     
     table_manager.upsert_api_usage(row)
@@ -249,7 +264,6 @@ def _update_cache_progress(
     """Update job progress after file caching completes.
     
     Status transitions: synced → cached (or failed).
-    Triggers merge when all repos are cached.
     """
     from datetime import datetime, timezone
     
@@ -313,7 +327,7 @@ def _update_cache_progress(
             len(statuses),
         )
     
-    # Complete job when all files are cached (merge worker eliminated)
+    # Complete job when all files are cached 
     if not synced:  # No repos still in 'synced' state means all are cached or failed
         if cached:
             logger.info(

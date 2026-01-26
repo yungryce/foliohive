@@ -1,0 +1,30 @@
+PartitionKey,RowKey,username,username@type,status,status@type,sync_message_id,sync_message_id@type,cache_message_id,cache_message_id@type,error,error@type,synced_at,synced_at@type,cached_at,cached_at@type,updated_at,updated_at@type
+30682ce3-a333-46ba-aff1-c1b0e4f6dee9,Hello-World,octocat,String,failed,String,c21e4128-3f12-479c-abc3-621f87fb2051,String,9ab8136b-204f-43a2-8430-21ccea2995c5,String,"An error occurred while processing this request.
+RequestId:f2cd0d03-ca8d-4619-95b3-84af05497400
+Time:2026-01-26T08:16:16.442Z
+ErrorCode:InvalidInput
+Content: {""odata.error"":{""code"":""InvalidInput"",""message"":{""lang"":""en-US"",""value"":""An error occurred while processing this request.\nRequestId:f2cd0d03-ca8d-4619-95b3-84af05497400\nTime:2026-01-26T08:16:16.442Z""}}}",String,2026-01-26T08:15:21.623627+00:00,String,,String,2026-01-26T08:16:16.448593+00:00,String
+30682ce3-a333-46ba-aff1-c1b0e4f6dee9,Spoon-Knife,octocat,,failed,,0dfebd6c-09d6-403c-9825-5a8ea591bc46,,,,'RepoLanguagesRow' object has no attribute 'created_at',,,,,,2026-01-26T08:15:23.182393+00:00,
+30682ce3-a333-46ba-aff1-c1b0e4f6dee9,boysenberry-repo-1,octocat,,failed,,8a109ca8-b48f-4e06-bf86-22e3bb1968b5,,b7ebf181-837d-4345-8f62-7f2eafccb99d,,"An error occurred while processing this request.
+RequestId:b9f9e216-e26a-4f43-816a-d7fe75d17043
+Time:2026-01-26T08:16:23.173Z
+ErrorCode:InvalidInput
+Content: {""odata.error"":{""code"":""InvalidInput"",""message"":{""lang"":""en-US"",""value"":""An error occurred while processing this request.\nRequestId:b9f9e216-e26a-4f43-816a-d7fe75d17043\nTime:2026-01-26T08:16:23.173Z""}}}",,2026-01-26T08:15:21.669746+00:00,,,,2026-01-26T08:16:23.177721+00:00,
+30682ce3-a333-46ba-aff1-c1b0e4f6dee9,git-consortium,octocat,,failed,,8139acf6-5b42-4745-94f8-6abe56aa5916,,75287d17-f39a-4315-a1f6-65ca9d94125e,,"An error occurred while processing this request.
+RequestId:651a5a81-a41c-411f-9a1e-68350398e231
+Time:2026-01-26T08:16:35.749Z
+ErrorCode:InvalidInput
+Content: {""odata.error"":{""code"":""InvalidInput"",""message"":{""lang"":""en-US"",""value"":""An error occurred while processing this request.\nRequestId:651a5a81-a41c-411f-9a1e-68350398e231\nTime:2026-01-26T08:16:35.749Z""}}}",,2026-01-26T08:15:21.604945+00:00,,,,2026-01-26T08:16:35.755488+00:00,
+30682ce3-a333-46ba-aff1-c1b0e4f6dee9,hello-worId,octocat,,failed,,26792c31-75de-4604-863e-e6a9de1ac6eb,,ac3c7c61-2b44-4068-a977-481d0b7410a9,,"An error occurred while processing this request.
+RequestId:15aa38f7-fad7-40a4-87e5-ef1820f48313
+Time:2026-01-26T08:16:31.357Z
+ErrorCode:InvalidInput
+Content: {""odata.error"":{""code"":""InvalidInput"",""message"":{""lang"":""en-US"",""value"":""An error occurred while processing this request.\nRequestId:15aa38f7-fad7-40a4-87e5-ef1820f48313\nTime:2026-01-26T08:16:31.357Z""}}}",,2026-01-26T08:15:21.631504+00:00,,,,2026-01-26T08:16:31.363736+00:00,
+30682ce3-a333-46ba-aff1-c1b0e4f6dee9,linguist,octocat,,failed,,7f9da50e-720e-46ce-aacb-8de8923f30e8,,,,'RepoLanguagesRow' object has no attribute 'created_at',,,,,,2026-01-26T08:15:23.185450+00:00,
+30682ce3-a333-46ba-aff1-c1b0e4f6dee9,octocat.github.io,octocat,,failed,,ea468288-c753-45c9-aafc-6a7005ddff22,,,,'RepoLanguagesRow' object has no attribute 'created_at',,,,,,2026-01-26T08:15:23.188513+00:00,
+30682ce3-a333-46ba-aff1-c1b0e4f6dee9,test-repo1,octocat,,failed,,11d28303-4d10-4ffe-b020-690898b78845,,ee4981dd-93fa-47c2-80e4-8ff916353c3b,,"An error occurred while processing this request.
+RequestId:354c24a9-d763-4622-bdb2-59eaac4c2f4f
+Time:2026-01-26T08:15:33.754Z
+ErrorCode:InvalidInput
+Content: {""odata.error"":{""code"":""InvalidInput"",""message"":{""lang"":""en-US"",""value"":""An error occurred while processing this request.\nRequestId:354c24a9-d763-4622-bdb2-59eaac4c2f4f\nTime:2026-01-26T08:15:33.754Z""}}}",,2026-01-26T08:15:21.744544+00:00,,,,2026-01-26T08:15:33.760143+00:00,
+ 
