@@ -78,9 +78,21 @@ def _create_success_response(
     data: Dict[str, Any],
     status_code: int = 200,
     cache_control: str = "public, max-age=900",
+    request_id: Optional[str] = None,
 ) -> func.HttpResponse:
+    payload = {
+        "status": "success",
+        "ok": True,
+        "data": data,
+        "meta": {
+            "api_version": "0.3.0",
+            "schema_version": "2026-01-27",
+            "request_id": request_id,
+            "server_time": datetime.now(timezone.utc).isoformat(),
+        },
+    }
     return func.HttpResponse(
-        json.dumps(data, indent=2),
+        json.dumps(payload, indent=2),
         status_code=status_code,
         mimetype="application/json",
         headers={
@@ -94,16 +106,42 @@ def _create_error_response(
     message: str,
     status_code: int = 500,
     details: Optional[str] = None,
+    error_code: str = "INTERNAL_ERROR",
+    request_id: Optional[str] = None,
 ) -> func.HttpResponse:
-    payload: Dict[str, Any] = {"error": message}
+    payload: Dict[str, Any] = {
+        "status": "error",
+        "ok": False,
+        "error": {
+            "code": error_code,
+            "message": message,
+        },
+        "meta": {
+            "api_version": "0.3.0",
+            "schema_version": "2026-01-27",
+            "request_id": request_id,
+            "server_time": datetime.now(timezone.utc).isoformat(),
+        },
+    }
     if details:
-        payload["details"] = details
+        payload["error"]["details"] = details
     return func.HttpResponse(
         json.dumps(payload),
         status_code=status_code,
         mimetype="application/json",
         headers={"Content-Type": "application/json; charset=utf-8"},
     )
+
+
+def _restore_iso_timestamp(safe_timestamp: Optional[str]) -> Optional[str]:
+    if not safe_timestamp:
+        return None
+    restored = safe_timestamp.replace("_", "+")
+    if "T" in restored:
+        date_part, time_part = restored.split("T", 1)
+        time_part = time_part.replace("-", ":")
+        restored = f"{date_part}T{time_part}"
+    return restored
 
 
 def _parse_json(req: func.HttpRequest) -> Dict[str, Any]:
@@ -224,13 +262,49 @@ def _repo_row_to_bundle_entry(
     """Convert repo metadata to bundle entry.
     
     """
-    entry = {}
+    entry: Dict[str, Any] = {}
 
     if languages:
         # Transform list to dict format expected by frontend: {language: bytes_count}
         entry["languages"] = {lang["language"]: lang["bytes_count"] for lang in languages if lang.get("language")}
+        total_bytes = sum(lang.get("bytes_count", 0) for lang in languages if isinstance(lang.get("bytes_count"), (int, float)))
+        sorted_langs = sorted(
+            [
+                {
+                    "name": lang.get("language"),
+                    "pct": lang.get("percentage"),
+                    "bytes": lang.get("bytes_count"),
+                }
+                for lang in languages
+                if lang.get("language")
+            ],
+            key=lambda item: item.get("pct") or 0,
+            reverse=True,
+        )
+        entry["languages_top"] = sorted_langs[:4]
+        entry["languages_total_bytes"] = total_bytes
 
     if github_metadata:
+        topics = github_metadata.get("topics") or []
+        topics = topics[:10] if isinstance(topics, list) else []
+        entry["name"] = github_metadata.get("repo_name")
+        entry["urls"] = {
+            "github": github_metadata.get("html_url"),
+            "homepage": github_metadata.get("homepage_url"),
+        }
+        entry["stats"] = {
+            "stars": github_metadata.get("stars_count", 0),
+            "forks": github_metadata.get("forks_count", 0),
+        }
+        entry["flags"] = {
+            "fork": github_metadata.get("is_fork", False),
+            "archived": github_metadata.get("is_archived", False),
+        }
+        entry["timestamps"] = {
+            "pushed_at": github_metadata.get("github_pushed_at"),
+            "updated_at": github_metadata.get("github_updated_at"),
+            "created_at": github_metadata.get("github_created_at"),
+        }
         # Map GitHub metadata to expected frontend structure
         entry["metadata"] = {
             "name": github_metadata.get("repo_name"),
@@ -247,6 +321,9 @@ def _repo_row_to_bundle_entry(
             "forks_count": github_metadata.get("forks_count", 0),
             "watchers_count": github_metadata.get("watchers", 0),
             "open_issues_count": github_metadata.get("open_issues", 0),
+            "topics": topics,
+            "primary_language": github_metadata.get("primary_language"),
+            "license_name": github_metadata.get("license_name"),
         }
         
     return entry
@@ -308,9 +385,10 @@ def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[
         "username": username,
         "job_id": job_id,
         "fingerprint": job.get("bundle_fingerprint"),
-        "last_modified": job.get("updated_at"),
+        "last_modified": _restore_iso_timestamp(job.get("updated_at")) or job.get("updated_at"),
         "status": job.get("status"),
         "data": entries,
+        "repos": entries,
     }
 
     logger.info(
@@ -628,7 +706,7 @@ def get_candidate(req: func.HttpRequest) -> func.HttpResponse:
     """
     username = req.route_params.get("username")
     if not username:
-        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
+        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400, error_code="VALIDATION_ERROR")
     
     job_id = req.params.get("job_id")
 
@@ -640,7 +718,7 @@ def get_candidate(req: func.HttpRequest) -> func.HttpResponse:
     )
     candidate_job = _fetch_candidate_jobs(username, job_id=job_id)
     if candidate_job is None:
-        return _create_error_response("No job found for user", 404)
+        return _create_error_response("No job found for user", 404, error_code="NOT_FOUND", request_id=trace.get("request_id"))
     job_id = candidate_job.get("job_id")
 
     # Try table storage first (most recent data)
@@ -655,13 +733,23 @@ def get_candidate(req: func.HttpRequest) -> func.HttpResponse:
                 len(repo_rows),
             )
             payload = _get_candidate_metadata(username, candidate_job, repo_rows)
-            return _create_success_response(payload)
+            return _create_success_response(payload, request_id=trace.get("request_id"))
         
         # Job exists but no repo data yet
-        return _create_error_response(f"Candidate for '{username}' not ready (job in progress)", 404)
+        return _create_error_response(
+            f"Candidate for '{username}' not ready (job in progress)",
+            404,
+            error_code="NOT_READY",
+            request_id=trace.get("request_id"),
+        )
 
     # No job found for username
-    return _create_error_response(f"No candidate found for '{username}'. Trigger refresh first.", 404)
+    return _create_error_response(
+        f"No candidate found for '{username}'. Trigger refresh first.",
+        404,
+        error_code="NOT_FOUND",
+        request_id=trace.get("request_id"),
+    )
 
 @bp.route(route="candidate/{username}/refresh", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:

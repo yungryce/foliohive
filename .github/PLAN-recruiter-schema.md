@@ -1,4 +1,4 @@
-# Recruiter-Focused Schema + API Standardization Plan (No Implementation)
+# Recruiter-Focused Schema + API Standardization Plan
 
 Date: 2026-01-27
 Scope: `api/v0.3.0` + `ui`
@@ -99,7 +99,7 @@ Return:
 - `topics`: string[]
 - `languages`: `{ top: [{ name, pct }], total_bytes? }`
 
-Implementation note (later): this can be built entirely from existing table rows (RepoGitHubMetadata + RepoLanguages).
+Implementation note: this can be built entirely from existing table rows (RepoGitHubMetadata + RepoLanguages).
 
 ### 2) Job status (polling)
 Endpoint: `GET /candidate/{username}/status?job_id=...`
@@ -117,10 +117,7 @@ Endpoint: `GET /candidate/{username}/{repo}/files?type=readme|config|all`
 Return:
 - `username`, `repo`, `fingerprint`
 - `files`:
-  - `primary_readme` (string, possibly truncated)
-  - `readme_files` (map path -> string)
-  - `config_files` (map path -> string)
-- `file_meta`: `{ truncated, limits }`
+  - `primary_readme` (string)
 
 Rename intention (later): this endpoint should not claim “AI summary” unless it actually returns a summary.
 
