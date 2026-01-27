@@ -95,10 +95,15 @@ export class ProjectsComponent implements OnInit, OnDestroy {
 
         this.candidateContext.upsertCandidate({ username: this.username });
 
-        // Poll job status API for progress updates
+        // Poll job status API for progress updates (up to 120 seconds)
         timer(0, 5000).pipe(
-          takeWhile((_, i) => i < 24), // 24*5s ≈ 2 minutes
-          switchMap(() => this.repoBundleService.getJobStatus(this.username, jobId))
+          takeWhile((_, i) => i < 24), // 24*5s = 2 minutes max
+          switchMap(() => this.repoBundleService.getJobStatus(this.username, jobId)),
+          takeWhile((status) => {
+            // Continue polling until completed/failed or null
+            if (!status) return false;
+            return status.status !== 'completed' && status.status !== 'failed';
+          }, true) // inclusive=true to process final completed status
         ).subscribe({
           next: status => {
             if (!status) {
@@ -107,28 +112,37 @@ export class ProjectsComponent implements OnInit, OnDestroy {
               return;
             }
 
-            // Update progress message
-            this.buildMessage = `Building… ${status.progress?.percentage ?? 0}% complete (${status.progress?.completed ?? 0}/${status.progress?.total ?? 0} repos)`;
+            // Update progress message with detailed breakdown
+            const { completed = 0, total = 0, cached = 0, synced = 0, pending = 0, failed = 0 } = status.progress || {};
+            this.buildMessage = `Building… ${status.progress?.percentage ?? 0}% (${cached} ready, ${synced} syncing, ${pending} pending, ${failed} failed)`;
 
-            // Load metadata as soon as first repo is cached
-            if (status.metadata_ready && this.bundleEmpty) {
-              console.log('[ProjectsComponent] Metadata ready, loading candidate data');
+            // Load/refresh data progressively as repos become available
+            if (status.metadata_ready) {
+              console.log('[ProjectsComponent] Loading available repos (status=%s, cached=%d)', status.status, cached);
               this.loadRepoBundle();
             }
 
-            // Stop polling when all files are ready
+            // Stop building state only when fully completed or failed
             if (status.files_ready || status.status === 'completed') {
               this.building = false;
-              this.buildMessage = '';
-              this.loadRepoBundle();
+              this.buildMessage = `Build complete! ${cached} repositories ready.`;
+              console.log('[ProjectsComponent] Build completed, loading final bundle');
+              this.loadRepoBundle(); // Final reload to ensure bundle_fingerprint
             } else if (status.status === 'failed') {
               this.building = false;
-              this.buildMessage = 'Build failed. Please try again.';
+              this.buildMessage = `Build failed. ${cached} repositories ready, ${failed} failed.`;
             }
           },
           error: () => {
             this.building = false;
             this.buildMessage = 'Failed to poll job status.';
+          },
+          complete: () => {
+            // Polling timed out or completed
+            if (this.building) {
+              this.building = false;
+              this.buildMessage = 'Build may still be processing. Refresh to check status.';
+            }
           }
         });
       },

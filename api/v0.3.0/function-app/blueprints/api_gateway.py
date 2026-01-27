@@ -190,24 +190,19 @@ def _query_repo_rows(
         List of GitHub metadata dicts with fingerprint
     """
     try:
-        # Determine which repos to query
         target_repo_names = repo_names
         
-        # If job_id provided, get repo list from RepoSyncStatus
         if job_id and not target_repo_names:
             logger.info("Querying RepoSyncStatus for job=%s to get repo list", job_id)
             status_rows = table_manager.list_repo_statuses(job_id)
-            # Include synced and cached repos (metadata exists in tables)
-            # Skip pending (not yet synced) and failed repos
             target_repo_names = [
-                row["repo_name"] for row in status_rows 
+                row["repo_name"] for row in status_rows
                 if row.get("status") in ("synced", "cached") and row.get("repo_name")
             ]
             logger.info("Found %d ready repos for job=%s (statuses: synced/cached)", len(target_repo_names), job_id)
         
         if target_repo_names:
             logger.info("Querying GitHub metadata for user=%s repos=%d", username, len(target_repo_names))
-            # Query specific repos
             result = []
             for repo_name in target_repo_names:
                 meta = table_manager.get_repo_github_metadata(username, repo_name)
@@ -215,32 +210,21 @@ def _query_repo_rows(
                     result.append(meta)
             return result
         else:
-            # No job_id or repo_names provided - cannot query
             logger.warning("No job_id or repo_names provided for GitHub metadata query")
             return []
-    except Exception:  # pragma: no cover - degraded path
+    except Exception:
         logger.warning("Failed to query GitHub metadata for user=%s job=%s", username, job_id or "none", exc_info=True)
         return []
 
 
 def _repo_row_to_bundle_entry(
-    row: Dict[str, Any],
-    *,
     languages: Optional[List[Dict[str, Any]]] = None,
     github_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Convert repo metadata to bundle entry.
     
-    Note: row parameter is deprecated (kept for compatibility), use github_metadata instead.
-    Fingerprint now comes from github_metadata.
     """
-    entry = {
-        "name": github_metadata.get("repo_name") if github_metadata else row.get("repo_name"),
-        "fingerprint": github_metadata.get("fingerprint") if github_metadata else row.get("fingerprint"),
-        "created_at": github_metadata.get("github_created_at") if github_metadata else row.get("created_at"),
-        "last_synced_at": github_metadata.get("updated_at") if github_metadata else row.get("last_synced_at"),
-        "updated_at": github_metadata.get("github_updated_at") if github_metadata else row.get("updated_at"),
-    }
+    entry = {}
 
     if languages:
         # Transform list to dict format expected by frontend: {language: bytes_count}
@@ -251,6 +235,7 @@ def _repo_row_to_bundle_entry(
         entry["metadata"] = {
             "name": github_metadata.get("repo_name"),
             "description": github_metadata.get("description"),
+            "fingerprint": github_metadata.get("fingerprint"),
             "html_url": github_metadata.get("html_url"),
             "homepage": github_metadata.get("homepage_url"),
             "fork": github_metadata.get("is_fork", False),
@@ -264,46 +249,11 @@ def _repo_row_to_bundle_entry(
             "open_issues_count": github_metadata.get("open_issues", 0),
         }
         
-        # Infer type from primary language and topics
-        primary_lang = github_metadata.get("primary_language", "")
-        topics = github_metadata.get("topics", [])
-        repo_type = _infer_repo_type(primary_lang, topics)
-        
-        # Use repoContext structure for backward compatibility but populate from GitHub metadata
-        entry["repoContext"] = {
-            "type": repo_type,
-            "description": github_metadata.get("description") or "No description",
-            "tech_stack": {
-                "primary": [primary_lang] if primary_lang else []
-            }
-        }
-
     return entry
 
 
-def _infer_repo_type(primary_language: str, topics: list) -> str:
-    """Infer repository type from language and topics."""
-    if not primary_language:
-        return "repository"
-    
-    topics_lower = [t.lower() for t in (topics or [])]
-    
-    # Check for common framework/library indicators
-    if any(kw in topics_lower for kw in ["library", "package", "sdk", "api-wrapper"]):
-        return "library"
-    if any(kw in topics_lower for kw in ["framework", "boilerplate", "template"]):
-        return "framework"
-    if any(kw in topics_lower for kw in ["cli", "tool", "utility"]):
-        return "tool"
-    if any(kw in topics_lower for kw in ["webapp", "website", "application", "app"]):
-        return "application"
-    
-    # Default fallback
-    return "repository"
-
-
 def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Build bundle from table data - list fields computed from RepoSyncStatus.
+    """Build bundle from table data - uses single-pass status counting.
     
     Args:
         repo_rows: GitHub metadata dicts (from RepoGitHubMetadata table)
@@ -311,25 +261,33 @@ def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[
     job_id = job.get("job_id") or None
     entries: List[Dict[str, Any]] = []
 
-    # Compute list fields from RepoSyncStatus if job_id available
-    synced_repos = []
-    queued_repos = []
+    # Single-pass count of repo statuses (normalized schema: pending → synced → cached)
+    status_counts = defaultdict(int)
+    status_lists = defaultdict(list)
 
     if job_id:
         status_rows = table_manager.list_repo_statuses(job_id)
-        synced_repos = [row["repo_name"] for row in status_rows if row.get("status") == "synced"]
-        failed_repos = [row["repo_name"] for row in status_rows if row.get("status") == "failed"]
-        pending_repos = [row["repo_name"] for row in status_rows if row.get("status") == "pending"]
+        for row in status_rows:
+            status = row.get("status")
+            repo_name = row.get("repo_name")
+            if status in ("pending", "synced", "cached", "failed") and repo_name:
+                status_counts[status] += 1
+                status_lists[status].append(repo_name)
 
-        if failed_repos or pending_repos:
+        pending = status_lists["pending"]
+        synced = status_lists["synced"]
+        cached = status_lists["cached"]
+        failed = status_lists["failed"]
+
+        if failed or pending or synced:
             logger.info(
-                "Job %s for user %s has %d synced, %d failed, %d pending repos: %s",
+                "[CANDIDATE_PROGRESS] job=%s user=%s cached=%d synced=%d pending=%d failed=%d",
                 job_id,
                 username,
-                len(synced_repos),
-                len(failed_repos),
-                len(pending_repos),
-                failed_repos + pending_repos
+                len(cached),
+                len(synced),
+                len(pending),
+                len(failed),
             )
 
     # Build entries from GitHub metadata (repo_rows now contains RepoGitHubMetadata)
@@ -341,25 +299,32 @@ def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[
         languages = table_manager.query_repo_languages(username, repo_name)
         entries.append(
             _repo_row_to_bundle_entry(
-                {},  # Empty dict (deprecated parameter)
                 languages=languages,
                 github_metadata=github_meta,
             )
         )
 
-    # Compute queued repo from job refresh and size_bytes from synced repos
-    return {
+    result = {
         "username": username,
         "job_id": job_id,
         "fingerprint": job.get("bundle_fingerprint"),
         "last_modified": job.get("updated_at"),
-        "size_bytes": None,
         "status": job.get("status"),
-        "expected_repos": synced_repos + queued_repos,
-        "queued_repos": queued_repos,
-        "synced_repos": synced_repos,
         "data": entries,
     }
+
+    logger.info(
+        "[CANDIDATE_METADATA_BUILT] job=%s user=%s repos=%d cached=%d synced=%d pending=%d failed=%d",
+        job_id,
+        username,
+        len(entries),
+        status_counts.get("cached", 0),
+        status_counts.get("synced", 0),
+        status_counts.get("pending", 0),
+        status_counts.get("failed", 0),
+    )
+    logger.info("Built candidate metadata: %s", json.dumps(result, indent=2))
+    return result
 
 
 def _bundle_from_cache(username: str) -> Optional[Dict[str, Any]]:
