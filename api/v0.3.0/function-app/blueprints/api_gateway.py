@@ -307,22 +307,11 @@ def _repo_row_to_bundle_entry(
         }
         # Map GitHub metadata to expected frontend structure
         entry["metadata"] = {
-            "name": github_metadata.get("repo_name"),
             "description": github_metadata.get("description"),
             "fingerprint": github_metadata.get("fingerprint"),
-            "html_url": github_metadata.get("html_url"),
-            "homepage": github_metadata.get("homepage_url"),
-            "fork": github_metadata.get("is_fork", False),
-            "archived": github_metadata.get("is_archived", False),
-            "updated_at": github_metadata.get("github_updated_at"),
-            "pushed_at": github_metadata.get("github_pushed_at"),
-            "created_at": github_metadata.get("github_created_at"),
-            "stargazers_count": github_metadata.get("stars_count", 0),
-            "forks_count": github_metadata.get("forks_count", 0),
             "watchers_count": github_metadata.get("watchers", 0),
             "open_issues_count": github_metadata.get("open_issues", 0),
             "topics": topics,
-            "primary_language": github_metadata.get("primary_language"),
             "license_name": github_metadata.get("license_name"),
         }
         
