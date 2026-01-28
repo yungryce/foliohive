@@ -238,13 +238,15 @@ export class AiComponent implements OnInit, OnDestroy {
       const repos = Array.isArray(bundle?.data) ? bundle.data : [];
       const scored: SuggestedRepo[] = repos
         .map((repo: any) => {
-          const name = repo?.name ?? repo?.metadata?.name;
+          const name = repo?.name;
           if (!name) return null;
 
+          // Extract searchable terms from backend schema
           const langs = Object.keys(repo?.languages || {}).map((x: string) => x.toLowerCase());
-          const categorized = Object.keys(repo?.categorized_types || {}).map((x: string) => x.toLowerCase());
-          const tech = (repo?.repoContext?.tech_stack?.primary || []).map((x: string) => (x || '').toLowerCase());
-          const haystack = new Set<string>([...langs, ...categorized, ...tech]);
+          const topics = Array.isArray(repo?.metadata?.topics) 
+            ? repo.metadata.topics.map((x: string) => x.toLowerCase()) 
+            : [];
+          const haystack = new Set<string>([...langs, ...topics]);
 
           const score = keywords.reduce((acc, kw) => acc + (haystack.has(kw) ? 1 : 0), 0);
           return { name: String(name), score };

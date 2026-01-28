@@ -2,21 +2,24 @@ import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, RouterModule } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { Observable, map } from 'rxjs';
+import { Observable, combineLatest, map } from 'rxjs';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { RepoBundleService, SingleRepoBundleResponse } from '../../services/repo-bundle.service';
 import { CandidateContextService } from '../../services/candidate-context.service';
 
+/**
+ * Aligned with backend schema from get_repo_files in api_gateway.py
+ */
 interface RepoDetailVM {
   name: string;
+  description?: string;
   updatedAt?: string;
-  type: string;
-  description: string;
-  primaryStack: string[];
   languagesPct: { k: string; pct: number }[];
   htmlUrl?: string;
-  readme?: string;
+  stars: number;
+  forks: number;
+  topics: string[];
 }
 
 @Component({
@@ -32,15 +35,12 @@ export class ProjectComponent implements OnInit {
   private sanitizer = inject(DomSanitizer);
   private candidateContext = inject(CandidateContextService);
 
-  repo: any;
-  contentType: 'readme' | 'architecture' | 'skills_index' = 'readme';
+  contentType: 'readme' = 'readme';
   contentHtml: SafeHtml = '';
 
   username = '';
   repoName = '';
   repo$!: Observable<RepoDetailVM | null>;
-
-  readmeHtml: SafeHtml | null = null;
   toc: { text: string; id: string; level: number }[] = [];
 
   ngOnInit(): void {
@@ -49,24 +49,56 @@ export class ProjectComponent implements OnInit {
     const active = this.candidateContext.activeCandidate;
     this.username = active?.username ?? '';
 
-    this.repo$ = this.repoBundleService
-      .getUserSingleRepoBundle(this.username, this.repoName, undefined)
-      .pipe(
-        map((res: SingleRepoBundleResponse | null | undefined) => {
-          this.repo = res?.data;
-          this.pickRandomContent();
-          const vm = this.toVM(this.repo);
-          if (vm?.readme) this.renderMarkdown(vm.readme);
-          return vm;
-        })
-      );
+    // Fetch files (readme) and metadata (languages, stats) in parallel
+    const files$ = this.repoBundleService.getUserSingleRepoBundle(
+      this.username,
+      this.repoName,
+      undefined,
+      'readme'
+    );
+    const bundle$ = this.repoBundleService.getUserBundle(this.username);
+
+    this.repo$ = combineLatest([files$, bundle$]).pipe(
+      map(([files, bundle]) => {
+        // Find this repo in the bundle for metadata
+        const repoData = (bundle?.data || []).find((r: any) => r?.name === this.repoName);
+        const vm = this.toVM(repoData);
+
+        // Render primary_readme if available
+        if (files?.primary_readme) {
+          this.renderMarkdown(files.primary_readme);
+        }
+
+        return vm;
+      })
+    );
   }
 
-  private toVM(r: any | undefined | null): RepoDetailVM | null {
-    if (!r) return null;
-    const pid = r?.repoContext?.project_identity ?? {};
-    const type = r?.repoContext?.type ?? pid?.type ?? 'Unknown';
-    const description = r?.repoContext?.description ?? pid?.description ?? 'No description';
+  /**
+   * Transform backend bundle entry to detail view model.
+   * Backend structure (from _repo_row_to_bundle_entry):
+   * {
+   *   name: string,
+   *   languages: {lang: bytes},
+   *   urls: {github, homepage},
+   *   stats: {stars, forks},
+   *   timestamps: {pushed_at, updated_at, created_at},
+   *   metadata: {description, fingerprint, topics, ...}
+   * }
+   */
+  private toVM(r: any | null): RepoDetailVM | null {
+    if (!r?.name) {
+      return {
+        name: this.repoName,
+        description: 'Repository details',
+        languagesPct: [],
+        updatedAt: undefined,
+        htmlUrl: undefined,
+        stars: 0,
+        forks: 0,
+        topics: [],
+      };
+    }
 
     const langs = r?.languages ?? {};
     const total = Object.values(langs).reduce((a: number, b: any) => a + Number(b), 0) || 1;
@@ -75,21 +107,23 @@ export class ProjectComponent implements OnInit {
       .sort((a, b) => b.pct - a.pct);
 
     return {
-      name: r?.name ?? r?.metadata?.name ?? this.repoName,
-      updatedAt: r?.metadata?.updated_at ?? r?.metadata?.pushed_at,
-      type,
-      description,
-      primaryStack: r?.repoContext?.tech_stack?.primary ?? [],
+      name: r.name,
+      description: r?.metadata?.description ?? 'No description',
       languagesPct,
-      htmlUrl: r?.metadata?.html_url, 
-      readme: r?.readme
+      updatedAt: r?.timestamps?.updated_at ?? r?.timestamps?.pushed_at,
+      htmlUrl: r?.urls?.github,
+      stars: r?.stats?.stars ?? 0,
+      forks: r?.stats?.forks ?? 0,
+      topics: Array.isArray(r?.metadata?.topics) ? r.metadata.topics : [],
     };
   }
 
   private renderMarkdown(md: string): void {
-    this.toc = [];
+    // Extract table of contents if present
+    const { stripped, toc } = this.extractTocFromMd(md);
+    this.toc = toc;
 
-    const rawHtml = marked.parse(md, { async: false }) as string;
+    const rawHtml = marked.parse(stripped, { async: false }) as string;
     const cleanHtml = DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } }) as string;
 
     const slug = (s: string) =>
@@ -98,25 +132,23 @@ export class ProjectComponent implements OnInit {
     const doc = new DOMParser().parseFromString(cleanHtml, 'text/html');
     const headings = doc.body.querySelectorAll('h1,h2,h3,h4,h5,h6');
     headings.forEach(h => {
-      const text = (h.textContent || '').trim();
-      const level = Number(h.tagName.substring(1));
+      const text = h.textContent || '';
       const id = slug(text);
-      if (!h.id) h.id = id;
-      this.toc.push({ text, id, level });
+      h.id = id;
+      // If no TOC was extracted, build fallback TOC from headings
+      if (!this.toc.length) {
+        const level = parseInt(h.tagName.substring(1), 10);
+        this.toc.push({ text, id, level });
+      }
     });
 
-    this.readmeHtml = this.sanitizer.bypassSecurityTrustHtml(doc.body.innerHTML);
+    this.contentHtml = this.sanitizer.bypassSecurityTrustHtml(doc.body.innerHTML);
   }
 
   /**
    * Extracts a "## Table of Contents" block and returns:
    *  - stripped markdown (TOC block removed)
    *  - parsed toc items [{ text, id, level }]
-   *
-   * Rules:
-   *  - Finds a heading line containing "Table of Contents" (any level 1-6, case-insensitive).
-   *  - The TOC block ends at the next heading (line starting with '#') or end of file.
-   *  - Parses list items like "- [Title](#anchor)". Nested indentation => deeper levels.
    */
   private extractTocFromMd(md: string): { stripped: string; toc: { text: string; id: string; level: number }[] } {
     const startRe = /^#{1,6}[^\n]*table of contents[^\n]*$/gim;
@@ -135,88 +167,22 @@ export class ProjectComponent implements OnInit {
 
     const block = md.slice(startMatch.index, endIdx);
 
-    // List item parser: captures indentation, link text, and anchor.
-    // Example matched line: "  - [📖 Overview](#-overview)"
+    // List item parser: captures indentation, link text, and anchor
     const liRe = /^(\s*)[-*+]\s+\[(.*?)\]\(#([^)]+)\)\s*$/gmi;
 
     const toc: { text: string; id: string; level: number }[] = [];
     let m: RegExpExecArray | null;
 
     while ((m = liRe.exec(block)) !== null) {
-      const indent = (m[1] || '').replace(/\t/g, '    '); // normalize tabs to 4 spaces
+      const indent = (m[1] || '').replace(/\t/g, '    ');
       const text = (m[2] || '').trim();
-      const rawId = (m[3] || '').trim(); // e.g. "-overview"
-      // Heuristic: every 2 spaces of indent increases one level (cap at h6)
+      const rawId = (m[3] || '').trim();
       const level = Math.min(6, Math.floor(indent.length / 2) + 1);
-      // Keep the anchor exactly as authored (your template prepends '#')
       const id = rawId.replace(/^#+/, '');
       toc.push({ text, id, level });
     }
 
     const stripped = md.slice(0, startMatch.index) + md.slice(endIdx);
     return { stripped, toc };
-  }
-
-  pickRandomContent() {
-    if (!this.repo) return;
-
-    // Decide which content blob to show
-    const options: ('readme' | 'architecture' | 'skills_index')[] = [];
-    if (this.repo.readme) options.push('readme');
-    if (this.repo.architecture) options.push('architecture');
-    if (this.repo.skills_index) options.push('skills_index');
-    this.contentType = options[Math.floor(Math.random() * options.length)] || 'readme';
-
-    // Raw markdown (may contain a hand-written TOC)
-    let raw = this.repo[this.contentType] || '';
-
-    // 1) Extract TOC and remove it from the markdown body
-    const { stripped, toc } = this.extractTocFromMd(raw);
-    this.toc = toc;              // <-- navbar data comes from the README’s TOC
-    raw = stripped;              // <-- content we will render no longer has the TOC block
-
-    // 2) Extract mermaid blocks, replace with placeholders
-    const mermaidBlocks: string[] = [];
-    raw = raw.replace(/```mermaid\s*([\s\S]*?)```/g, (_: string, code: string) => {
-      mermaidBlocks.push(code.trim());
-      return `@@MERMAID_BLOCK_${mermaidBlocks.length - 1}@@`;
-    });
-
-    // 3) Parse markdown -> HTML
-    let html = marked.parse(raw, { async: false }) as string;
-
-    // 4) Re-insert mermaid blocks as raw <div class="mermaid">...</div>
-    mermaidBlocks.forEach((code, i) => {
-      html = html.replace(
-        `@@MERMAID_BLOCK_${i}@@`,
-        `<div class="mermaid">${code}</div>`
-      );
-    });
-
-    // 5) Sanitize and render
-    this.contentHtml = this.sanitizer.bypassSecurityTrustHtml(DOMPurify.sanitize(html));
-
-    // 6) Kick Mermaid
-    setTimeout(() => {
-      if ((window as any).mermaid) (window as any).mermaid.init();
-    }, 0);
-  }
-
-  // --- Fallback TOC extraction ---
-  // Call this after pickRandomContent if needed
-  private fallbackTocFromHeadings(md: string): void {
-    if (this.toc.length === 0 && md) {
-      const rawHtml = marked.parse(md, { async: false }) as string;
-      const cleanHtml = DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } }) as string;
-      const doc = new DOMParser().parseFromString(cleanHtml, 'text/html');
-      const headings = doc.body.querySelectorAll('h1,h2,h3,h4,h5,h6');
-      const slug = (s: string) => s.toLowerCase().trim().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
-      headings.forEach(h => {
-        const text = (h.textContent || '').trim();
-        const level = Number(h.tagName.substring(1));
-        const id = h.id || slug(text);
-        this.toc.push({ text, id, level });
-      });
-    }
   }
 }

@@ -413,7 +413,7 @@ class TableManager:
         if not table or not session_id:
             return []
 
-        query = table.list_entities(filter=f"PartitionKey eq '{session_id}'")
+        query = list(table.list_entities(filter=f"PartitionKey eq '{session_id}'"))
         rows = [self._deserialize_session_candidate(e) for e in query]
         rows.sort(key=lambda row: row.get("last_viewed_at") or row.get("updated_at") or "", reverse=True)
         if limit and limit > 0:
@@ -521,7 +521,7 @@ class TableManager:
         table = self._get_table_client(self.table_names.job_metadata)
         if not table:
             return []
-        query = table.list_entities(filter=f"PartitionKey eq '{username}'")
+        query = list(table.list_entities(filter=f"PartitionKey eq '{username}'"))
         jobs = [self._deserialize_job_metadata(e) for e in query]
         logger.info("[TABLE_LIST_JOBS_METADATA] user=%s found=%d", username, len(jobs))
 
@@ -544,7 +544,7 @@ class TableManager:
         if updated_before:
             filters.append(f"updated_at lt '{updated_before}'")
         filter_str = " and ".join(filters)
-        query = table.list_entities(filter=filter_str)
+        query = list(table.list_entities(filter=filter_str))
         return [self._deserialize_job_metadata(e) for e in query]
 
     def _deserialize_job_metadata(self, entity: Dict[str, Any]) -> Dict[str, Any]:
@@ -615,7 +615,7 @@ class TableManager:
         if not table:
             return []
         filter_str = f"PartitionKey eq '{username}'"
-        entities = table.list_entities(filter=filter_str)
+        entities = list(table.list_entities(filter=filter_str))
         return [self._deserialize_repo_github_metadata(e) for e in entities]
 
     def _deserialize_repo_github_metadata(self, entity: Dict[str, Any]) -> Dict[str, Any]:
@@ -801,17 +801,23 @@ class TableManager:
             by_repo.setdefault(key, []).append(row)
         
         for (username, repo_name), repo_rows in by_repo.items():
-            # Delete existing entries for this repo
+            # Delete existing entries for this repo (materialize list to avoid iterator issues)
             filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
-            existing = table.list_entities(filter=filter_str)
+            existing = list(table.list_entities(filter=filter_str))
             for entity in existing:
                 table.delete_entity(partition_key=entity["PartitionKey"], row_key=entity["RowKey"])
             
             # Insert new entries
             for row in repo_rows:
                 self.upsert_repo_languages(row)
+            
+            logger.info(
+                "[TABLE_BATCH_UPSERT_LANGUAGES] repo=%s processed=%d languages",
+                repo_name,
+                len(repo_rows),
+            )
         
-        logger.info("[TABLE_BATCH_UPSERT_LANGUAGES] rows=%d", len(rows))
+        logger.info("[TABLE_BATCH_UPSERT_LANGUAGES] total_rows=%d repos=%d", len(rows), len(by_repo))
 
     def query_repo_languages(self, username: str, repo_name: str) -> List[Dict[str, Any]]:
         """Query all language statistics for a repository."""
@@ -819,8 +825,16 @@ class TableManager:
         if not table:
             return []
         filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
-        entities = table.list_entities(filter=filter_str)
-        return [self._deserialize_repo_languages(e) for e in entities]
+        entities = list(table.list_entities(filter=filter_str))
+        results = [self._deserialize_repo_languages(e) for e in entities]
+        logger.debug(
+            "[TABLE_QUERY_REPO_LANGUAGES] user=%s repo=%s found=%d languages=%s",
+            username,
+            repo_name,
+            len(results),
+            [r.get("language") for r in results]
+        )
+        return results
 
     def _deserialize_repo_languages(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
@@ -868,9 +882,9 @@ class TableManager:
             by_repo.setdefault(key, []).append(row)
         
         for (username, repo_name), repo_rows in by_repo.items():
-            # Delete existing entries for this repo
+            # Delete existing entries for this repo (materialize list to avoid iterator issues)
             filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
-            existing = table.list_entities(filter=filter_str)
+            existing = list(table.list_entities(filter=filter_str))
             for entity in existing:
                 table.delete_entity(partition_key=entity["PartitionKey"], row_key=entity["RowKey"])
             
@@ -886,7 +900,7 @@ class TableManager:
         if not table:
             return []
         filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
-        entities = table.list_entities(filter=filter_str)
+        entities = list(table.list_entities(filter=filter_str))
         return [self._deserialize_repo_file_types(e) for e in entities]
 
     def _deserialize_repo_file_types(self, entity: Dict[str, Any]) -> Dict[str, Any]:
@@ -1040,7 +1054,7 @@ class TableManager:
         table = self._get_table_client(self.table_names.model_metadata)
         if not table:
             return []
-        entities = table.list_entities(filter=f"PartitionKey eq '{username}'")
+        entities = list(table.list_entities(filter=f"PartitionKey eq '{username}'"))
         return [self._deserialize_model_entity(e) for e in entities]
 
     def _deserialize_model_entity(self, entity: Dict[str, Any]) -> Dict[str, Any]:

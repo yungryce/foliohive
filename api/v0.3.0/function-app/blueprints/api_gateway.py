@@ -363,13 +363,14 @@ def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[
             continue
         
         languages = table_manager.query_repo_languages(username, repo_name)
+        logger.debug("Queried languages for repo %s: %s", repo_name, languages)
         entries.append(
             _repo_row_to_bundle_entry(
                 languages=languages,
                 github_metadata=github_meta,
             )
         )
-
+    count = 0
     result = {
         "username": username,
         "job_id": job_id,
@@ -377,7 +378,8 @@ def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[
         "last_modified": _restore_iso_timestamp(job.get("updated_at")) or job.get("updated_at"),
         "status": job.get("status"),
         "data": entries,
-        "repos": entries,
+        # "repos": entries,
+        "count": count + 1
     }
 
     logger.info(
@@ -411,6 +413,38 @@ def _bundle_from_cache(username: str) -> Optional[Dict[str, Any]]:
         "size_bytes": result.get("size_bytes"),
         "data": result.get("data"),
     }
+
+def _persist_job_metadata(
+    job_id: str,
+    username: str,
+    *,
+    status: str = "queued",
+    force_refresh: bool = False,
+    created_at: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+) -> None:
+    """Persist job metadata - list fields removed in normalized schema.
+    
+    Creates or updates a job metadata row. Generates created_at timestamp if not provided.
+    Preserves existing bundle_fingerprint, trace_id, and request_id on updates.
+    """
+    if not created_at:
+        created_at = datetime.now(timezone.utc).isoformat()
+
+    existing = table_manager.get_job_metadata(username, job_id)
+    row = JobMetadataRow(
+        username=username,
+        job_id=job_id,
+        status=status,
+        bundle_fingerprint=(existing.get("bundle_fingerprint") if existing else None),
+        force_refresh=force_refresh if not existing else bool(existing.get("force_refresh") or force_refresh),
+        created_at=(existing.get("created_at") if existing else created_at) or created_at,
+        updated_at=existing.get("updated_at") if existing else None,
+        trace_id=trace_id if not existing else (existing.get("trace_id") or trace_id),
+        request_id=request_id if not existing else (existing.get("request_id") or request_id),
+    )
+    table_manager.upsert_job_metadata(row)
 
 
 def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
@@ -524,38 +558,6 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
         "cached_bundle": valid_repos,
         "bundle_status": "fresh" if not stale_repos else "stale",
     }
-
-def _persist_job_metadata(
-    job_id: str,
-    username: str,
-    *,
-    status: str = "queued",
-    force_refresh: bool = False,
-    created_at: Optional[str] = None,
-    trace_id: Optional[str] = None,
-    request_id: Optional[str] = None,
-) -> None:
-    """Persist job metadata - list fields removed in normalized schema.
-    
-    Creates or updates a job metadata row. Generates created_at timestamp if not provided.
-    Preserves existing bundle_fingerprint, trace_id, and request_id on updates.
-    """
-    if not created_at:
-        created_at = datetime.now(timezone.utc).isoformat()
-
-    existing = table_manager.get_job_metadata(username, job_id)
-    row = JobMetadataRow(
-        username=username,
-        job_id=job_id,
-        status=status,
-        bundle_fingerprint=(existing.get("bundle_fingerprint") if existing else None),
-        force_refresh=force_refresh if not existing else bool(existing.get("force_refresh") or force_refresh),
-        created_at=(existing.get("created_at") if existing else created_at) or created_at,
-        updated_at=existing.get("updated_at") if existing else None,
-        trace_id=trace_id if not existing else (existing.get("trace_id") or trace_id),
-        request_id=request_id if not existing else (existing.get("request_id") or request_id),
-    )
-    table_manager.upsert_job_metadata(row)
 
 
 # ---------------------------------------------------------------------------

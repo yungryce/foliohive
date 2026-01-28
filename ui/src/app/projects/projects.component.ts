@@ -2,20 +2,25 @@ import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterModule } from '@angular/router';
-import { RepoBundleService, RepoBundleResponse } from '../services/repo-bundle.service';
+import { RepoBundleService, RepoBundleResponse, JobStatusResponse } from '../services/repo-bundle.service';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
 import { Observable, map, of, Subject, switchMap, takeUntil, takeWhile, tap, timer } from 'rxjs';
 
+/**
+ * Aligned with backend schema from _repo_row_to_bundle_entry in api_gateway.py
+ */
 interface RepoCardVM {
   name: string;
-  updatedAt?: string;
-  type: string;
-  description: string;
-  primaryStack: string[];
+  description?: string;
   languagesPct: { k: string; pct: number }[];
+  updatedAt?: string;
   htmlUrl?: string;
-  isFork?: boolean;
+  stars: number;
+  forks: number;
+  topics: string[];
+  isFork: boolean;
+  isArchived: boolean;
 }
 
 @Component({
@@ -170,30 +175,40 @@ export class ProjectsComponent implements OnInit, OnDestroy {
     );
   }
 
+  /**
+   * Transform backend bundle entry to card view model.
+   * Backend structure (from _repo_row_to_bundle_entry):
+   * {
+   *   name: string,
+   *   languages: {lang: bytes},
+   *   languages_top: [{name, pct, bytes}],
+   *   urls: {github, homepage},
+   *   stats: {stars, forks},
+   *   flags: {fork, archived},
+   *   timestamps: {pushed_at, updated_at, created_at},
+   *   metadata: {description, fingerprint, topics, ...}
+   * }
+   */
   private toCardVM(r: any): RepoCardVM | null {
-    // Extract data from API response structure (RepoGitHubMetadataRow + repoContext)
-    const type = r?.repoContext?.type ?? 'repository';
-    const description = r?.repoContext?.description ?? r?.metadata?.description ?? 'No description';
-    
-    // Languages are returned as {language: bytes_count} from _repo_row_to_bundle_entry
+    if (!r?.name) return null;
+
     const langs = r?.languages ?? {};
     const total = Object.values(langs).reduce((a: number, b: any) => a + Number(b), 0) || 1;
     const languagesPct = Object.entries(langs)
       .map(([k, v]) => ({ k, pct: Math.round((Number(v) / total) * 100) }))
       .sort((a, b) => b.pct - a.pct);
 
-    // Primary tech stack from repoContext (inferred from primary_language)
-    const primaryStack = r?.repoContext?.tech_stack?.primary ?? [];
-
     return {
-      name: r?.name ?? 'unknown',
-      updatedAt: r?.metadata?.updated_at ?? r?.metadata?.pushed_at ?? r?.updated_at,
-      type,
-      description,
-      primaryStack,
+      name: r.name,
+      description: r?.metadata?.description ?? 'No description',
       languagesPct,
-      htmlUrl: r?.metadata?.html_url,
-      isFork: !!r?.metadata?.fork,
+      updatedAt: r?.timestamps?.updated_at ?? r?.timestamps?.pushed_at,
+      htmlUrl: r?.urls?.github,
+      stars: r?.stats?.stars ?? 0,
+      forks: r?.stats?.forks ?? 0,
+      topics: Array.isArray(r?.metadata?.topics) ? r.metadata.topics : [],
+      isFork: r?.flags?.fork ?? false,
+      isArchived: r?.flags?.archived ?? false,
     };
   }
 
@@ -202,7 +217,7 @@ export class ProjectsComponent implements OnInit, OnDestroy {
     const technologies = new Set<string>();
     vms.forEach(vm => {
       (vm.languagesPct ?? []).forEach(l => languages.add(l.k));
-      (vm.primaryStack ?? []).forEach(tech => technologies.add(tech));
+      vm.topics.forEach(topic => technologies.add(topic));
     });
     this.allLanguages = Array.from(languages).sort();
     this.allTechnologies = Array.from(technologies).sort();
@@ -215,9 +230,8 @@ export class ProjectsComponent implements OnInit, OnDestroy {
         const q = this.searchTerm.toLowerCase();
         const hits =
           vm.name.toLowerCase().includes(q) ||
-          vm.description.toLowerCase().includes(q) ||
-          vm.type.toLowerCase().includes(q) ||
-          (vm.primaryStack || []).some(t => t.toLowerCase().includes(q));
+          (vm.description ?? '').toLowerCase().includes(q) ||
+          vm.topics.some(t => t.toLowerCase().includes(q));
         if (!hits) return false;
       }
       if (this.selectedLanguage) {
@@ -225,7 +239,7 @@ export class ProjectsComponent implements OnInit, OnDestroy {
         if (!hasLang) return false;
       }
       if (this.selectedTechnology) {
-        const hasTech = (vm.primaryStack || []).includes(this.selectedTechnology);
+        const hasTech = vm.topics.some(t => t.toLowerCase().includes(this.selectedTechnology.toLowerCase()));
         if (!hasTech) return false;
       }
       return true;
@@ -241,6 +255,9 @@ export class ProjectsComponent implements OnInit, OnDestroy {
         case 'name':
           cmp = a.name.localeCompare(b.name);
           break;
+        case 'stars':
+          cmp = (a.stars ?? 0) - (b.stars ?? 0);
+          break;
         case 'updated':
         default: {
           const at = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
@@ -249,7 +266,7 @@ export class ProjectsComponent implements OnInit, OnDestroy {
           break;
         }
       }
-      return direction === 'asc' ? cmp : -cmp;
+      return direction === 'desc' ? -cmp : cmp;
     });
   }
 
