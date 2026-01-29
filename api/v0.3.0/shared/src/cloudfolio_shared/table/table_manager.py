@@ -776,48 +776,216 @@ class TableManager:
             "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
             "updated_at": now,
         }
-        logger.debug(
-            "[TABLE_UPSERT_REPO_LANGUAGES] PartitionKey=%s RowKey=%s repo_name=%s language=%s entity=%s",
-            entity["PartitionKey"],
-            entity["RowKey"],
-            row.repo_name,
-            row.language,
-            entity
-        )
-        table.upsert_entity(entity, mode=UpdateMode.REPLACE)
+        table.upsert_entity(entity, mode=UpdateMode.MERGE)
 
     def batch_upsert_repo_languages(self, rows: List[RepoLanguagesRow]) -> None:
-        """Batch insert language statistics - replaces all existing for username+repo."""
+        """Batch upsert language statistics with strong consistency.
+        
+        Uses Azure Table batch transactions to ensure atomic delete-then-insert
+        operations within a single partition. This prevents race conditions and
+        ensures strict replacement semantics for repository languages.
+        
+        Limitations:
+        - All operations must target the same PartitionKey (username)
+        - Maximum 100 operations per batch (Azure limit)
+        """
         if not rows:
             return
         table = self._get_table_client(self.table_names.repo_languages)
         if not table:
             return
         
-        # Group by username+repo to delete existing entries first
+        # Group by username+repo (all rows for same repo will have same PartitionKey)
         by_repo: Dict[tuple[str, str], List[RepoLanguagesRow]] = {}
         for row in rows:
             key = (row.username, row.repo_name)
             by_repo.setdefault(key, []).append(row)
         
         for (username, repo_name), repo_rows in by_repo.items():
-            # Delete existing entries for this repo (materialize list to avoid iterator issues)
-            filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
-            existing = list(table.list_entities(filter=filter_str))
-            for entity in existing:
-                table.delete_entity(partition_key=entity["PartitionKey"], row_key=entity["RowKey"])
-            
-            # Insert new entries
-            for row in repo_rows:
-                self.upsert_repo_languages(row)
-            
             logger.info(
-                "[TABLE_BATCH_UPSERT_LANGUAGES] repo=%s processed=%d languages",
+                "[TABLE_BATCH_UPSERT_LANGUAGES_START] repo=%s languages=%d",
                 repo_name,
                 len(repo_rows),
             )
+            
+            # Step 1: Query existing entries for this repo
+            filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
+            existing = list(table.list_entities(filter=filter_str))
+            existing_keys = {e["RowKey"] for e in existing}
+            new_keys = {f"{row.repo_name}|{row.language}" for row in repo_rows}
+            
+            logger.debug(
+                "[TABLE_BATCH_LANGUAGES_DELTA] repo=%s existing=%d new=%d to_delete=%d to_upsert=%d",
+                repo_name,
+                len(existing_keys),
+                len(new_keys),
+                len(existing_keys - new_keys),
+                len(new_keys),
+            )
+            
+            # Step 2: Build batch operations (delete stale + upsert new)
+            # Azure Table batch limit is 100 operations per batch
+            operations = []
+            
+            # Add delete operations for stale entries
+            for entity in existing:
+                row_key = entity["RowKey"]
+                if row_key not in new_keys:
+                    operations.append(("delete", entity["PartitionKey"], row_key))
+                    logger.debug("[TABLE_BATCH_DELETE] repo=%s RowKey=%s", repo_name, row_key)
+            
+            # Add upsert operations for new/updated entries
+            for row in repo_rows:
+                now = _azure_safe_timestamp()
+                entity: Dict[str, Any] = {
+                    "PartitionKey": row.username,
+                    "RowKey": f"{row.repo_name}|{row.language}",
+                    "repo_name": row.repo_name,
+                    "language": row.language,
+                    "bytes_count": int(row.bytes_count or 0),
+                    "percentage": float(row.percentage or 0.0),
+                    "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
+                    "updated_at": now,
+                }
+                operations.append(("upsert", entity))
+                logger.debug(
+                    "[TABLE_BATCH_UPSERT] repo=%s language=%s bytes=%d pct=%.2f",
+                    repo_name,
+                    row.language,
+                    row.bytes_count,
+                    row.percentage or 0.0,
+                )
+            
+            # Step 3: Execute batch operations in chunks of 100 (Azure limit)
+            if operations:
+                self._execute_batch_operations(table, username, operations, repo_name)
+            
+            # Step 4: Verify final state
+            final = list(table.list_entities(filter=filter_str))
+            final_count = len(final)
+            
+            if final_count != len(repo_rows):
+                logger.error(
+                    "[TABLE_BATCH_UPSERT_LANGUAGES_MISMATCH] repo=%s expected=%d actual=%d",
+                    repo_name,
+                    len(repo_rows),
+                    final_count,
+                )
+            else:
+                logger.info(
+                    "[TABLE_BATCH_UPSERT_LANGUAGES_VERIFIED] repo=%s languages=%d",
+                    repo_name,
+                    final_count,
+                )
         
         logger.info("[TABLE_BATCH_UPSERT_LANGUAGES] total_rows=%d repos=%d", len(rows), len(by_repo))
+
+    def _execute_batch_operations(
+        self,
+        table: TableClient,
+        partition_key: str,
+        operations: List[tuple],
+        repo_name: str,
+    ) -> None:
+        """Execute batch operations in chunks of 100 (Azure Table Storage limit).
+        
+        All operations must target the same PartitionKey for batch transactions.
+        """
+        # Process in chunks of 100 (Azure limit)
+        chunk_size = 100
+        for i in range(0, len(operations), chunk_size):
+            chunk = operations[i:i+chunk_size]
+            
+            try:
+                # Create batch transaction
+                batch = []
+                for op in chunk:
+                    if op[0] == "delete":
+                        _, pk, rk = op
+                        batch.append(("delete", {"PartitionKey": pk, "RowKey": rk}))
+                    elif op[0] == "upsert":
+                        _, entity = op
+                        batch.append(("upsert", entity))
+                
+                # Submit batch transaction
+                table.submit_transaction(batch)
+                logger.debug(
+                    "[TABLE_BATCH_SUBMIT] repo=%s chunk=%d/%d operations=%d",
+                    repo_name,
+                    (i // chunk_size) + 1,
+                    (len(operations) + chunk_size - 1) // chunk_size,
+                    len(chunk),
+                )
+            except Exception as exc:
+                logger.error(
+                    "[TABLE_BATCH_FAILED] repo=%s chunk=%d error=%s",
+                    repo_name,
+                    (i // chunk_size) + 1,
+                    exc,
+                )
+                # Fall back to individual operations for this chunk
+                self._execute_operations_individually(table, chunk, repo_name)
+
+    def _execute_operations_individually(
+        self,
+        table: TableClient,
+        operations: List[tuple],
+        repo_name: str,
+    ) -> None:
+        """Fallback: execute operations individually if batch fails."""
+        logger.warning(
+            "[TABLE_BATCH_FALLBACK] repo=%s - Executing %d operations individually",
+            repo_name,
+            len(operations),
+        )
+        for op in operations:
+            try:
+                if op[0] == "delete":
+                    _, pk, rk = op
+                    table.delete_entity(partition_key=pk, row_key=rk)
+                elif op[0] == "upsert":
+                    _, entity = op
+                    table.upsert_entity(entity, mode=UpdateMode.MERGE)
+            except Exception as exc:
+                logger.error(
+                    "[TABLE_OPERATION_FAILED] repo=%s op=%s error=%s",
+                    repo_name,
+                    op[0],
+                    exc,
+                )
+
+    def delete_repo_languages(self, username: str, repo_name: str) -> None:
+        """Delete all language entries for a repository (cleanup operation).
+        
+        Use batch_upsert_repo_languages instead for atomic replace operations.
+        This method is kept for explicit cleanup scenarios only.
+        """
+        table = self._get_table_client(self.table_names.repo_languages)
+        if not table:
+            return
+        
+        filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
+        existing = list(table.list_entities(filter=filter_str))
+        
+        # Use batch delete for efficiency
+        if existing:
+            batch = [("delete", {"PartitionKey": e["PartitionKey"], "RowKey": e["RowKey"]}) for e in existing]
+            try:
+                table.submit_transaction(batch)
+                logger.info("[TABLE_DELETE_REPO_LANGUAGES] repo=%s deleted=%d", repo_name, len(existing))
+            except Exception as exc:
+                logger.error("[TABLE_DELETE_REPO_LANGUAGES_FAILED] repo=%s error=%s", repo_name, exc)
+                # Fallback to individual deletes
+                for entity in existing:
+                    try:
+                        table.delete_entity(partition_key=entity["PartitionKey"], row_key=entity["RowKey"])
+                    except Exception as delete_exc:
+                        logger.warning(
+                            "[TABLE_DELETE_LANGUAGE_FAILED] repo=%s RowKey=%s error=%s",
+                            repo_name,
+                            entity["RowKey"],
+                            delete_exc,
+                        )
 
     def query_repo_languages(self, username: str, repo_name: str) -> List[Dict[str, Any]]:
         """Query all language statistics for a repository."""
@@ -826,27 +994,21 @@ class TableManager:
             return []
         filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
         entities = list(table.list_entities(filter=filter_str))
-        results = [self._deserialize_repo_languages(e) for e in entities]
-        logger.debug(
-            "[TABLE_QUERY_REPO_LANGUAGES] user=%s repo=%s found=%d languages=%s",
-            username,
-            repo_name,
-            len(results),
-            [r.get("language") for r in results]
-        )
-        return results
+        return [self._deserialize_repo_languages(e) for e in entities]
 
     def _deserialize_repo_languages(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
         payload["username"] = payload.pop("PartitionKey", None)
-        # RowKey is composite, extract from individual fields
-        payload.pop("RowKey", None)
+        payload["repo_name"] = payload.pop("RowKey", None)
+        try:
+            payload["topics"] = json.loads(payload.get("topics") or "[]")
+        except json.JSONDecodeError:
+            payload["topics"] = []
         return payload
 
-
-    # -------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Repo file types
     # -------------------------------------------------------------------
 

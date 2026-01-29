@@ -211,6 +211,8 @@ def _persist_repo_metadata(
                 len(lang_rows),
                 [(r.repo_language_key, r.language, r.bytes_count, r.percentage) for r in lang_rows]
             )
+            
+            # Atomic batch operation with strong consistency
             table_manager.batch_upsert_repo_languages(lang_rows)
             logger.info("[PERSIST_LANGUAGES] repo=%s languages=%d", repo_name, len(lang_rows))
 
