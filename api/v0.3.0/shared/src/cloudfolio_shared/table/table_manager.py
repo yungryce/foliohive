@@ -84,7 +84,7 @@ class RepoLanguagesRow:
     """Per-repo language statistics - normalized from RepoMetadata.languages."""
 
     username: str  # PartitionKey
-    repo_language_key: str  # RowKey: "{repo_name}#{language}"
+    repo_language_key: str  # RowKey: "{repo_name}|{language}"
     repo_name: str
     language: str
     bytes_count: int
@@ -987,21 +987,36 @@ class TableManager:
                             delete_exc,
                         )
 
-    def query_repo_languages(self, username: str, repo_name: str) -> List[Dict[str, Any]]:
-        """Query all language statistics for a repository."""
+
+    def query_repo_languages(self, username: str) -> Dict[str, List[Dict[str, Any]]]:
+        """Query all language statistics for a user's repositories.
+        
+        Returns a dictionary mapping repo_name to list of language dicts.
+        More efficient than calling query_repo_languages per repo.
+        """
         table = self._get_table_client(self.table_names.repo_languages)
         if not table:
-            return []
-        filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
+            return {}
+        
+        filter_str = f"PartitionKey eq '{username}'"
         entities = list(table.list_entities(filter=filter_str))
-        return [self._deserialize_repo_languages(e) for e in entities]
+        
+        # Group by repo_name
+        by_repo: Dict[str, List[Dict[str, Any]]] = {}
+        for entity in entities:
+            deserialized = self._deserialize_repo_languages(entity)
+            repo_name = deserialized.get("repo_name")
+            if repo_name:
+                by_repo.setdefault(repo_name, []).append(deserialized)
+        
+        return by_repo
 
     def _deserialize_repo_languages(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
         payload["username"] = payload.pop("PartitionKey", None)
-        payload["repo_name"] = payload.pop("RowKey", None)
+        payload["repo_language_key"] = payload.pop("RowKey", None)
         try:
             payload["topics"] = json.loads(payload.get("topics") or "[]")
         except json.JSONDecodeError:

@@ -61,13 +61,15 @@
           <div class="p-4 rounded-lg shadow mb-6 border border-[var(--border)] bg-[var(--card)]">
             <div class="flex items-center justify-between mb-3">
               <h2 class="text-xl font-semibold">Filter Projects</h2>
-              <button
-                (click)="triggerBuild()"
-                [disabled]="building"
-                class="px-3 py-2 rounded border border-[var(--border)] bg-[var(--soft)] hover:brightness-95"
-              >
-                {{ building ? 'Starting…' : 'Rebuild portfolio' }}
-              </button>
+              <div class="toggle-switch">
+                <label for="showForks">Show Forks</label>
+                <input
+                  id="showForks"
+                  type="checkbox"
+                  [(ngModel)]="showForks"
+                  (change)="applyFilters()"
+                />
+              </div>
             </div>
 
             <div class="overflow-x-auto">
@@ -136,6 +138,13 @@
                 class="px-4 py-2 rounded bg-[var(--soft)] hover:brightness-95"
               >
                 Reset
+              </button>
+              <button
+                (click)="triggerBuild()"
+                [disabled]="building"
+                class="px-4 py-2 rounded border border-[var(--border)] bg-[var(--soft)] hover:brightness-95 disabled:opacity-50"
+              >
+                {{ building ? 'Starting…' : 'Refresh' }}
               </button>
               <button
                 (click)="applyFilters()"

@@ -1,0 +1,8 @@
+PartitionKey,RowKey,repo_name,repo_name@type,language,language@type,bytes_count,bytes_count@type,percentage,percentage@type,created_at,created_at@type,updated_at,updated_at@type
+octocat,Spoon-Knife|CSS,Spoon-Knife,String,CSS,String,256,Int32,41.9,Double,2026-01-29T15-52-44.666810_00-00,String,2026-01-29T15-52-44.666810_00-00,String
+octocat,Spoon-Knife|HTML,Spoon-Knife,,HTML,,355,,58.1,,2026-01-29T15-52-44.666792_00-00,,2026-01-29T15-52-44.666792_00-00,
+octocat,linguist|Ruby,linguist,,Ruby,,204865,,99.56,,2026-01-29T15-52-44.662743_00-00,,2026-01-29T15-52-44.662743_00-00,
+octocat,linguist|Shell,linguist,,Shell,,910,,0.44,,2026-01-29T15-52-44.662757_00-00,,2026-01-29T15-52-44.662757_00-00,
+octocat,octocat.github.io|CSS,octocat.github.io,,CSS,,14694,,78.47,,2026-01-29T15-52-44.650548_00-00,,2026-01-29T15-52-44.650548_00-00,
+octocat,octocat.github.io|HTML,octocat.github.io,,HTML,,3983,,21.27,,2026-01-29T15-52-44.650564_00-00,,2026-01-29T15-52-44.650564_00-00,
+octocat,octocat.github.io|JavaScript,octocat.github.io,,JavaScript,,48,,0.26,,2026-01-29T15-52-44.650570_00-00,,2026-01-29T15-52-44.650570_00-00,

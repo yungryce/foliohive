@@ -357,20 +357,29 @@ def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[
             )
 
     # Build entries from GitHub metadata (repo_rows now contains RepoGitHubMetadata)
+    # Query all languages once and group by repo_name (more efficient than N queries)
+    all_languages_by_repo = table_manager.query_repo_languages(username)
+    
     for github_meta in repo_rows:
         repo_name = github_meta.get("repo_name")
         if not repo_name:
             continue
         
-        languages = table_manager.query_repo_languages(username, repo_name)
-        logger.debug("Queried languages for repo %s: %s", repo_name, languages)
+        languages = all_languages_by_repo.get(repo_name, [])
+        logger.info(
+            "[CANDIDATE_REPO_LANGUAGES] user=%s repo=%s languages_count=%d languages=%s",
+            username,
+            repo_name,
+            len(languages),
+            [f"{lang.get('language')}:{lang.get('bytes_count')}" for lang in languages[:3]],
+        )
+        
         entries.append(
             _repo_row_to_bundle_entry(
                 languages=languages,
                 github_metadata=github_meta,
             )
         )
-    count = 0
     result = {
         "username": username,
         "job_id": job_id,
@@ -378,8 +387,6 @@ def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[
         "last_modified": _restore_iso_timestamp(job.get("updated_at")) or job.get("updated_at"),
         "status": job.get("status"),
         "data": entries,
-        # "repos": entries,
-        "count": count + 1
     }
 
     logger.info(

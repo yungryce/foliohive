@@ -26,3 +26,58 @@
 .lang-chunk[data-i="3"] { background: #ef4444; }  /* red-500 */
 .lang-chunk[data-i="4"] { background: #a855f7; }  /* purple-500 */
 .build-banner { border-left: 4px solid var(--primary); padding-left: .75rem; }
+
+/* Toggle switch styling */
+.toggle-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.toggle-switch input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  width: 48px;
+  height: 28px;
+  border-radius: 14px;
+  background: var(--soft);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+  position: relative;
+}
+
+.toggle-switch input[type="checkbox"]:before {
+  content: '';
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  border-radius: 12px;
+  background: var(--bg);
+  top: 2px;
+  left: 2px;
+  transition: left 0.3s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.toggle-switch input[type="checkbox"]:checked {
+  background: var(--primary);
+}
+
+.toggle-switch input[type="checkbox"]:checked:before {
+  left: 22px;
+}
+
+.toggle-switch input[type="checkbox"]:hover {
+  border-color: var(--ring);
+}
+
+.toggle-switch label {
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--muted);
+}

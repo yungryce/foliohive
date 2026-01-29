@@ -272,7 +272,7 @@ export class ProjectsComponent implements OnInit, OnDestroy {
 
   applyFilters(): void { this.loadRepoBundle(); }
   resetFilters(): void {
-    this.showForks = false;
+    this.showForks = true;
     this.selectedLanguage = '';
     this.selectedTechnology = '';
     this.searchTerm = '';
