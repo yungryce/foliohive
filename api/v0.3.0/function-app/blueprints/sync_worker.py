@@ -120,7 +120,7 @@ def _fetch_repo_metadata(
     username: str,
     repo_name: str,
     fingerprint: Optional[str] = None,
-    job_id: Optional[str] = None,  # pylint: disable=unused-argument
+    job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Fetch repository metadata only (fast) - stored in table_manager.
     
@@ -128,7 +128,7 @@ def _fetch_repo_metadata(
         username: GitHub username
         repo_name: Repository name
         fingerprint: Optional ETag for conditional fetch
-        job_id: Reserved for future use in tracing/correlation
+        job_id: Job ID for tracking and persistence
     
     Fetches:
     - Repo metadata (description, stars, forks, etc.)
@@ -157,7 +157,7 @@ def _fetch_repo_metadata(
     resolved_fingerprint = fingerprint or FingerprintManager.generate_metadata_fingerprint(repo_metadata)
 
     # Persist to table storage (metadata only)
-    _persist_repo_metadata(username, repo_name, repo_metadata, resolved_fingerprint)
+    _persist_repo_metadata(username, repo_name, repo_metadata, resolved_fingerprint, job_id)
     logger.info("[METADATA_PERSISTED] repo=%s fingerprint=%s", repo_name, resolved_fingerprint)
 
     # Return both fingerprint and API usage for tracking
@@ -172,11 +172,12 @@ def _persist_repo_metadata(
     repo_name: str,
     repo_metadata: Dict[str, Any],
     fingerprint: str,
+    job_id: Optional[str] = None,
 ) -> None:
     """Persist repo metadata to normalized tables.
     
     Persists to table_manager:
-    - RepoLanguages: language statistics
+    - RepoLanguages: language statistics (partitioned by job_id)
     - RepoGitHubMetadata: GitHub API fields + fingerprint
     
     File contents are handled separately by cache_worker._fetch_and_cache_files.
@@ -187,16 +188,17 @@ def _persist_repo_metadata(
 
     # 1. Persist languages to normalized table
     languages = repo_metadata.get("languages", {})
-    if languages and isinstance(languages, dict):
+    if languages and isinstance(languages, dict) and job_id:
         total_bytes = sum(v for v in languages.values() if isinstance(v, (int, float)))
         lang_rows = []
+        
         for lang, byte_count in languages.items():
             if not isinstance(byte_count, (int, float)):
                 continue
             percentage = (byte_count / total_bytes * 100) if total_bytes > 0 else 0
             lang_rows.append(
                 RepoLanguagesRow(
-                    username=username,
+                    job_id=job_id,
                     repo_language_key=f"{repo_name}|{lang}",
                     repo_name=repo_name,
                     language=lang,
@@ -206,15 +208,16 @@ def _persist_repo_metadata(
             )
         if lang_rows:
             logger.info(
-                "[PERSIST_LANGUAGES_ROWS] repo=%s count=%d rows=%s",
+                "[PERSIST_LANGUAGES_ROWS] repo=%s count=%d job=%s rows=%s",
                 repo_name,
                 len(lang_rows),
+                job_id,
                 [(r.repo_language_key, r.language, r.bytes_count, r.percentage) for r in lang_rows]
             )
             
-            # Atomic batch operation with strong consistency
+            # Atomic batch operation for this job
             table_manager.batch_upsert_repo_languages(lang_rows)
-            logger.info("[PERSIST_LANGUAGES] repo=%s languages=%d", repo_name, len(lang_rows))
+            logger.info("[PERSIST_LANGUAGES] repo=%s languages=%d job=%s", repo_name, len(lang_rows), job_id)
 
     # 2. Persist GitHub metadata to normalized table (includes fingerprint)
     github_row = RepoGitHubMetadataRow(
