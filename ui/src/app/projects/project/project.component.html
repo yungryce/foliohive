@@ -29,40 +29,12 @@
       </div>
     </section>
 
-    <section
-      class="grid gap-6"
-      [ngClass]="{
-        'grid-cols-1': contentType !== 'readme' || !toc.length,
-        'lg:grid-cols-[240px_minmax(0,1fr)]': contentType === 'readme' && toc.length
-      }"
-    >
-      <nav
-        *ngIf="toc.length && contentType === 'readme'"
-        class="rounded border border-[var(--border)] bg-[var(--card)] p-4 h-max sticky top-4"
-      >
-        <h2 class="text-sm font-semibold mb-2">Table of contents</h2>
-        <ul class="space-y-1">
-          <li *ngFor="let item of toc">
-            <span
-              [style.paddingLeft.px]="(item.level - 1) * 12"
-              class="text-sm text-[var(--muted)] block"
-            >
-              {{ item.text }}
-            </span>
-          </li>
-        </ul>
-      </nav>
-
+    <section class="grid gap-6">
       <div class="project-detail bg-[var(--card)] text-[var(--fg)] p-6 rounded-lg shadow">
-        <h1 class="text-2xl font-bold mb-4">{{ r?.name }}</h1>
-        <div class="mb-4">
-          <span
-            class="chip bg-[var(--chip-bg)] text-[var(--chip-fg)] px-2 py-1 rounded"
-          >
-            {{ contentType | titlecase }}
-          </span>
-        </div>
-        <div [innerHTML]="contentHtml" class="readme-content"></div>
+        <h2 class="text-xl font-semibold mb-4">README summary</h2>
+        <div *ngIf="summaryLoading" class="text-sm text-[var(--muted)]">Generating summary…</div>
+        <div *ngIf="summaryError" class="text-sm text-red-500">{{ summaryError }}</div>
+        <div *ngIf="!summaryLoading && !summaryError" [innerHTML]="contentHtml" class="readme-summary"></div>
       </div>
     </section>
   </ng-container>

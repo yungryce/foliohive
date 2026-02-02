@@ -2,10 +2,9 @@ import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, RouterModule } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { Observable, combineLatest, map } from 'rxjs';
-import { marked } from 'marked';
+import { Observable, catchError, finalize, map, of } from 'rxjs';
 import DOMPurify from 'dompurify';
-import { RepoBundleService, SingleRepoBundleResponse } from '../../services/repo-bundle.service';
+import { AIAssistantService, ReadmeSummaryResponse } from '../../services/assistant.service';
 import { CandidateContextService } from '../../services/candidate-context.service';
 
 /**
@@ -31,17 +30,17 @@ interface RepoDetailVM {
 })
 export class ProjectComponent implements OnInit {
   private route = inject(ActivatedRoute);
-  private repoBundleService = inject(RepoBundleService);
+  private ai = inject(AIAssistantService);
   private sanitizer = inject(DomSanitizer);
   private candidateContext = inject(CandidateContextService);
 
-  contentType: 'readme' = 'readme';
   contentHtml: SafeHtml = '';
+  summaryLoading = false;
+  summaryError = '';
 
   username = '';
   repoName = '';
   repo$!: Observable<RepoDetailVM | null>;
-  toc: { text: string; id: string; level: number }[] = [];
 
   ngOnInit(): void {
     this.repoName = this.route.snapshot.paramMap.get('repo') || '';
@@ -49,27 +48,32 @@ export class ProjectComponent implements OnInit {
     const active = this.candidateContext.activeCandidate;
     this.username = active?.username ?? '';
 
-    // Fetch files (readme) and metadata (languages, stats) in parallel
-    const files$ = this.repoBundleService.getUserSingleRepoBundle(
-      this.username,
-      this.repoName,
-      undefined,
-      'readme'
-    );
-    const bundle$ = this.repoBundleService.getUserBundle(this.username);
+    if (!this.username || !this.repoName) {
+      this.summaryError = 'Missing candidate or repository.';
+      this.repo$ = of(this.toVM(null));
+      return;
+    }
 
-    this.repo$ = combineLatest([files$, bundle$]).pipe(
-      map(([files, bundle]) => {
-        // Find this repo in the bundle for metadata
-        const repoData = (bundle?.data || []).find((r: any) => r?.name === this.repoName);
-        const vm = this.toVM(repoData);
-
-        // Render primary_readme if available
-        if (files?.primary_readme) {
-          this.renderMarkdown(files.primary_readme);
+    this.summaryLoading = true;
+    this.repo$ = this.ai.getReadmeSummary(this.username, this.repoName).pipe(
+      map((res: ReadmeSummaryResponse) => {
+        const summaryHtml = res?.readme_summary_html || '';
+        if (summaryHtml) {
+          const cleanHtml = DOMPurify.sanitize(summaryHtml, { USE_PROFILES: { html: true } }) as string;
+          this.contentHtml = this.sanitizer.bypassSecurityTrustHtml(cleanHtml);
+        } else {
+          this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>No README summary available.</p>');
         }
 
-        return vm;
+        return this.toVM(res?.repo_entry ?? null);
+      }),
+      catchError(() => {
+        this.summaryError = 'Failed to load README summary.';
+        this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>README summary unavailable.</p>');
+        return of(this.toVM(null));
+      }),
+      finalize(() => {
+        this.summaryLoading = false;
       })
     );
   }
@@ -118,71 +122,4 @@ export class ProjectComponent implements OnInit {
     };
   }
 
-  private renderMarkdown(md: string): void {
-    // Extract table of contents if present
-    const { stripped, toc } = this.extractTocFromMd(md);
-    this.toc = toc;
-
-    const rawHtml = marked.parse(stripped, { async: false }) as string;
-    const cleanHtml = DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } }) as string;
-
-    const slug = (s: string) =>
-      s.toLowerCase().trim().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
-
-    const doc = new DOMParser().parseFromString(cleanHtml, 'text/html');
-    const headings = doc.body.querySelectorAll('h1,h2,h3,h4,h5,h6');
-    headings.forEach(h => {
-      const text = h.textContent || '';
-      const id = slug(text);
-      h.id = id;
-      // If no TOC was extracted, build fallback TOC from headings
-      if (!this.toc.length) {
-        const level = parseInt(h.tagName.substring(1), 10);
-        this.toc.push({ text, id, level });
-      }
-    });
-
-    this.contentHtml = this.sanitizer.bypassSecurityTrustHtml(doc.body.innerHTML);
-  }
-
-  /**
-   * Extracts a "## Table of Contents" block and returns:
-   *  - stripped markdown (TOC block removed)
-   *  - parsed toc items [{ text, id, level }]
-   */
-  private extractTocFromMd(md: string): { stripped: string; toc: { text: string; id: string; level: number }[] } {
-    const startRe = /^#{1,6}[^\n]*table of contents[^\n]*$/gim;
-    const startMatch = startRe.exec(md);
-    if (!startMatch) {
-      return { stripped: md, toc: [] };
-    }
-
-    const afterStart = startMatch.index + startMatch[0].length;
-
-    // Find next heading after the TOC heading
-    const nextHeadingRe = /^#{1,6}\s+/gm;
-    nextHeadingRe.lastIndex = afterStart;
-    const nextHeadingMatch = nextHeadingRe.exec(md);
-    const endIdx = nextHeadingMatch ? nextHeadingMatch.index : md.length;
-
-    const block = md.slice(startMatch.index, endIdx);
-
-    // List item parser: captures indentation, link text, and anchor
-    const liRe = /^(\s*)[-*+]\s+\[(.*?)\]\(#([^)]+)\)\s*$/gmi;
-
-    const toc: { text: string; id: string; level: number }[] = [];
-    let m: RegExpExecArray | null;
-
-    while ((m = liRe.exec(block)) !== null) {
-      const indent = (m[1] || '').replace(/\t/g, '    ');
-      const text = (m[2] || '').trim();
-      const rawId = (m[3] || '').trim();
-      const level = Math.min(6, Math.floor(indent.length / 2) + 1);
-      const id = rawId.replace(/^#+/, '');
-      toc.push({ text, id, level });
-    }
-
-    const stripped = md.slice(0, startMatch.index) + md.slice(endIdx);
-    return { stripped, toc };
-  }
 }

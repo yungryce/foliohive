@@ -17,6 +17,14 @@ export interface AIAssistantResponse {
   query: string;
 }
 
+export interface ReadmeSummaryResponse {
+  username: string;
+  repo: string;
+  job_id?: string;
+  repo_entry?: any;
+  readme_summary_html?: string;
+}
+
 @Injectable({ providedIn: 'root' })
 export class AIAssistantService {
   private http = inject(HttpClient);
@@ -47,6 +55,20 @@ export class AIAssistantService {
           total_repositories: 0,
           query: req.query
         } as AIAssistantResponse);
+      })
+    );
+  }
+
+  getReadmeSummary(username: string, repo: string): Observable<ReadmeSummaryResponse> {
+    const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/${encodeURIComponent(repo)}/readme-summary`;
+    return this.http.get<any>(url).pipe(
+      map(res => {
+        if (res?.status === 'success' && res?.data) return res.data as ReadmeSummaryResponse;
+        return res as ReadmeSummaryResponse;
+      }),
+      catchError(err => {
+        console.error('Readme summary request failed:', err);
+        return of({ username, repo, readme_summary_html: '' } as ReadmeSummaryResponse);
       })
     );
   }

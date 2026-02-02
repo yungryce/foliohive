@@ -255,6 +255,93 @@ def _query_repo_rows(
         return []
 
 
+def _get_repo_file_content(
+    username: str,
+    repo: str,
+    *,
+    file_type: str = "readme",
+    job_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Helper: retrieve cached file contents for a repo.
+    
+    If cache is missing, triggers a background sync job if job_id (or latest job) is available.
+    """
+    if file_type not in ("readme", "config", "all"):
+        raise ValueError("Invalid file type. Use: readme, config, or all")
+
+    repo_cache_key = cache_manager.generate_cache_key(kind="repo", username=username, repo=repo)
+    cached_result = cache_manager.get(repo_cache_key)
+
+    if cached_result.get("status") != "valid" or not cached_result.get("data"):
+        # Auto-trigger cache job if data is missing
+        resolved_job_id = job_id
+        if not resolved_job_id:
+            job = _fetch_candidate_jobs(username)
+            resolved_job_id = job.get("job_id") if job else None
+
+        if resolved_job_id:
+            logger.info(
+                "[GET_REPO_FILES_MISSING] Enqueueing cache job for user=%s repo=%s job=%s",
+                username, repo, resolved_job_id
+            )
+            queue_manager.enqueue_cache_job(
+                job_id=resolved_job_id,
+                username=username,
+                repo_name=repo,
+                trace_id=trace_id,
+            )
+            # We still raise ValueError so caller knows data is not yet ready
+            raise ValueError(f"No cached data for repository '{repo}'. Cache job enqueued.")
+            
+        raise ValueError(f"No cached data for repository '{repo}' and no job context found to trigger sync.")
+
+    repo_data = cached_result["data"]
+
+    response_payload = {
+        "username": username,
+        "repo": repo,
+        "fingerprint": repo_data.get("fingerprint"),
+    }
+
+    if file_type in ("readme", "all"):
+        response_payload["primary_readme"] = repo_data.get("readme", "")
+        response_payload["readme_files"] = repo_data.get("readme_files", {})
+
+    if file_type in ("config", "all"):
+        response_payload["config_files"] = repo_data.get("config_files", {})
+
+    return response_payload
+
+
+def _build_repo_detail_entry(
+    username: str,
+    repo_name: str,
+    *,
+    job_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Helper: build a single repo bundle entry using normalized tables."""
+    job = _fetch_candidate_jobs(username, job_id)
+    resolved_job_id = job.get("job_id") if job else None
+
+    repo_rows = _query_repo_rows(username, job_id=resolved_job_id, repo_names=[repo_name])
+    github_metadata = repo_rows[0] if repo_rows else None
+
+    languages = None
+    if resolved_job_id:
+        all_languages = table_manager.query_repo_languages(resolved_job_id)
+        languages = all_languages.get(repo_name)
+
+    entry = _repo_row_to_bundle_entry(languages=languages, github_metadata=github_metadata)
+    if not entry.get("name"):
+        entry["name"] = repo_name
+
+    return {
+        "job_id": resolved_job_id,
+        "repo_entry": entry,
+    }
+
+
 def _repo_row_to_bundle_entry(
     languages: Optional[List[Dict[str, Any]]] = None,
     github_metadata: Optional[Dict[str, Any]] = None,
@@ -358,8 +445,8 @@ def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[
 
     # Build entries from GitHub metadata (repo_rows now contains RepoGitHubMetadata)
     # Query all languages once and group by repo_name (more efficient than N queries)
-    all_languages_by_repo = table_manager.query_repo_languages(username)
-    
+    all_languages_by_repo = table_manager.query_repo_languages(job_id) if job_id else {}
+
     for github_meta in repo_rows:
         repo_name = github_meta.get("repo_name")
         if not repo_name:
@@ -582,100 +669,50 @@ def health_check(req: func.HttpRequest) -> func.HttpResponse:
     return _create_success_response(status, cache_control="no-cache")
 
 
-@bp.route(route="candidate/{username}/{repo}/files", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_repo_files(req: func.HttpRequest) -> func.HttpResponse:
-    """Retrieve file contents for a specific repository.
-    
-    Returns cached file contents (README, config files) without loading entire
-    portfolio. Files are cached by cache_worker after metadata sync completes.
-    
-    Query parameters:
-        type (optional): File type to retrieve
-            - "readme" (default): Primary README + additional README files
-            - "config": Configuration files (Dockerfile, package.json, etc.)
-            - "all": Both README and config files
-    
-    Returns:
-        200: Files retrieved successfully
-        404: Repository not cached (trigger refresh first)
-        400: Invalid parameters
-    
-    Response structure:
-        {
-            "username": str,
-            "repo": str,
-            "fingerprint": str,
-            "primary_readme": str,      // When type=readme or all
-            "readme_files": {           // When type=readme or all
-                "path/to/readme.md": str
-            },
-            "config_files": {           // When type=config or all
-                "Dockerfile": str,
-                "package.json": str
-            }
-        }
-    
-    Cache-Control: public, max-age=3600 (files are immutable per fingerprint)
-    """
+@bp.route(route="candidate/{username}/{repo}/readme-summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_repo_readme_summary(req: func.HttpRequest) -> func.HttpResponse:
+    """Generate an AI summary for a repository README (HTML output)."""
     username = req.route_params.get("username")
     repo = req.route_params.get("repo")
     if not username or not repo:
         return _create_error_response("Username and repository name are required", 400)
-
-    file_type = req.params.get("type", "readme").lower()
-    if file_type not in ("readme", "config", "all"):
-        return _create_error_response("Invalid file type. Use: readme, config, or all", 400)
-
     trace = _get_trace_context(req)
     logger.info(
-        "[REPO_FILES_REQUEST] request_id=%s username=%s repo=%s type=%s",
+        "[REPO_README_SUMMARY_REQUEST] request_id=%s username=%s repo=%s",
         trace["request_id"],
         username,
         repo,
-        file_type,
     )
 
-    # Retrieve full repo payload from blob cache (where files live)
-    repo_cache_key = cache_manager.generate_cache_key(kind="repo", username=username, repo=repo)
-    cached_result = cache_manager.get(repo_cache_key)
+    try:
+        files_payload = _get_repo_file_content(username, repo, file_type="readme")
+        primary_readme = files_payload.get("primary_readme") or ""
+    except ValueError as exc:
+        return _create_error_response(str(exc), 404)
 
-    if cached_result.get("status") != "valid" or not cached_result.get("data"):
-        logger.info(
-            "[REPO_FILES_RESPONSE] request_id=%s username=%s repo=%s status=not_found",
-            trace["request_id"],
-            username,
-            repo,
-        )
-        return _create_error_response(
-            f"No cached data for repository '{repo}'. Trigger refresh first.",
-            404
-        )
+    if not primary_readme:
+        return _create_error_response("No README content available", 404)
 
-    repo_data = cached_result["data"]
+    assistant = AIAssistant(username=username)
+    summary_html = assistant.summarize_readme_html(primary_readme, repo_name=repo)
 
-    # Extract requested file types
-    response_payload = {
+    detail = _build_repo_detail_entry(username, repo, job_id=None)
+    payload = {
         "username": username,
         "repo": repo,
-        "fingerprint": repo_data.get("fingerprint"),
+        "job_id": detail.get("job_id"),
+        "repo_entry": detail.get("repo_entry"),
+        "readme_summary_html": summary_html,
     }
 
-    if file_type == "readme" or file_type == "all":
-        response_payload["primary_readme"] = repo_data.get("readme", "")
-        response_payload["readme_files"] = repo_data.get("readme_files", {})
-
-    if file_type == "config" or file_type == "all":
-        response_payload["config_files"] = repo_data.get("config_files", {})
-
     logger.info(
-        "[REPO_FILES_RESPONSE] request_id=%s username=%s repo=%s type=%s status=success",
+        "[REPO_README_SUMMARY_RESPONSE] request_id=%s username=%s repo=%s status=success",
         trace["request_id"],
         username,
         repo,
-        file_type,
     )
 
-    return _create_success_response(response_payload, cache_control="public, max-age=3600")
+    return _create_success_response(payload, cache_control="no-cache")
 
 
 @bp.route(route="candidate/{username}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
@@ -1157,11 +1194,26 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
     if not repos_bundle:
         return _create_error_response("No repository bundle available. Trigger refresh first.", 400)
 
+    include_readme_summary = bool(body.get("include_readme_summary"))
+    repo_name = body.get("repo_name")
+    readme_summary_html = None
+    if include_readme_summary and repo_name:
+        try:
+            files_payload = _get_repo_file_content(username, repo_name, file_type="readme")
+            primary_readme = files_payload.get("primary_readme") or ""
+            if primary_readme:
+                assistant = AIAssistant(username=username)
+                readme_summary_html = assistant.summarize_readme_html(primary_readme, repo_name=repo_name)
+        except Exception:
+            readme_summary_html = None
+
     try:
         scoring_service = RepoScoringService(username=username)
         scored = scoring_service.score_repositories(query, repos_bundle)
         assistant = AIAssistant(username=username)
         response = assistant.process_scored_repositories(query, scored)
+        if readme_summary_html:
+            response["readme_summary_html"] = readme_summary_html
         return _create_success_response(response)
     except Exception as exc:
         logger.error("AI query failed: %s", exc, exc_info=True)

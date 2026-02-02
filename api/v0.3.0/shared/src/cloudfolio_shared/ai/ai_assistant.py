@@ -58,11 +58,8 @@ class AIAssistant:
             # Get top repositories
             top_repos = scored_repos[:max_repos]
             
-            # Build tiered context for AI
-            context = self.build_tiered_context(top_repos)
-            
             # Generate AI system message with context
-            system_message = self.build_rules_context(context, query=query)
+            system_message = self.build_rules_context(top_repos, query=query)
 
             # Get LLM response
             if not self.groq_api_key:
@@ -95,7 +92,7 @@ class AIAssistant:
                 "query": query
             }
         except Exception as e:
-            logger.error(f"Error during AI processing: {str(e)}", exc_info=True)
+            logger.error("Error during AI processing: %s", str(e), exc_info=True)
             return {
                 "response": f"Error processing query: {str(e)}",
                 "repositories_used": [],
@@ -103,63 +100,8 @@ class AIAssistant:
                 "query": query
             }
 
-    def build_tiered_context(self, top_repos: List[Dict]) -> Dict[str, Any]:
-        """
-        Builds a context dict for the top repositories using pre-fetched content from repo bundles.
-        
-        Args:
-            top_repos: List of repository bundles with pre-fetched content and scoring
-            max_repos: Maximum number of repositories to include in context
-        
-        Returns:
-            Dictionary with primary_repo, secondary_repo, and tertiary_repo context
-        """
-        context = {}
-        for i, repo in enumerate(top_repos):
-            # Compose context for each repo - no truncation due to large context window
-            repo_context = {
-                "name": repo.get("name", "unknown"),
-                "readme": repo.get("readme", ""),
-                "skills_index": repo.get("skills_index", ""),
-                "architecture": repo.get("architecture", ""),
-                "context": repo.get("repoContext", {}),
-                "languages": repo.get("languages", ""),
-                # Add score metadata for awareness in the prompt
-                "score_metadata": {
-                    "context_score": repo.get("context_score", 0),
-                    "language_score": repo.get("language_score", 0),
-                    "type_score": repo.get("type_score", 0),
-                    "total_relevance_score": repo.get("total_relevance_score", 0)
-                }
-            }
-            
-            # Assign to tiered context
-            if i == 0:
-                context['primary_repo'] = repo_context
-            elif i == 1:
-                context['secondary_repo'] = repo_context
-            elif i == 2:
-                context['tertiary_repo'] = repo_context
-        
-        return context
 
-    def _repo_section(self, repo: Dict[str, Any], label: str) -> str:
-        if not repo:
-            return ""
-        lines: List[str] = [f"{label.upper()} REPOSITORY: {repo.get('name', 'Unknown')}", "-" * 40]
-        if repo.get("readme"):
-            lines.append(f"README\n{repo['readme']}")
-        if repo.get("skills_index"):
-            lines.append(f"SKILLS INDEX\n{repo['skills_index']}")
-        return "\n".join(lines)
 
-    def _architecture_sections(self, tiered_context: Dict[str, Any]) -> List[str]:
-        parts: List[str] = []
-        for label in ["primary_repo", "secondary_repo", "tertiary_repo"]:
-            repo = tiered_context.get(label)
-            if repo and repo.get("architecture"):
-                parts.append(f"{label.upper()} ARCHITECTURE.md:\n{repo['architecture']}")
-        return parts
 
     def build_rules_context(self, tiered_context: Dict[str, Any], query: str, options: Optional[Dict[str, Any]] = None) -> str:
         """
@@ -263,7 +205,7 @@ class AIAssistant:
         if not self.openai_client:
             return "I'm sorry, but the AI service is not configured. Please check the Groq API key."
         try:
-            logger.info(f"Request ID: {request_id} - Calling Groq API")
+            logger.info("Request ID: %s - Calling Groq API", request_id)
             response = self.openai_client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
@@ -275,9 +217,48 @@ class AIAssistant:
                 stream=False
             )
             ai_response = response.choices[0].message.content
-            logger.info(f"Request ID: {request_id} - Received AI response ({len(ai_response)} chars)")
+            logger.info("Request ID: %s - Received AI response (%s chars)", request_id, len(ai_response))
             return ai_response
         except Exception as e:
-            logger.error(f"Request ID: {request_id} - Groq API error: {str(e)}")
+            logger.error("Request ID: %s - Groq API error: %s", request_id, str(e))
             return f"I encountered an error while processing your query with the AI service: {str(e)}"
+
+
+    def summarize_readme_html(self, readme_text: str, repo_name: Optional[str] = None) -> str:
+        """Summarize a README into HTML formatted for the project detail view."""
+        if not readme_text:
+            return "<p>No README content available.</p>"
+        if not self.openai_client:
+            return "<p>AI service not configured. Please check the Groq API key.</p>"
+
+        system_message = self._build_readme_summary_system(repo_name)
+        query = (
+            f"Repository: {repo_name or 'Unknown'}\n\n"
+            "README:\n"
+            f"{readme_text}"
+        )
+        request_id = f"readme-{int(time.time())}"
+        return self.call_groq_api(system_message, query, request_id)
+
+    def _build_readme_summary_system(self, repo_name: Optional[str] = None) -> str:
+        """Build a system prompt that returns HTML-only README summary output."""
+        repo_label = repo_name or "the repository"
+        return (
+            "You are an assistant that summarizes GitHub README files into clean HTML.\n"
+            f"Summarize the README for {repo_label}.\n\n"
+            "Output rules:\n"
+            "- Return ONLY valid HTML (no Markdown, no code fences).\n"
+            "- Do not include <html>, <head>, or <body> tags.\n"
+            "- Use semantic tags: <h2>, <h3>, <p>, <ul>, <li>, <code>, <pre>, <a>.\n"
+            "- Keep it concise (6-12 short bullets/paragraphs total).\n"
+            "- If setup/run steps exist, include them in a short list.\n"
+            "- Avoid inline styles; rely on the host application's CSS.\n"
+            "- If a detail is not in the README, omit it.\n\n"
+            "Structure:\n"
+            "- <h2>Overview</h2> then 1-2 paragraphs\n"
+            "- <h3>Key Features</h3> with a bullet list\n"
+            "- <h3>Tech Stack</h3> with a bullet list (if present)\n"
+            "- <h3>How to Run</h3> with steps (if present)\n"
+            "- <h3>Notes</h3> for caveats or missing pieces (optional)\n"
+        )
 

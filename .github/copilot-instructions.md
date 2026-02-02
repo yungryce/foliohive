@@ -8,3 +8,12 @@
 - Always prefer explicitness over implicitness
 - Always prefer simplicity over complexity
 - When my query has a question mark, answer the question first before providing any additional information
+
+
+<!-- simplify #file:project.component.ts to remove the following implementation
+
+call to #sym:getUserBundle : already done in #file:projects.component.ts 
+#sym:renderMarkdown : we will not be rendering markdown
+#sym:extractTocFromMd : stale -->
+
+
