@@ -143,10 +143,18 @@ class CacheManager:
         username = kwargs.get("username")
         repo = kwargs.get("repo")
         fingerprint = kwargs.get("fingerprint")
+        file_type = kwargs.get("file_type")
+        filename = kwargs.get("filename")
 
         if kind != "model" and not username:
             raise ValueError("Username is required to generate cache key")
 
+        if kind == "file":
+            if not repo or not file_type or not filename:
+                raise ValueError("repo, file_type, and filename are required for kind='file'")
+            safe_repo = str(repo).replace("/", "_").replace(" ", "_")
+            safe_filename = str(filename).replace("/", "_").replace(" ", "_")
+            return f"file_{username}_{safe_repo}_{file_type}_{safe_filename}"
         if kind == "repo" and repo:
             safe_repo = str(repo).replace("/", "_").replace(" ", "_")
             return f"repo_level_bundle_{username}_{safe_repo}"

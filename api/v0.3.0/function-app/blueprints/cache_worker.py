@@ -137,37 +137,26 @@ def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] 
     
     config_files = discovery.get("config_files", {})
     readme_files = discovery.get("readme_files", {})
-    primary_readme = discovery.get("readme", "")
+    primary_readme = discovery.get("primary_readme", "")
     api_usage = discovery.get("api_usage", {})
     
     # Cache individual file blobs for selective retrieval
     cached_count = 0
     
-    # Cache readme files
+    # Cache readme files (excluding the one used as primary readme)
     for filename, content in readme_files.items():
+        cache_filename = "PRIMARY" if content == primary_readme else filename
         file_key = cache_manager.generate_cache_key(
             kind="file",
             username=username,
             repo=repo_name,
             file_type="readme",
-            filename=filename,
+            filename=cache_filename,
         )
+        logger.info("Caching readme file: repo=%s file=%s key=%s", repo_name, cache_filename, file_key)
         cache_manager.save(file_key, content, ttl=None)
         cached_count += 1
-        logger.debug("[FILE_CACHED] repo=%s type=readme file=%s", repo_name, filename)
-    
-    # Cache primary readme separately
-    if primary_readme:
-        primary_key = cache_manager.generate_cache_key(
-            kind="file",
-            username=username,
-            repo=repo_name,
-            file_type="readme",
-            filename="PRIMARY",
-        )
-        cache_manager.save(primary_key, primary_readme, ttl=None)
-        cached_count += 1
-        logger.debug("[FILE_CACHED] repo=%s type=readme file=PRIMARY", repo_name)
+        logger.debug("[FILE_CACHED] repo=%s type=readme file=%s", repo_name, cache_filename)
     
     # Cache config files
     for filename, content in config_files.items():
@@ -178,6 +167,7 @@ def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] 
             file_type="config",
             filename=filename,
         )
+        logger.info("Caching config file: repo=%s file=%s key=%s", repo_name, filename, file_key)
         cache_manager.save(file_key, content, ttl=None)
         cached_count += 1
         logger.debug("[FILE_CACHED] repo=%s type=config file=%s", repo_name, filename)

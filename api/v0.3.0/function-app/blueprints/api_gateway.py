@@ -209,6 +209,140 @@ def _record_user_session(trace: Dict[str, str], username: str, job_id: Optional[
             exc,
         )
 
+def _check_repo_cache_status(
+    username: str,
+    repo: str,
+    *,
+    job_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Check cache status for a repo and enqueue job if needed.
+    
+    Returns:
+        Dict with keys: status, job_id, cache_message_id, error
+        status: "cached" | "processing" | "pending" | "failed" | "not_found"
+    """
+    # Resolve job_id if not provided
+    resolved_job_id = job_id
+    if not resolved_job_id:
+        job = _fetch_candidate_jobs(username)
+        resolved_job_id = job.get("job_id") if job else None
+    
+    if not resolved_job_id:
+        return {
+            "status": "not_found",
+            "message": "No job found for user. Trigger a refresh first.",
+        }
+    
+    # Check RepoSyncStatus
+    repo_status = table_manager.get_repo_status(resolved_job_id, repo)
+    current_status = repo_status.get("status") if repo_status else None
+    cache_message_id = repo_status.get("cache_message_id") if repo_status else None
+    error = repo_status.get("error") if repo_status else None
+    
+    logger.info(
+        "[CACHE_STATUS_CHECK] repo=%s job=%s status=%s cache_message_id=%s",
+        repo, resolved_job_id, current_status, cache_message_id
+    )
+    
+    result = {
+        "job_id": resolved_job_id,
+        "cache_message_id": cache_message_id,
+    }
+    
+    if current_status == "cached":
+        result["status"] = "cached"
+        result["message"] = "Files are cached and ready."
+    elif current_status == "synced" and cache_message_id:
+        result["status"] = "processing"
+        result["message"] = "Cache job is in progress."
+    elif current_status == "failed":
+        # Re-enqueue on failed status
+        logger.info(
+            "[CACHE_STATUS_RETRY] repo=%s job=%s - Previous cache job failed, re-enqueueing",
+            repo, resolved_job_id
+        )
+        queue_manager.enqueue_cache_job(
+            job_id=resolved_job_id,
+            username=username,
+            repo_name=repo,
+            trace_id=trace_id,
+        )
+        result["status"] = "processing"
+        result["message"] = "Previous cache job failed. Re-enqueued for retry."
+        result["error"] = error
+    elif current_status == "pending" or not repo_status:
+        # Enqueue cache job
+        logger.info(
+            "[CACHE_STATUS_ENQUEUE] repo=%s job=%s status=%s - Enqueueing cache job",
+            repo, resolved_job_id, current_status or "none"
+        )
+        queue_manager.enqueue_cache_job(
+            job_id=resolved_job_id,
+            username=username,
+            repo_name=repo,
+            trace_id=trace_id,
+        )
+        result["status"] = "processing"
+        result["message"] = "Cache job enqueued."
+    else:
+        result["status"] = "pending"
+        result["message"] = f"Unexpected status: {current_status}"
+    
+    return result
+
+
+def _get_repo_file_content(
+    username: str,
+    repo: str,
+    *,
+    file_type: str = "readme",
+) -> Dict[str, Any]:
+    """Helper: retrieve cached file contents for a repo.
+    
+    Retrieves individual cached files (kind="file") by type.
+    Raises ValueError if cache is not available.
+    """
+    if file_type not in ("readme", "config", "all"):
+        raise ValueError("Invalid file type. Use: readme, config, or all")
+
+    response_payload = {
+        "username": username,
+        "repo": repo,
+    }
+
+    # Retrieve readme files
+    if file_type in ("readme", "all"):
+        readme_files = {}
+        primary_readme = ""
+        
+        # Retrieve primary readme
+        primary_key = cache_manager.generate_cache_key(
+            kind="file",
+            username=username,
+            repo=repo,
+            file_type="readme",
+            filename="PRIMARY",
+        )
+        primary_result = cache_manager.get(primary_key)
+        logger.info("Retrieved primary readme cache for user=%s repo=%s status=%s primary_key=%s", username, repo, primary_result.get("status"), primary_key)
+        if primary_result.get("status") == "valid":
+            primary_readme = primary_result.get("data", "")
+            logger.debug("Retrieved primary readme for user=%s repo=%s", username, repo)
+        
+        response_payload["primary_readme"] = primary_readme
+        response_payload["readme_files"] = readme_files
+
+    # Retrieve config files
+    if file_type in ("config", "all"):
+        config_files = {}
+        response_payload["config_files"] = config_files
+
+    logger.info("Retrieved file content for user=%s repo=%s file_type=%s", username, repo, file_type)
+
+    return response_payload
+
+
 def _query_repo_rows(
     username: str,
     job_id: Optional[str] = None,
@@ -253,65 +387,6 @@ def _query_repo_rows(
     except Exception:
         logger.warning("Failed to query GitHub metadata for user=%s job=%s", username, job_id or "none", exc_info=True)
         return []
-
-
-def _get_repo_file_content(
-    username: str,
-    repo: str,
-    *,
-    file_type: str = "readme",
-    job_id: Optional[str] = None,
-    trace_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Helper: retrieve cached file contents for a repo.
-    
-    If cache is missing, triggers a background sync job if job_id (or latest job) is available.
-    """
-    if file_type not in ("readme", "config", "all"):
-        raise ValueError("Invalid file type. Use: readme, config, or all")
-
-    repo_cache_key = cache_manager.generate_cache_key(kind="repo", username=username, repo=repo)
-    cached_result = cache_manager.get(repo_cache_key)
-
-    if cached_result.get("status") != "valid" or not cached_result.get("data"):
-        # Auto-trigger cache job if data is missing
-        resolved_job_id = job_id
-        if not resolved_job_id:
-            job = _fetch_candidate_jobs(username)
-            resolved_job_id = job.get("job_id") if job else None
-
-        if resolved_job_id:
-            logger.info(
-                "[GET_REPO_FILES_MISSING] Enqueueing cache job for user=%s repo=%s job=%s",
-                username, repo, resolved_job_id
-            )
-            queue_manager.enqueue_cache_job(
-                job_id=resolved_job_id,
-                username=username,
-                repo_name=repo,
-                trace_id=trace_id,
-            )
-            # We still raise ValueError so caller knows data is not yet ready
-            raise ValueError(f"No cached data for repository '{repo}'. Cache job enqueued.")
-            
-        raise ValueError(f"No cached data for repository '{repo}' and no job context found to trigger sync.")
-
-    repo_data = cached_result["data"]
-
-    response_payload = {
-        "username": username,
-        "repo": repo,
-        "fingerprint": repo_data.get("fingerprint"),
-    }
-
-    if file_type in ("readme", "all"):
-        response_payload["primary_readme"] = repo_data.get("readme", "")
-        response_payload["readme_files"] = repo_data.get("readme_files", {})
-
-    if file_type in ("config", "all"):
-        response_payload["config_files"] = repo_data.get("config_files", {})
-
-    return response_payload
 
 
 def _build_repo_detail_entry(
@@ -669,6 +744,43 @@ def health_check(req: func.HttpRequest) -> func.HttpResponse:
     return _create_success_response(status, cache_control="no-cache")
 
 
+@bp.route(route="candidate/{username}/{repo}/cache-status", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_repo_cache_status(req: func.HttpRequest) -> func.HttpResponse:
+    """Check cache status for a repository and enqueue job if needed."""
+    username = req.route_params.get("username")
+    repo = req.route_params.get("repo")
+    if not username or not repo:
+        return _create_error_response("Username and repository name are required", 400)
+    
+    trace = _get_trace_context(req)
+    job_id = req.params.get("job_id")
+    
+    logger.info(
+        "[CACHE_STATUS_REQUEST] request_id=%s username=%s repo=%s job_id=%s",
+        trace["request_id"],
+        username,
+        repo,
+        job_id or "auto",
+    )
+    
+    status_result = _check_repo_cache_status(
+        username,
+        repo,
+        job_id=job_id,
+        trace_id=trace.get("trace_id"),
+    )
+    
+    logger.info(
+        "[CACHE_STATUS_RESPONSE] request_id=%s username=%s repo=%s status=%s",
+        trace["request_id"],
+        username,
+        repo,
+        status_result.get("status"),
+    )
+    
+    return _create_success_response(status_result, cache_control="no-cache")
+
+
 @bp.route(route="candidate/{username}/{repo}/readme-summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_repo_readme_summary(req: func.HttpRequest) -> func.HttpResponse:
     """Generate an AI summary for a repository README (HTML output)."""
@@ -684,19 +796,50 @@ def get_repo_readme_summary(req: func.HttpRequest) -> func.HttpResponse:
         repo,
     )
 
+    # Check cache status first
+    status_result = _check_repo_cache_status(
+        username,
+        repo,
+        trace_id=trace.get("trace_id"),
+    )
+    
+    if status_result.get("status") != "cached":
+        logger.info(
+            "[REPO_README_SUMMARY_PENDING] request_id=%s username=%s repo=%s status=%s",
+            trace["request_id"],
+            username,
+            repo,
+            status_result.get("status"),
+        )
+        return _create_error_response(
+            status_result.get("message", "Cache not ready"),
+            202,  # Accepted - processing
+            error_code="CACHE_NOT_READY",
+            request_id=trace["request_id"],
+        )
+    else:
+        logger.info(
+            "[REPO_README_SUMMARY_CACHED] request_id=%s username=%s repo=%s - Cache is ready, status=%s",
+            trace["request_id"],
+            username,
+            repo,
+            status_result.get("status"),
+        )
+    
+    # Cache is ready - retrieve and generate summary
     try:
         files_payload = _get_repo_file_content(username, repo, file_type="readme")
         primary_readme = files_payload.get("primary_readme") or ""
     except ValueError as exc:
-        return _create_error_response(str(exc), 404)
+        return _create_error_response(str(exc), 404, request_id=trace["request_id"])
 
     if not primary_readme:
-        return _create_error_response("No README content available", 404)
+        return _create_error_response("No README content available", 404, request_id=trace["request_id"])
 
     assistant = AIAssistant(username=username)
     summary_html = assistant.summarize_readme_html(primary_readme, repo_name=repo)
 
-    detail = _build_repo_detail_entry(username, repo, job_id=None)
+    detail = _build_repo_detail_entry(username, repo, job_id=status_result.get("job_id"))
     payload = {
         "username": username,
         "repo": repo,

@@ -43,36 +43,55 @@ export class ProjectComponent implements OnInit {
   repo$!: Observable<RepoDetailVM | null>;
 
   ngOnInit(): void {
+    console.log('[ProjectComponent] ngOnInit - Starting initialization');
     this.repoName = this.route.snapshot.paramMap.get('repo') || '';
+    console.log('[ProjectComponent] repoName:', this.repoName);
 
     const active = this.candidateContext.activeCandidate;
     this.username = active?.username ?? '';
+    console.log('[ProjectComponent] username:', this.username);
 
     if (!this.username || !this.repoName) {
+      console.error('[ProjectComponent] Missing candidate or repository:', { username: this.username, repoName: this.repoName });
       this.summaryError = 'Missing candidate or repository.';
       this.repo$ = of(this.toVM(null));
       return;
     }
 
+    console.log('[ProjectComponent] Starting polling for readme:', { username: this.username, repoName: this.repoName });
     this.summaryLoading = true;
-    this.repo$ = this.ai.getReadmeSummary(this.username, this.repoName).pipe(
+    
+    // Use polling to wait for cache to be ready
+    this.repo$ = this.ai.pollForReadme(this.username, this.repoName).pipe(
       map((res: ReadmeSummaryResponse) => {
+        console.log('[ProjectComponent] Readme summary received:', { 
+          username: res.username, 
+          repo: res.repo, 
+          hasSummary: !!res.readme_summary_html 
+        });
         const summaryHtml = res?.readme_summary_html || '';
         if (summaryHtml) {
           const cleanHtml = DOMPurify.sanitize(summaryHtml, { USE_PROFILES: { html: true } }) as string;
           this.contentHtml = this.sanitizer.bypassSecurityTrustHtml(cleanHtml);
+          console.log('[ProjectComponent] Summary HTML processed successfully');
         } else {
+          console.warn('[ProjectComponent] No README summary available');
           this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>No README summary available.</p>');
         }
 
         return this.toVM(res?.repo_entry ?? null);
       }),
-      catchError(() => {
-        this.summaryError = 'Failed to load README summary.';
+      catchError((err) => {
+        console.error('[ProjectComponent] Error loading README summary:', err);
+        // Extract meaningful error message from HttpErrorResponse or generic error
+        const errorMsg = err?.message || err?.error?.message || 'Failed to load README summary.';
+        this.summaryError = errorMsg;
+        console.error('[ProjectComponent] Setting error message:', this.summaryError);
         this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>README summary unavailable.</p>');
         return of(this.toVM(null));
       }),
       finalize(() => {
+        console.log('[ProjectComponent] Polling finalized, setting loading to false');
         this.summaryLoading = false;
       })
     );
