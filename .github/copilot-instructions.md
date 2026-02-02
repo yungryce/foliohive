@@ -9,11 +9,8 @@
 - Always prefer simplicity over complexity
 - When my query has a question mark, answer the question first before providing any additional information
 
-
-<!-- simplify #file:project.component.ts to remove the following implementation
-
-call to #sym:getUserBundle : already done in #file:projects.component.ts 
-#sym:renderMarkdown : we will not be rendering markdown
-#sym:extractTocFromMd : stale -->
-
-
+# Workflow
+api/v0.3.0/function-app/blueprints/api_gateway.py
+`trigger_candidate_refresh()` in `api_gateway.py` starts process and triggers fresh candidate job. This performs reository discovery and then enqueues `process_sync_job()` in `sync_worker.py`
+`process_sync_job()` fetches all repo metadata, updates table metadata and status fields and then enqueues `process_cache_job()` in `cache_worker.py`
+`process_cache_job()` in `cache_worker.py` performs repository discovery, identifies primary readme, and caches readme files using `cache_manager`
