@@ -24,7 +24,6 @@ __all__ = [
     "JobMetadataRow",
     "SessionCandidateRow",
     "RepoLanguagesRow",
-    "RepoFileTypesRow",
     "RepoGitHubMetadataRow",
     "RepoSyncStatusRow",
     "RepoAPIUsageRow",
@@ -44,7 +43,6 @@ class TableNames:
     session_candidates: str = "SessionCandidates"
     repo_metadata: str = "RepoMetadata"
     repo_languages: str = "RepoLanguages"
-    repo_file_types: str = "RepoFileTypes"
     repo_github_metadata: str = "RepoGitHubMetadata"
     model_metadata: str = "ModelMetadata"
     repo_sync_status: str = "RepoSyncStatus"
@@ -91,17 +89,6 @@ class RepoLanguagesRow:
     percentage: Optional[float] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
-
-
-@dataclass
-class RepoFileTypesRow:
-
-    username: str  # PartitionKey
-    repo_type_key: str  # RowKey: "{repo_name}#{category}"
-    repo_name: str
-    category: str
-    file_path: str
-    file_type: str
 
 
 @dataclass
@@ -332,7 +319,6 @@ class TableManager:
             self.table_names.job_metadata,
             self.table_names.session_candidates,
             self.table_names.repo_languages,
-            self.table_names.repo_file_types,
             self.table_names.repo_github_metadata,
             self.table_names.model_metadata,
             self.table_names.repo_sync_status,
@@ -886,75 +872,6 @@ class TableManager:
             payload["topics"] = json.loads(payload.get("topics") or "[]")
         except json.JSONDecodeError:
             payload["topics"] = []
-        return payload
-
-    # ------------------------------------------------------------------
-    # Repo file types
-    # -------------------------------------------------------------------
-
-    def upsert_repo_file_types(self, row: RepoFileTypesRow) -> None:
-        """Store file type categorization for a repository."""
-        table = self._get_table_client(self.table_names.repo_file_types)
-        if not table:
-            return
-        now = _azure_safe_timestamp()
-        entity: Dict[str, Any] = {
-            "PartitionKey": row.username,
-            "RowKey": f"{row.repo_name}|{row.category}",
-            "repo_name": row.repo_name,
-            "category": row.category,
-            "types": _safe_json_dump_limited(row.types or [], label="file_types.types"),
-            "created_at": row.created_at or now,
-            "updated_at": now,
-        }
-        table.upsert_entity(entity, mode=UpdateMode.REPLACE)
-
-    def batch_upsert_repo_file_types(self, rows: List[RepoFileTypesRow]) -> None:
-        """Batch insert file types - replaces all existing for username+repo."""
-        if not rows:
-            return
-        table = self._get_table_client(self.table_names.repo_file_types)
-        if not table:
-            return
-        
-        # Group by username+repo to delete existing entries first
-        by_repo: Dict[tuple[str, str], List[RepoFileTypesRow]] = {}
-        for row in rows:
-            key = (row.username, row.repo_name)
-            by_repo.setdefault(key, []).append(row)
-        
-        for (username, repo_name), repo_rows in by_repo.items():
-            # Delete existing entries for this repo (materialize list to avoid iterator issues)
-            filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
-            existing = list(table.list_entities(filter=filter_str))
-            for entity in existing:
-                table.delete_entity(partition_key=entity["PartitionKey"], row_key=entity["RowKey"])
-            
-            # Insert new entries
-            for row in repo_rows:
-                self.upsert_repo_file_types(row)
-        
-        logger.info("[TABLE_BATCH_UPSERT_FILE_TYPES] rows=%d", len(rows))
-
-    def query_repo_file_types(self, username: str, repo_name: str) -> List[Dict[str, Any]]:
-        """Query all file type categories for a repository."""
-        table = self._get_table_client(self.table_names.repo_file_types)
-        if not table:
-            return []
-        filter_str = f"PartitionKey eq '{username}' and repo_name eq '{repo_name}'"
-        entities = list(table.list_entities(filter=filter_str))
-        return [self._deserialize_repo_file_types(e) for e in entities]
-
-    def _deserialize_repo_file_types(self, entity: Dict[str, Any]) -> Dict[str, Any]:
-        payload = dict(entity)
-        for meta_key in _AZURE_META_FIELDS:
-            payload.pop(meta_key, None)
-        payload["username"] = payload.pop("PartitionKey", None)
-        payload.pop("RowKey", None)
-        try:
-            payload["types"] = json.loads(payload.get("types") or "[]")
-        except json.JSONDecodeError:
-            payload["types"] = []
         return payload
 
     # ------------------------------------------------------------------
