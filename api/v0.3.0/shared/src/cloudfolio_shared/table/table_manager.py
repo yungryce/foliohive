@@ -41,7 +41,6 @@ class TableNames:
 
     job_metadata: str = "JobMetadata"
     session_candidates: str = "SessionCandidates"
-    repo_metadata: str = "RepoMetadata"
     repo_languages: str = "RepoLanguages"
     repo_github_metadata: str = "RepoGitHubMetadata"
     model_metadata: str = "ModelMetadata"
@@ -277,7 +276,6 @@ class TableManager:
         self.table_names = table_names or TableNames(
             job_metadata=os.getenv("TABLE_JOB_METADATA", TableNames.job_metadata),
             session_candidates=os.getenv("TABLE_SESSION_CANDIDATES", TableNames.session_candidates),
-            repo_metadata=os.getenv("TABLE_REPO_METADATA", TableNames.repo_metadata),
             model_metadata=os.getenv("TABLE_MODEL_METADATA", TableNames.model_metadata),
         )
 
