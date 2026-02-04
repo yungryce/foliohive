@@ -131,27 +131,29 @@ class TrainingWorker:
 
             # Query normalized tables to reconstruct full document
             # 1. Languages
-            lang_rows = table_manager.query_repo_languages(username, repo_name)
-            if lang_rows:
-                entry["languages"] = {row["language"]: row["bytes_count"] for row in lang_rows}
-            else:
-                entry["languages"] = {}
+            languages_by_repo = table_manager.query_repo_languages(job_id)
+            lang_rows = languages_by_repo.get(repo_name, [])
+            entry["languages"] = {row.get("language"): row.get("bytes_count", 0) for row in lang_rows if row.get("language")}
 
             # 2. File types
             file_type_rows = table_manager.query_repo_file_types(username, repo_name)
-            if file_type_rows:
-                entry["categorized_types"] = {row["category"]: row["types"] for row in file_type_rows}
-            else:
-                entry["categorized_types"] = {}
+            categorized: Dict[str, set[str]] = {}
+            for row in file_type_rows or []:
+                category = row.get("category")
+                file_type = row.get("file_type")
+                if not category or not file_type:
+                    continue
+                categorized.setdefault(category, set()).add(file_type)
+            entry["categorized_types"] = {cat: sorted(list(types)) for cat, types in categorized.items()}
 
             # 3. GitHub metadata fields
             entry["metadata"] = {
                 "name": repo_name,
                 "description": github_meta.get("description"),
                 "topics": github_meta.get("topics", []),
-                "homepage": github_meta.get("homepage"),
-                "stargazers_count": github_meta.get("stars"),
-                "forks_count": github_meta.get("forks"),
+                "homepage": github_meta.get("homepage_url"),
+                "stargazers_count": github_meta.get("stars_count"),
+                "forks_count": github_meta.get("forks_count"),
                 "fork": github_meta.get("is_fork"),
                 "archived": github_meta.get("is_archived"),
                 "license": {"name": github_meta.get("license_name")} if github_meta.get("license_name") else None,

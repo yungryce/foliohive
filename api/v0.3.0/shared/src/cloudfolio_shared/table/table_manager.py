@@ -27,7 +27,7 @@ __all__ = [
     "RepoGitHubMetadataRow",
     "RepoSyncStatusRow",
     "RepoAPIUsageRow",
-    "ModelMetadataRow",
+    "UserProfileRow",
     "table_manager",
 ]
 
@@ -43,9 +43,9 @@ class TableNames:
     session_candidates: str = "SessionCandidates"
     repo_languages: str = "RepoLanguages"
     repo_github_metadata: str = "RepoGitHubMetadata"
-    model_metadata: str = "ModelMetadata"
     repo_sync_status: str = "RepoSyncStatus"
     repo_api_usage: str = "RepoAPIUsage"
+    user_profile: str = "UserProfile"
 
 @dataclass
 class SessionCandidateRow:
@@ -164,32 +164,36 @@ class RepoAPIUsageRow:
 
 
 @dataclass
-class ModelMetadataRow:
-    """Metadata describing trained semantic models."""
+class UserProfileRow:
+    """Cached GitHub user profile (GET /users/{username}).
 
-    username: str
+    PartitionKey: username
+    RowKey: profile_key (constant "profile" for MVP)
+    """
+
+    username: str  # PartitionKey
+    profile_key: str = "profile"  # RowKey
+    github_id: Optional[int] = None
+    name: Optional[str] = None
+    bio: Optional[str] = None
+    company: Optional[str] = None
+    location: Optional[str] = None
+    blog: Optional[str] = None
+    email: Optional[str] = None
+    twitter_username: Optional[str] = None
+    avatar_url: Optional[str] = None
+    html_url: Optional[str] = None
+    public_repos: int = 0
+    public_gists: int = 0
+    followers: int = 0
+    following: int = 0
+    github_created_at: Optional[str] = None
+    github_updated_at: Optional[str] = None
     fingerprint: Optional[str] = None
-    experiment_name: str = "default"
-    status: str = "pending"
-    artifact_blob: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    training_params: Dict[str, Any] = field(default_factory=dict)
-    repos_count: int = 0
-    repo_names: List[str] = field(default_factory=list)
-    trained_at: Optional[str] = None
+    cached_at: Optional[str] = None
     updated_at: Optional[str] = None
-    model_fingerprint: Optional[str] = None
-
-    def __post_init__(self) -> None:
-        if self.model_fingerprint and not self.fingerprint:
-            self.fingerprint = self.model_fingerprint
-        if self.fingerprint and not self.model_fingerprint:
-            self.model_fingerprint = self.fingerprint
-        if not self.fingerprint:
-            raise ValueError("fingerprint or model_fingerprint must be provided")
 
 
-_JSON_FIELDS_MODEL = {"metadata", "training_params", "repo_names"}
 _AZURE_META_FIELDS = {"etag", "odata.etag", "odata.metadata"}
 _REPO_STATUS_ALLOWED = {"pending", "synced", "cached", "failed"}
 
@@ -276,7 +280,6 @@ class TableManager:
         self.table_names = table_names or TableNames(
             job_metadata=os.getenv("TABLE_JOB_METADATA", TableNames.job_metadata),
             session_candidates=os.getenv("TABLE_SESSION_CANDIDATES", TableNames.session_candidates),
-            model_metadata=os.getenv("TABLE_MODEL_METADATA", TableNames.model_metadata),
         )
 
         self._service_client = table_service_client or self._create_service_client()
@@ -318,9 +321,9 @@ class TableManager:
             self.table_names.session_candidates,
             self.table_names.repo_languages,
             self.table_names.repo_github_metadata,
-            self.table_names.model_metadata,
             self.table_names.repo_sync_status,
             self.table_names.repo_api_usage,
+            self.table_names.user_profile,
         ):
             try:
                 client = self._service_client.get_table_client(name)
@@ -853,7 +856,7 @@ class TableManager:
                     table.delete_entity(partition_key=e["PartitionKey"], row_key=e["RowKey"])
                     count += 1
                 except Exception as del_exc:
-                     logger.warning("Failed to delete stale language row: %s", del_exc)
+                    logger.warning("Failed to delete stale language row: %s", del_exc)
                 
         except Exception as exc:
             logger.error("Failed to cleanup old repo languages: %s", exc)
@@ -976,59 +979,74 @@ class TableManager:
         return payload
 
     # ------------------------------------------------------------------
-    # Model metadata
+    # User profile
     # ------------------------------------------------------------------
-    def upsert_model_metadata(self, row: ModelMetadataRow) -> None:
-        table = self._get_table_client(self.table_names.model_metadata)
+    def upsert_user_profile(self, row: UserProfileRow) -> None:
+        table = self._get_table_client(self.table_names.user_profile)
         if not table:
             return
         now = _azure_safe_timestamp()
         entity: Dict[str, Any] = {
             "PartitionKey": row.username,
-            "RowKey": row.fingerprint or row.model_fingerprint,
-            "experiment_name": row.experiment_name,
-            "status": row.status,
-            "artifact_blob": row.artifact_blob or "",
-            "repos_count": int(row.repos_count or 0),
-            "trained_at": row.trained_at or "",
-            "updated_at": _azure_safe_timestamp(row.updated_at) if row.updated_at else now,
+            "RowKey": row.profile_key or "profile",
+            "github_id": int(row.github_id) if row.github_id is not None else None,
+            "name": (row.name or "")[:256],
+            "bio": (row.bio or "")[:4096],
+            "company": (row.company or "")[:256],
+            "location": (row.location or "")[:256],
+            "blog": (row.blog or "")[:2048],
+            "email": (row.email or "")[:256],
+            "twitter_username": (row.twitter_username or "")[:64],
+            "avatar_url": (row.avatar_url or "")[:2048],
+            "html_url": (row.html_url or "")[:2048],
+            "public_repos": int(row.public_repos or 0),
+            "public_gists": int(row.public_gists or 0),
+            "followers": int(row.followers or 0),
+            "following": int(row.following or 0),
+            "github_created_at": _azure_safe_timestamp(row.github_created_at) if row.github_created_at else "",
+            "github_updated_at": _azure_safe_timestamp(row.github_updated_at) if row.github_updated_at else "",
+            "fingerprint": row.fingerprint or "",
+            "cached_at": _azure_safe_timestamp(row.cached_at) if row.cached_at else now,
+            "updated_at": now,
         }
-        for field_name in _JSON_FIELDS_MODEL:
-            entity[field_name] = _safe_json_dump(getattr(row, field_name, {}))
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
+        logger.info("[TABLE_UPSERT_USER_PROFILE] user=%s", row.username)
 
-    def get_model_metadata(self, username: str, fingerprint: str) -> Optional[Dict[str, Any]]:
-        table = self._get_table_client(self.table_names.model_metadata)
-        if not table:
+    def get_user_profile(self, username: str) -> Optional[Dict[str, Any]]:
+        table = self._get_table_client(self.table_names.user_profile)
+        if not table or not username:
             return None
         try:
-            entity = table.get_entity(partition_key=username, row_key=fingerprint)
+            entity = table.get_entity(partition_key=username, row_key="profile")
         except ResourceNotFoundError:
             return None
-        return self._deserialize_model_entity(entity)
+        return self._deserialize_user_profile(entity)
 
-    def list_model_metadata(self, username: str) -> List[Dict[str, Any]]:
-        table = self._get_table_client(self.table_names.model_metadata)
-        if not table:
-            return []
-        entities = list(table.list_entities(filter=f"PartitionKey eq '{username}'"))
-        return [self._deserialize_model_entity(e) for e in entities]
-
-    def _deserialize_model_entity(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+    def _deserialize_user_profile(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
-        for field_name in _JSON_FIELDS_MODEL:
-            try:
-                payload[field_name] = json.loads(payload.get(field_name) or "{}")
-            except json.JSONDecodeError:
-                payload[field_name] = {}
-        payload["artifact_blob"] = payload.get("artifact_blob") or None
-        payload["repo_names"] = payload.get("repo_names") or []
-        payload["repos_count"] = int(payload.get("repos_count", 0))
-        payload["fingerprint"] = payload.get("RowKey")
-        payload["model_fingerprint"] = payload.get("fingerprint")
-        payload["username"] = payload.get("PartitionKey")
+        payload["username"] = payload.pop("PartitionKey", None)
+        payload["profile_key"] = payload.pop("RowKey", None)
+        payload["github_id"] = int(payload.get("github_id")) if payload.get("github_id") not in (None, "") else None
+        for int_field in ("public_repos", "public_gists", "followers", "following"):
+            payload[int_field] = int(payload.get(int_field) or 0)
+        for ts_field in ("github_created_at", "github_updated_at", "cached_at", "updated_at"):
+            if ts_field in payload:
+                payload[ts_field] = _restore_iso_timestamp(payload.get(ts_field))
+        payload["fingerprint"] = payload.get("fingerprint") or None
+        for field_name in (
+            "name",
+            "bio",
+            "company",
+            "location",
+            "blog",
+            "email",
+            "twitter_username",
+            "avatar_url",
+            "html_url",
+        ):
+            payload[field_name] = payload.get(field_name) or None
         return payload
 
 

@@ -1,20 +1,27 @@
+"""Specification-aligned tests for TableManager.
+
+These tests cover the current normalized table schema + the MVP additions used
+by the candidate profile page (UserProfile).
+"""
+
 from __future__ import annotations
 
-import pytest  # type: ignore
+import pytest
 
-from azure.core.exceptions import ResourceNotFoundError  # type: ignore
+from azure.core.exceptions import ResourceNotFoundError
 
-from cloudfolio_shared.table import (  # type: ignore
+from cloudfolio_shared.table.table_manager import (
     JobMetadataRow,
-    ModelMetadataRow,
     RepoAPIUsageRow,
-    RepoFileTypesRow,
     RepoGitHubMetadataRow,
     RepoLanguagesRow,
     RepoSyncStatusRow,
-    SessionCandidateRow,
     TableManager,
     TableNames,
+    UserProfileRow,
+    _azure_safe_timestamp,
+    _restore_iso_timestamp,
+    _safe_json_dump_limited,
 )
 
 
@@ -23,12 +30,12 @@ class _FakeTableClient:
         self.entities: dict[tuple[str, str], dict] = {}
 
     # azure.data.tables compatibility -------------------------------------------------
-    def create_table(self) -> None:  # pragma: no cover - nothing to do for fake
+    def create_table(self) -> None:  # pragma: no cover
         return None
 
-    def upsert_entity(self, entity: dict, mode=None) -> None:
+    def upsert_entity(self, entity: dict, _mode=None) -> None:
         key = (entity["PartitionKey"], entity["RowKey"])
-        stored = self.entities.get(key, {})
+        stored = dict(self.entities.get(key, {}))
         stored.update(entity)
         self.entities[key] = stored
 
@@ -38,52 +45,91 @@ class _FakeTableClient:
             raise ResourceNotFoundError("entity not found")
         return dict(self.entities[key])
 
-    def list_entities(self, filter: str | None = None):  # type: ignore[override]
-        for entity in self.entities.values():
-            if self._matches_filter(entity, filter or ""):
-                yield dict(entity)
+    def delete_entity(self, partition_key: str, row_key: str) -> None:
+        key = (partition_key, row_key)
+        if key not in self.entities:
+            raise ResourceNotFoundError("entity not found")
+        del self.entities[key]
 
-    def submit_transaction(self, operations):
-        for verb, entity, _kwargs in operations:
-            if verb != "upsert":  # pragma: no cover - safety
-                continue
-            self.upsert_entity(entity)
+    def list_entities(self, *args, **kwargs):  # type: ignore[override]
+        filter_str = kwargs.get("filter")
+        if filter_str is None and args:
+            filter_str = args[0]
+        select = kwargs.get("select")
+
+        for entity in self.entities.values():
+            if self._matches_filter(entity, filter_str or ""):
+                if select:
+                    yield {k: entity.get(k) for k in select}
+                else:
+                    yield dict(entity)
+
+    def query_entities(self, query_filter: str, *, _results_per_page=None, **_kwargs):
+        yield from self.list_entities(query_filter)
 
     # filtering helpers ------------------------------------------------------------
     @staticmethod
-    def _extract_value(filter_str: str, field: str) -> str | None:
+    def _extract_eq_values(filter_str: str, field: str) -> set[str]:
         token = f"{field} eq '"
-        if token not in filter_str:
-            return None
-        start = filter_str.index(token) + len(token)
-        end = filter_str.index("'", start)
-        return filter_str[start:end]
-
-    @classmethod
-    def _extract_row_keys(cls, filter_str: str) -> set[str]:
-        result: set[str] = set()
-        token = "RowKey eq '"
         start = 0
+        values: set[str] = set()
         while True:
             idx = filter_str.find(token, start)
             if idx == -1:
                 break
             start_val = idx + len(token)
-            end = filter_str.index("'", start_val)
-            result.add(filter_str[start_val:end])
-            start = end + 1
-        return result
+            end_val = filter_str.find("'", start_val)
+            if end_val == -1:
+                break
+            values.add(filter_str[start_val:end_val])
+            start = end_val + 1
+        return values
+
+    @staticmethod
+    def _extract_lt_value(filter_str: str, field: str) -> str | None:
+        token = f"{field} lt '"
+        idx = filter_str.find(token)
+        if idx == -1:
+            return None
+        start_val = idx + len(token)
+        end_val = filter_str.find("'", start_val)
+        if end_val == -1:
+            return None
+        return filter_str[start_val:end_val]
 
     def _matches_filter(self, entity: dict, filter_str: str) -> bool:
-        partition = self._extract_value(filter_str, "PartitionKey")
-        if partition and entity.get("PartitionKey") != partition:
+        if not filter_str:
+            return True
+
+        partition_values = self._extract_eq_values(filter_str, "PartitionKey")
+        if partition_values and entity.get("PartitionKey") not in partition_values:
             return False
-        job_id = self._extract_value(filter_str, "job_id")
-        if job_id and entity.get("job_id") != job_id:
+
+        row_key_values = self._extract_eq_values(filter_str, "RowKey")
+        if row_key_values and entity.get("RowKey") not in row_key_values:
             return False
-        row_keys = self._extract_row_keys(filter_str)
-        if row_keys and entity.get("RowKey") not in row_keys:
+
+        for field in ("repo_name", "job_id", "operation"):
+            values = self._extract_eq_values(filter_str, field)
+            if values and entity.get(field) not in values:
+                return False
+
+        status_values = self._extract_eq_values(filter_str, "status")
+        if status_values and entity.get("status") not in status_values:
             return False
+
+        updated_before = self._extract_lt_value(filter_str, "updated_at")
+        if updated_before:
+            updated_at = entity.get("updated_at")
+            if not updated_at or str(updated_at) >= updated_before:
+                return False
+
+        created_before = self._extract_lt_value(filter_str, "created_at")
+        if created_before:
+            created_at = entity.get("created_at")
+            if not created_at or str(created_at) >= created_before:
+                return False
+
         return True
 
 
@@ -97,411 +143,243 @@ class _FakeServiceClient:
         return self.tables[name]
 
 
-@pytest.fixture()
-def table_manager() -> TableManager:
+@pytest.fixture(name="table_manager")
+def _table_manager() -> TableManager:
     service = _FakeServiceClient()
-    names = TableNames(
-        job_metadata="JobMetadata",
-        session_candidates="SessionCandidates",
-        repo_metadata="RepoMetadata",
-        repo_languages="RepoLanguages",
-        repo_file_types="RepoFileTypes",
-        repo_github_metadata="RepoGitHubMetadata",
-        model_metadata="ModelMetadata",
-        repo_sync_status="RepoSyncStatus",
-        repo_api_usage="RepoAPIUsage",
-    )
-    return TableManager(table_service_client=service, table_names=names)
+    return TableManager(table_service_client=service, table_names=TableNames())
 
 
-def test_candidate_session_roundtrip(table_manager: TableManager) -> None:
-    row = JobMetadataRow(
-        username="alice",
-        job_id="job-1",
-        status="queued",
-        force_refresh=False,
+def test_timestamp_helpers_roundtrip() -> None:
+    iso = "2026-01-25T10:05:00+00:00"
+    safe = _azure_safe_timestamp(iso)
+    assert ":" not in safe
+    assert "+" not in safe
+    assert _restore_iso_timestamp(safe) == iso
+
+
+def test_safe_json_dump_limited_drops_oversized() -> None:
+    big = {"x": "y" * 50000}
+    assert _safe_json_dump_limited(big, max_chars=1000) == "{}"
+
+
+def test_job_metadata_roundtrip_and_partial_update(table_manager: TableManager) -> None:
+    table_manager.upsert_job_metadata(
+        JobMetadataRow(username="alice", job_id="job-1", status="queued", force_refresh=False)
     )
-    table_manager.upsert_job_metadata(row)
+
+    with pytest.raises(ValueError):
+        table_manager.update_job_metadata("alice", "missing", {"status": "completed"})
 
     table_manager.update_job_metadata(
         "alice",
         "job-1",
-        {"status": "metadata_ready", "bundle_fingerprint": "fp_abc"},
+        {"status": "metadata_ready", "bundle_fingerprint": "fp_abc", "trace_id": "t1"},
     )
 
     stored = table_manager.get_job_metadata("alice", "job-1")
     assert stored is not None
     assert stored["status"] == "metadata_ready"
     assert stored["bundle_fingerprint"] == "fp_abc"
+    assert stored["trace_id"] == "t1"
     assert stored["force_refresh"] is False
 
+    jobs = table_manager.list_jobs_metadata("alice")
+    assert len(jobs) == 1
 
-def test_repo_github_metadata_fingerprint_query(table_manager: TableManager) -> None:
+
+def test_session_candidate_fk_validation_and_counter(table_manager: TableManager) -> None:
+    table_manager.upsert_job_metadata(JobMetadataRow(username="alice", job_id="job-1"))
+
+    with pytest.raises(ValueError):
+        table_manager.upsert_session_candidate("s-1", "alice", "missing-job")
+
+    table_manager.upsert_session_candidate("s-1", "alice", "job-1")
+    table_manager.upsert_session_candidate("s-1", "alice", "job-1")
+
+    listed = table_manager.list_session_candidates("s-1")
+    assert len(listed) == 1
+    assert listed[0]["session_id"] == "s-1"
+    assert listed[0]["username"] == "alice"
+    assert listed[0]["latest_job_id"] == "job-1"
+    assert listed[0]["query_count"] == 2
+
+
+def test_repo_github_metadata_topics_and_timestamp_restore(table_manager: TableManager) -> None:
     table_manager.upsert_repo_github_metadata(
         RepoGitHubMetadataRow(
             username="alice",
             repo_name="api",
-            fingerprint="fp_abc",
+            fingerprint="fp_1",
             description="API repo",
-            is_fork=False,
-        )
-    )
-    table_manager.upsert_repo_github_metadata(
-        RepoGitHubMetadataRow(
-            username="alice",
-            repo_name="web",
-            fingerprint="fp_def",
-            description="Web repo",
-            is_fork=False,
+            topics=["azure", "functions"],
+            stars_count=12,
+            forks_count=3,
+            github_updated_at="2026-01-25T08:45:00Z",
         )
     )
 
-    results = table_manager.query_repo_github_metadata("alice")
-    assert len(results) == 2
-    api_repo = [r for r in results if r["repo_name"] == "api"][0]
-    assert api_repo["fingerprint"] == "fp_abc"
-    assert api_repo["description"] == "API repo"
+    fetched = table_manager.get_repo_github_metadata("alice", "api")
+    assert fetched is not None
+    assert fetched["fingerprint"] == "fp_1"
+    assert fetched["topics"] == ["azure", "functions"]
+    assert fetched["stars_count"] == 12
+    assert fetched["forks_count"] == 3
+    assert fetched["github_updated_at"] == "2026-01-25T08:45:00Z"
 
-    single = table_manager.get_repo_github_metadata("alice", "web")
-    assert single is not None
-    assert single["fingerprint"] == "fp_def"
-
-
-def test_model_metadata(table_manager: TableManager) -> None:
-    table_manager.upsert_model_metadata(
-        ModelMetadataRow(
-            username="alice",
-            model_fingerprint="fp-123",
-            status="completed",
-            training_params={"batch_size": 16},
-            repos_count=3,
-            repo_names=["repo-a", "repo-b", "repo-c"],
-        )
-    )
-
-    stored = table_manager.get_model_metadata("alice", "fp-123")
-    assert stored is not None
-    assert stored["training_params"]["batch_size"] == 16
-    assert stored["repos_count"] == 3
-
-    all_rows = table_manager.list_model_metadata("alice")
+    all_rows = table_manager.query_repo_github_metadata("alice")
     assert len(all_rows) == 1
-    assert all_rows[0]["model_fingerprint"] == "fp-123"
 
 
-def test_repo_sync_status_roundtrip(table_manager: TableManager) -> None:
-    row = RepoSyncStatusRow(
-        job_id="job-1",
-        repo_name="api",
-        username="alice",
-        status="synced",
-        sync_message_id="m-1",
-        cache_message_id="m-2",
-        error=None,
+def test_repo_sync_status_validation_and_updates(table_manager: TableManager) -> None:
+    with pytest.raises(ValueError):
+        table_manager.upsert_repo_status(
+            RepoSyncStatusRow(job_id="job-1", repo_name="api", username="alice", status="BOGUS")
+        )
+
+    table_manager.upsert_repo_status(
+        RepoSyncStatusRow(job_id="job-1", repo_name="api", username="alice", status="pending")
     )
 
-    table_manager.upsert_repo_status(row)
+    with pytest.raises(ValueError):
+        table_manager.update_repo_status("job-1", "missing", {"status": "synced"})
 
+    with pytest.raises(ValueError):
+        table_manager.update_repo_status("job-1", "api", {"status": "INVALID"})
+
+    table_manager.update_repo_status("job-1", "api", {"status": "synced", "synced_at": "t"})
     fetched = table_manager.get_repo_status("job-1", "api")
     assert fetched is not None
     assert fetched["status"] == "synced"
-    assert fetched["sync_message_id"] == "m-1"
-    assert fetched["cache_message_id"] == "m-2"
-
-    listed = table_manager.list_repo_statuses("job-1")
-    assert len(listed) == 1
-    assert listed[0]["repo_name"] == "api"
+    assert fetched["synced_at"] == "t"
 
 
-def test_session_candidates_roundtrip(table_manager: TableManager) -> None:
-    """Test SessionCandidates table upsert and list operations."""
-    session_id = "session-123"
-    
-    # Upsert first candidate
-    table_manager.upsert_session_candidate(session_id, "alice", "job-1")
-    
-    # Upsert second candidate
-    table_manager.upsert_session_candidate(session_id, "bob", "job-2")
-    
-    # List candidates for session
-    candidates = table_manager.list_session_candidates(session_id)
-    assert len(candidates) == 2
-    
-    # Verify structure
-    alice_candidate = [c for c in candidates if c["username"] == "alice"][0]
-    assert alice_candidate["latest_job_id"] == "job-1"
-    assert alice_candidate["query_count"] == 1
-    assert alice_candidate["session_id"] == session_id
-    
-    # Update same user with different job
-    table_manager.upsert_session_candidate(session_id, "alice", "job-3")
-    
-    updated_candidates = table_manager.list_session_candidates(session_id)
-    alice_updated = [c for c in updated_candidates if c["username"] == "alice"][0]
-    assert alice_updated["latest_job_id"] == "job-3"
-    assert alice_updated["query_count"] == 2  # Incremented
-
-
-def test_repo_languages_batch_upsert(table_manager: TableManager) -> None:
-    """Test RepoLanguages batch operations."""
-    from cloudfolio_shared.table import RepoLanguagesRow
-    
-    languages = [
+def test_repo_languages_query_delete_and_cleanup(table_manager: TableManager) -> None:
+    job_id = "job-1"
+    table_manager.upsert_repo_languages(
         RepoLanguagesRow(
-            username="alice",
-            repo_language_key="api#Python",
+            job_id=job_id,
+            repo_language_key="api|Python",
             repo_name="api",
             language="Python",
             bytes_count=5000,
             percentage=75.0,
-        ),
+            created_at="2026-01-01T00:00:00+00:00",
+        )
+    )
+    table_manager.upsert_repo_languages(
         RepoLanguagesRow(
-            username="alice",
-            repo_language_key="api#JavaScript",
+            job_id=job_id,
+            repo_language_key="api|TypeScript",
             repo_name="api",
-            language="JavaScript",
+            language="TypeScript",
             bytes_count=1500,
-            percentage=22.5,
-        ),
+            percentage=25.0,
+            created_at="2026-02-01T00:00:00+00:00",
+        )
+    )
+
+    by_repo = table_manager.query_repo_languages(job_id)
+    assert "api" in by_repo
+    assert len(by_repo["api"]) == 2
+
+    table_manager.delete_repo_languages(job_id, "api")
+    assert table_manager.query_repo_languages(job_id).get("api") is None
+
+    # cleanup: insert 2 old, 1 new
+    table_manager.upsert_repo_languages(
         RepoLanguagesRow(
-            username="alice",
-            repo_language_key="api#Shell",
-            repo_name="api",
-            language="Shell",
-            bytes_count=166,
-            percentage=2.5,
-        ),
-    ]
-    
-    table_manager.batch_upsert_repo_languages(languages)
-    
-    # Query languages for repo
-    results = table_manager.query_repo_languages("alice", "api")
-    assert len(results) == 3
-    
-    # Verify Python language
-    python_lang = [r for r in results if r["language"] == "Python"][0]
-    assert python_lang["bytes"] == 5000
-    assert python_lang["percentage"] == 75.0
-
-
-def test_repo_file_types_batch_upsert(table_manager: TableManager) -> None:
-    """Test RepoFileTypes batch operations."""
-    from cloudfolio_shared.table import RepoFileTypesRow
-    
-    file_types = [
-        RepoFileTypesRow(
-            username="alice",
-            repo_type_key="web#programming#0",
+            job_id=job_id,
+            repo_language_key="web|Python",
             repo_name="web",
-            category="programming",
-            file_path="src/main.py",
-            file_type=".py",
-        ),
-        RepoFileTypesRow(
-            username="alice",
-            repo_type_key="web#programming#1",
+            language="Python",
+            bytes_count=1,
+            created_at="2020-01-01T00:00:00+00:00",
+        )
+    )
+    table_manager.upsert_repo_languages(
+        RepoLanguagesRow(
+            job_id=job_id,
+            repo_language_key="web|Go",
             repo_name="web",
-            category="programming",
-            file_path="src/utils.py",
-            file_type=".py",
-        ),
-        RepoFileTypesRow(
-            username="alice",
-            repo_type_key="web#documentation#0",
+            language="Go",
+            bytes_count=1,
+            created_at="2020-01-01T00:00:00+00:00",
+        )
+    )
+    table_manager.upsert_repo_languages(
+        RepoLanguagesRow(
+            job_id=job_id,
+            repo_language_key="web|Rust",
             repo_name="web",
-            category="documentation",
-            file_path="README.md",
-            file_type=".md",
-        ),
-    ]
-    
-    table_manager.batch_upsert_repo_file_types(file_types)
-    
-    # Query file types for repo
-    results = table_manager.query_repo_file_types("alice", "web")
-    assert len(results) == 3
-    
-    # Verify programming category
-    programming_files = [r for r in results if r["category"] == "programming"]
-    assert len(programming_files) == 2
-    assert all(r["file_type"] == ".py" for r in programming_files)
-
-
-def test_repo_github_metadata_roundtrip(table_manager: TableManager) -> None:
-    """Test RepoGitHubMetadata upsert and retrieval."""
-    from cloudfolio_shared.table import RepoGitHubMetadataRow
-    
-    row = RepoGitHubMetadataRow(
-        username="alice",
-        repo_name="awesome-project",
-        full_name="alice/awesome-project",
-        description="An awesome project",
-        html_url="https://github.com/alice/awesome-project",
-        homepage="https://awesome-project.dev",
-        stars=1234,
-        forks=56,
-        open_issues=12,
-        watchers=890,
-        default_branch="main",
-        is_private=False,
-        is_fork=False,
-        is_archived=False,
-        license_name="MIT",
-        github_created_at="2023-01-15T10:00:00Z",
-        github_updated_at="2026-01-20T15:30:00Z",
-        github_pushed_at="2026-01-25T08:45:00Z",
+            language="Rust",
+            bytes_count=1,
+            created_at="2026-02-01T00:00:00+00:00",
+        )
     )
-    
-    table_manager.upsert_repo_github_metadata(row)
-    
-    # Retrieve metadata
-    result = table_manager.get_repo_github_metadata("alice", "awesome-project")
-    assert result is not None
-    assert result["stars"] == 1234
-    assert result["description"] == "An awesome project"
-    assert result["license_name"] == "MIT"
-    assert result["is_private"] is False
+
+    deleted = table_manager.cleanup_old_repo_languages("2021-01-01T00:00:00+00:00")
+    assert deleted == 2
 
 
-def test_repo_api_usage_tracking(table_manager: TableManager) -> None:
-    """Test RepoAPIUsage upsert and list operations."""
-    from cloudfolio_shared.table import RepoAPIUsageRow
-    from datetime import datetime, timezone
-    
-    # Track freshness check
-    freshness_row = RepoAPIUsageRow(
-        username="alice",
-        operation_key="freshness#2026-01-25T10:00:00#repo-a",
-        operation="freshness_check",
-        job_id=None,
-        repo_name="repo-a",
-        api_calls_rest=1,
-        api_calls_graphql=0,
-        cache_hits=0,
-        rate_limit_remaining=4999,
-        rate_limit_reset="2026-01-25T11:00:00Z",
-        created_at="2026-01-25T10:00:00Z",
+def test_repo_api_usage_filters(table_manager: TableManager) -> None:
+    table_manager.upsert_api_usage(
+        RepoAPIUsageRow(
+            username="alice",
+            operation_key="freshness|2026-01-01|repo-a",
+            operation="freshness_check",
+            repo_name="repo-a",
+            api_calls_rest=1,
+            created_at="2026-01-01T00:00:00+00:00",
+        )
     )
-    
-    table_manager.upsert_api_usage(freshness_row)
-    
-    # Track metadata sync
-    sync_row = RepoAPIUsageRow(
-        username="alice",
-        operation_key="metadata_sync#2026-01-25T10:05:00#repo-a",
-        operation="metadata_sync",
-        job_id="job-123",
-        repo_name="repo-a",
-        api_calls_rest=3,
-        api_calls_graphql=1,
-        cache_hits=2,
-        rate_limit_remaining=4995,
-        rate_limit_reset="2026-01-25T11:00:00Z",
-        created_at="2026-01-25T10:05:00Z",
+    table_manager.upsert_api_usage(
+        RepoAPIUsageRow(
+            username="alice",
+            operation_key="metadata|2026-01-02|repo-a",
+            operation="metadata_sync",
+            job_id="job-1",
+            repo_name="repo-a",
+            api_calls_rest=3,
+            cache_hits=2,
+            created_at="2026-01-02T00:00:00+00:00",
+        )
     )
-    
-    table_manager.upsert_api_usage(sync_row)
-    
-    # List all usage for user
+
     all_usage = table_manager.list_api_usage("alice")
     assert len(all_usage) == 2
-    
-    # Filter by job
-    job_usage = table_manager.list_api_usage("alice", job_id="job-123")
+
+    job_usage = table_manager.list_api_usage("alice", job_id="job-1")
     assert len(job_usage) == 1
     assert job_usage[0]["operation"] == "metadata_sync"
-    assert job_usage[0]["api_calls_rest"] == 3
-    
-    # Filter by operation
-    freshness_usage = table_manager.list_api_usage("alice", operation="freshness_check")
-    assert len(freshness_usage) == 1
-    assert freshness_usage[0]["cache_hits"] == 0
+
+    op_usage = table_manager.list_api_usage("alice", operation="freshness_check")
+    assert len(op_usage) == 1
+    assert op_usage[0]["api_calls_rest"] == 1
 
 
-def test_update_repo_status(table_manager: TableManager) -> None:
-    """Test updating RepoSyncStatus after initial insert."""
-    row = RepoSyncStatusRow(
-        job_id="job-1",
-        repo_name="api",
-        username="alice",
-        status="pending",
-        sync_message_id="msg-1",
-        cache_message_id=None,
-        error=None,
-    )
-    
-    table_manager.upsert_repo_status(row)
-    
-    # Update to synced
-    table_manager.update_repo_status(
-        "job-1",
-        "api",
-        {"status": "synced", "synced_at": "2026-01-25T10:00:00Z"},
-    )
-    
-    updated = table_manager.get_repo_status("job-1", "api")
-    assert updated["status"] == "synced"
-    assert updated["synced_at"] == "2026-01-25T10:00:00Z"
-    
-    # Update to cached
-    table_manager.update_repo_status(
-        "job-1",
-        "api",
-        {
-            "status": "cached",
-            "cache_message_id": "msg-2",
-            "cached_at": "2026-01-25T10:05:00Z",
-        },
-    )
-    
-    final = table_manager.get_repo_status("job-1", "api")
-    assert final["status"] == "cached"
-    assert final["cache_message_id"] == "msg-2"
-    assert final["cached_at"] == "2026-01-25T10:05:00Z"
-
-
-def test_list_jobs_metadata_by_status(table_manager: TableManager) -> None:
-    """Test filtering jobs by status."""
-    # Create jobs with different statuses
-    for i, status in enumerate(["queued", "syncing", "metadata_ready", "completed", "failed"]):
-        row = JobMetadataRow(
-            username=f"user-{i}",
-            job_id=f"job-{i}",
-            status=status,
+def test_user_profile_roundtrip(table_manager: TableManager) -> None:
+    table_manager.upsert_user_profile(
+        UserProfileRow(
+            username="octocat",
+            github_id=1,
+            name="The Octocat",
+            bio="Hello",
+            public_repos=8,
+            followers=100,
+            following=0,
+            github_created_at="2020-01-01T00:00:00+00:00",
+            github_updated_at="2026-01-01T00:00:00+00:00",
+            fingerprint="fp1",
+            cached_at="2026-02-01T00:00:00+00:00",
         )
-        table_manager.upsert_job_metadata(row)
-    
-    # Query active jobs
-    active = table_manager.list_jobs_metadata_by_status(["queued", "syncing", "metadata_ready"])
-    assert len(active) == 3
-    assert all(j["status"] in ["queued", "syncing", "metadata_ready"] for j in active)
-    
-    # Query completed jobs
-    completed = table_manager.list_jobs_metadata_by_status(["completed", "failed"])
-    assert len(completed) == 2
-    assert all(j["status"] in ["completed", "failed"] for j in completed)
-
-
-def test_repo_github_metadata_comprehensive(table_manager: TableManager) -> None:
-    """Test RepoGitHubMetadata storing comprehensive GitHub API data with fingerprint."""
-    row = RepoGitHubMetadataRow(
-        username="alice",
-        repo_name="large-repo",
-        fingerprint="fp_abc123",
-        full_name="alice/large-repo",
-        description="Large repo with many features",
-        html_url="https://github.com/alice/large-repo",
-        stars_count=1500,
-        forks_count=120,
-        is_fork=False,
-        license_name="MIT",
     )
-    
-    table_manager.upsert_repo_github_metadata(row)
-    
-    result = table_manager.get_repo_github_metadata("alice", "large-repo")
-    assert result is not None
-    assert result["fingerprint"] == "fp_abc123"
-    assert result["stars_count"] == 1500
-    assert result["license_name"] == "MIT"
+
+    fetched = table_manager.get_user_profile("octocat")
+    assert fetched is not None
+    assert fetched["username"] == "octocat"
+    assert fetched["github_id"] == 1
+    assert fetched["public_repos"] == 8
+    assert fetched["followers"] == 100
+    assert fetched["fingerprint"] == "fp1"
+    assert fetched["github_created_at"] == "2020-01-01T00:00:00+00:00"
+    assert fetched["cached_at"] == "2026-02-01T00:00:00+00:00"

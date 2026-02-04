@@ -1,4 +1,3 @@
-<!-- - part of your process should not involve executing scripts, except they are path verificatations or file create or renames. -->
 - codebase root: `/home/juk/DEV/cloudfolio/`
 - api root: `/api/v0.3.0/function-app/function_app.py`
 - api gateway: `/api/v0.3.0/api_gateway/api_gateway.py`
@@ -7,6 +6,7 @@
 - AI Assistant: `/api/v0.3.0/shared/src/cloudfolio_shared/ai/ai_assistant.py`
 - ui root: `/ui/src/app/`
 - ui services: `/ui/src/app/services/`
+
 - index codebase root for ease of reference
 - you should assume you have access to all files beyond what is provided in the prompt
 - Always strive to reduce complexity and improve code quality
@@ -15,6 +15,7 @@
 - Always prefer explicitness over implicitness
 - Always prefer simplicity over complexity
 - When my query has a question mark, answer the question first before providing any additional information
+- plans created as files into `.github/plans/`
 
 # Workflow
 **Phase 1: Candidate's Github Data Retrieval**

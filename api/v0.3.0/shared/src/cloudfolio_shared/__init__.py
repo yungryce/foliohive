@@ -18,7 +18,6 @@ __all__ = [
     "ai",
     "cache",
     "github",
-    "journal",
     "queue",
     "table",
     # Version
@@ -61,12 +60,6 @@ def __getattr__(name: str):
     if name == "TableManager":
         from cloudfolio_shared.table import TableManager
         return TableManager
-    if name == "get_job_journal":
-        from cloudfolio_shared.journal import get_job_journal
-        return get_job_journal
-    if name == "JobJournal":
-        from cloudfolio_shared.journal import JobJournal
-        return JobJournal
     
     # AI utilities
     if name == "AIAssistant":
