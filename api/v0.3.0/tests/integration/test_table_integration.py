@@ -285,37 +285,10 @@ class TestJobProgressTracking:
 
 
 class TestModelMetadataPersistence:
-    """Test training worker persists model metadata to tables per plan-modelTraining.prompt.md."""
-
-    def test_training_worker_writes_model_metadata(self, mock_table_manager):
-        """Verify training worker creates ModelMetadata rows."""
-        from cloudfolio_shared.table import ModelMetadataRow
-        
-        username = 'testuser'
-        fingerprint = 'model_fp_xyz123'
-        
-        row = ModelMetadataRow(
-            username=username,
-            model_fingerprint=fingerprint,
-            experiment_name='default',
-            status='completed',
-            trained_at=datetime.now(timezone.utc).isoformat(),
-            repos_count=5,
-            repo_names=['repo-a', 'repo-b', 'repo-c', 'repo-d', 'repo-e'],
-            training_params={'epochs': 2, 'batch_size': 8},
-        )
-        
-        mock_table_manager.upsert_model_metadata(row)
-        
-        # Verify retrieval
-        result = mock_table_manager.get_model_metadata(username, fingerprint)
-        assert result is not None
-        assert result['experiment_name'] == 'default'
-        assert result['repos_count'] == 5
-        assert len(result['repo_names']) == 5
+    """Test that job metadata can be updated for bundle tracking."""
 
     def test_training_completion_updates_job_metadata(self, mock_table_manager):
-        """Verify training worker can update JobMetadata with bundle_fingerprint after model training."""
+        """Verify that JobMetadata can be updated with bundle_fingerprint."""
         from cloudfolio_shared.table import JobMetadataRow
         
         username = 'testuser'
@@ -372,15 +345,8 @@ class TestEdgeCases:
                 username=username,
                 job_id=job_id,
                 status='completed',
-                total_repos=1,
-                completed_repos=1,
-                expected_repos=[],
-                queued_repos=[],
-                synced_repos=[],
                 bundle_fingerprint=f'fp_{i}',
                 force_refresh=False,
-                model_status=None,
-                model_fingerprint=None,
                 created_at=datetime(2025, 1, 10 + i, tzinfo=timezone.utc).isoformat(),
                 updated_at=None,
             )
@@ -624,26 +590,30 @@ class TestMultiTableQueries:
         
         def batch_upsert_repo_languages(rows):
             for row in rows:
-                key = (row.username, row.repo_language_key)
+                key = (row.job_id, row.repo_language_key)
                 repo_languages[key] = {
-                    'username': row.username,
+                    'job_id': row.job_id,
+                    'repo_language_key': row.repo_language_key,
                     'repo_name': row.repo_name,
                     'language': row.language,
                     'bytes_count': row.bytes_count,
                 }
         
-        def query_repo_languages(username: str, repo_name: str):
-            return [
-                lang for key, lang in repo_languages.items()
-                if lang['username'] == username and lang['repo_name'] == repo_name
-            ]
+        def query_repo_languages(job_id: str):
+            """Query languages by job_id, returning dict keyed by repo_name."""
+            by_repo = {}
+            for key, lang in repo_languages.items():
+                if lang['job_id'] == job_id:
+                    repo_name = lang['repo_name']
+                    by_repo.setdefault(repo_name, []).append(lang)
+            return by_repo
         
         def upsert_repo_github_metadata(row):
             repo_github[(row.username, row.repo_name)] = {
                 'username': row.username,
                 'repo_name': row.repo_name,
                 'fingerprint': getattr(row, 'fingerprint', None),
-                'stars': getattr(row, 'stars', 0),
+                'stars_count': getattr(row, 'stars_count', 0),
                 'description': getattr(row, 'description', None),
             }
         
@@ -655,18 +625,19 @@ class TestMultiTableQueries:
         mock_table_manager.upsert_repo_github_metadata = upsert_repo_github_metadata
         mock_table_manager.get_repo_github_metadata = get_repo_github_metadata
         
-        # Insert language data
+        # Insert language data with job_id
+        job_id = "test-job-123"
         mock_table_manager.batch_upsert_repo_languages([
             RepoLanguagesRow(
-                username=username,
-                repo_language_key=f'{repo_name}#Python',
+                job_id=job_id,
+                repo_language_key=f'{repo_name}|Python',
                 repo_name=repo_name,
                 language='Python',
                 bytes_count=10000,
             ),
             RepoLanguagesRow(
-                username=username,
-                repo_language_key=f'{repo_name}#TypeScript',
+                job_id=job_id,
+                repo_language_key=f'{repo_name}|TypeScript',
                 repo_name=repo_name,
                 language='TypeScript',
                 bytes_count=8000,
@@ -679,20 +650,21 @@ class TestMultiTableQueries:
                 username=username,
                 repo_name=repo_name,
                 fingerprint='fp_xyz',
-                stars=500,
+                stars_count=500,
                 description='A full-stack application',
             )
         )
         
         # Query complete profile
-        languages = mock_table_manager.query_repo_languages(username, repo_name)
+        languages_by_repo = mock_table_manager.query_repo_languages(job_id)
+        languages = languages_by_repo.get(repo_name, [])
         github = mock_table_manager.get_repo_github_metadata(username, repo_name)
         
         # Verify complete profile
         assert github['fingerprint'] == 'fp_xyz'
         assert len(languages) == 2
         assert {lang['language'] for lang in languages} == {'Python', 'TypeScript'}
-        assert github['stars'] == 500
+        assert github['stars_count'] == 500
         assert github['description'] == 'A full-stack application'
 
 
@@ -733,8 +705,8 @@ class TestBatchOperationsAndErrorHandling:
         # Create 250 language rows (should be 3 batches: 100, 100, 50)
         large_batch = [
             RepoLanguagesRow(
-                username='testuser',
-                repo_language_key=f'repo#{i}#Python',
+                job_id='test-job-123',
+                repo_language_key=f'repo-{i}|Python',
                 repo_name=f'repo-{i}',
                 language='Python',
                 bytes_count=1000,
@@ -828,7 +800,7 @@ class TestBatchOperationsAndErrorHandling:
             repo_name='minimal-repo',
             fingerprint='fp_xyz',
             description=None,  # Optional
-            homepage=None,  # Optional
+            homepage_url=None,  # Optional
             license_name=None,  # Optional
         )
         

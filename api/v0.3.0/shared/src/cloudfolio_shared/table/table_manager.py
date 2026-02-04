@@ -49,10 +49,14 @@ class TableNames:
 
 @dataclass
 class SessionCandidateRow:
-    """Lightweight mapping of a session to recently queried candidates."""
+    """Lightweight mapping of a session to recently queried candidates.
+    
+    PartitionKey: session_id
+    RowKey: username
+    """
 
-    session_id: str
-    username: str
+    session_id: str  # PartitionKey
+    username: str  # RowKey
     latest_job_id: Optional[str] = None
     last_viewed_at: Optional[str] = None
     query_count: int = 0
@@ -62,10 +66,13 @@ class SessionCandidateRow:
 @dataclass
 class JobMetadataRow:
     """Job tracking - normalized schema.
+    
+    PartitionKey: username (enables per-user queries)
+    RowKey: job_id (unique job identifier)
     """
 
-    username: str
-    job_id: str
+    username: str  # PartitionKey
+    job_id: str  # RowKey
     status: str = "queued" # "queued" | "syncing" | "metadata_ready" | "completed" | "failed"
     bundle_fingerprint: Optional[str] = None
     force_refresh: bool = False
@@ -78,10 +85,14 @@ class JobMetadataRow:
 
 @dataclass
 class RepoLanguagesRow:
-    """Per-repo language statistics - normalized from RepoMetadata.languages."""
+    """Per-repo language statistics - normalized from RepoMetadata.languages.
+    
+    PartitionKey: job_id (lifecycle of operation)
+    RowKey: repo_language_key format "{repo_name}|{language}"
+    """
 
-    job_id: str  # PartitionKey (lifecycle of operation)
-    repo_language_key: str  # RowKey: "{repo_name}|{language}"
+    job_id: str  # PartitionKey
+    repo_language_key: str  # RowKey
     repo_name: str
     language: str
     bytes_count: int
@@ -95,6 +106,9 @@ class RepoGitHubMetadataRow:
     """GitHub-specific metadata - normalized from RepoMetadata.metadata.
     
     Includes fingerprint for content versioning and cache invalidation.
+    
+    PartitionKey: username (groups all repos for a user)
+    RowKey: repo_name (unique repository name)
     """
 
     username: str  # PartitionKey
@@ -125,10 +139,13 @@ class RepoSyncStatusRow:
     
     Tracks progress through: sync (metadata) → cache (files) → merge (bundle).
     Status transitions: pending → synced → cached → merged (or failed at any stage).
+    
+    PartitionKey: job_id (groups all repos for a job)
+    RowKey: repo_name (unique repo within job)
     """
 
-    job_id: str
-    repo_name: str
+    job_id: str  # PartitionKey
+    repo_name: str  # RowKey
     username: str
     status: str  # pending | synced | cached | failed
     sync_message_id: Optional[str] = None  # Queue message ID for sync job
@@ -203,7 +220,7 @@ def _utcnow_iso() -> str:
 
 
 def _azure_safe_timestamp(iso_timestamp: Optional[str] = None) -> str:
-    """Return Azure Table-safe timestamp (no :, /, \, #, ? characters).
+    r"""Return Azure Table-safe timestamp (no :, /, \, #, ? characters).
     
     Args:
         iso_timestamp: ISO format timestamp string. If None, uses current UTC time.
@@ -349,6 +366,13 @@ class TableManager:
     # ------------------------------------------------------------------
 
     def upsert_session_candidate(self, session_id: str, username: str, job_id: Optional[str]) -> None:
+        """Upsert session candidate with FK validation.
+        
+        PartitionKey: session_id
+        RowKey: username
+        Validates: job_id exists in JobMetadata if provided
+        Increments: query_count on each upsert
+        """
         table = self._get_table_client(self.table_names.session_candidates)
         if not table:
             return
@@ -396,6 +420,11 @@ class TableManager:
         )
 
     def list_session_candidates(self, session_id: str, *, limit: int = 10) -> List[Dict[str, Any]]:
+        """List candidate history for a session.
+        
+        PartitionKey: session_id
+        Returns: List of deserialized candidates sorted by last_viewed_at (most recent first)
+        """
         table = self._get_table_client(self.table_names.session_candidates)
         if not table or not session_id:
             return []
@@ -427,6 +456,12 @@ class TableManager:
     # Job metadata
     # ------------------------------------------------------------------
     def upsert_job_metadata(self, row: JobMetadataRow) -> None:
+        """Insert or update job metadata.
+        
+        PartitionKey: username
+        RowKey: job_id
+        Required fields: username, job_id
+        """
         table = self._get_table_client(self.table_names.job_metadata)
         if not table:
             return
@@ -494,6 +529,12 @@ class TableManager:
 
 
     def get_job_metadata(self, username: str, job_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve job metadata by username and job_id.
+        
+        PartitionKey: username
+        RowKey: job_id
+        Returns: Deserialized job dict or None if not found
+        """
         table = self._get_table_client(self.table_names.job_metadata)
         if not table:
             return None
@@ -505,6 +546,11 @@ class TableManager:
         return self._deserialize_job_metadata(entity)
 
     def list_jobs_metadata(self, username: str) -> List[Dict[str, Any]]:
+        """List all jobs for a user.
+        
+        PartitionKey: username
+        Returns: List of deserialized job dicts
+        """
         table = self._get_table_client(self.table_names.job_metadata)
         if not table:
             return []
@@ -520,6 +566,11 @@ class TableManager:
         *,
         updated_before: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        """List jobs across all users filtered by status and optionally by updated_at.
+        
+        Warning: Table scan operation - no PartitionKey filtering
+        Returns: List of deserialized job dicts matching criteria
+        """
         table = self._get_table_client(self.table_names.job_metadata)
         if not table:
             return []
@@ -586,7 +637,12 @@ class TableManager:
         logger.info("[TABLE_UPSERT_GITHUB_METADATA] user=%s repo=%s", row.username, row.repo_name)
 
     def get_repo_github_metadata(self, username: str, repo_name: str) -> Optional[Dict[str, Any]]:
-        """Get GitHub metadata for a repository."""
+        """Get GitHub metadata for a repository.
+        
+        PartitionKey: username
+        RowKey: repo_name
+        Returns: Deserialized metadata dict or None if not found
+        """
         table = self._get_table_client(self.table_names.repo_github_metadata)
         if not table:
             return None
@@ -597,7 +653,11 @@ class TableManager:
         return self._deserialize_repo_github_metadata(entity)
 
     def query_repo_github_metadata(self, username: str) -> List[Dict[str, Any]]:
-        """Query all GitHub metadata for a user's repositories."""
+        """Query all GitHub metadata for a user's repositories.
+        
+        PartitionKey: username
+        Returns: List of deserialized metadata dicts for all user repositories
+        """
         table = self._get_table_client(self.table_names.repo_github_metadata)
         if not table:
             return []
@@ -632,6 +692,13 @@ class TableManager:
     # Repo sync status (per job, per repo)
     # ------------------------------------------------------------------
     def upsert_repo_status(self, row: RepoSyncStatusRow) -> None:
+        """Insert or update repository sync status.
+        
+        PartitionKey: job_id
+        RowKey: repo_name
+        Required fields: job_id, repo_name, username, status
+        Validates: status must be in ['pending', 'synced', 'cached', 'failed']
+        """
         table = self._get_table_client(self.table_names.repo_sync_status)
         if not table:
             return
@@ -662,6 +729,12 @@ class TableManager:
         )
 
     def get_repo_status(self, job_id: str, repo_name: str) -> Optional[Dict[str, Any]]:
+        """Get sync status for a specific repository in a job.
+        
+        PartitionKey: job_id
+        RowKey: repo_name
+        Returns: Deserialized status dict or None if not found
+        """
         table = self._get_table_client(self.table_names.repo_sync_status)
         if not table:
             return None
@@ -673,6 +746,11 @@ class TableManager:
         return self._deserialize_repo_status(entity)
 
     def list_repo_statuses(self, job_id: str) -> List[Dict[str, Any]]:
+        """List all repository sync statuses for a job.
+        
+        PartitionKey: job_id
+        Returns: List of deserialized status dicts for all repositories in the job
+        """
         table = self._get_table_client(self.table_names.repo_sync_status)
         if not table:
             return []
@@ -748,7 +826,12 @@ class TableManager:
     # Repo languages
     # ------------------------------------------------------------------
     def upsert_repo_languages(self, row: RepoLanguagesRow) -> None:
-        """Store language statistics for a repository."""
+        """Store language statistics for a repository.
+        
+        PartitionKey: job_id
+        RowKey: "{repo_name}|{language}"
+        Required fields: job_id, repo_name, language, bytes_count
+        """
         table = self._get_table_client(self.table_names.repo_languages)
         if not table:
             return
@@ -793,7 +876,10 @@ class TableManager:
         logger.info("[TABLE_UPSERT_LANGUAGES] total=%d succeeded=%d", len(rows), success_count)
 
     def delete_repo_languages(self, job_id: str, repo_name: str) -> None:
-        """Delete language entries for a repository within a specific job."""
+        """Delete language entries for a repository within a specific job.
+        
+        Filters by PartitionKey (job_id) and repo_name field.
+        """
         table = self._get_table_client(self.table_names.repo_languages)
         if not table:
             return
@@ -848,8 +934,8 @@ class TableManager:
         
         count = 0
         try:
-            # Query only keys to delete
-            entities = table.list_entities(filter=filter_str, select=["PartitionKey", "RowKey"])
+            # Query only keys to delete - convert to list first to avoid iteration during modification
+            entities = list(table.list_entities(filter=filter_str, select=["PartitionKey", "RowKey"]))
             
             for e in entities:
                 try:
@@ -982,6 +1068,13 @@ class TableManager:
     # User profile
     # ------------------------------------------------------------------
     def upsert_user_profile(self, row: UserProfileRow) -> None:
+        """Insert or update cached GitHub user profile.
+        
+        PartitionKey: username
+        RowKey: profile_key (default: 'profile')
+        Required fields: username
+        Timestamps: github_created_at, github_updated_at, cached_at (restored from Azure-safe format)
+        """
         table = self._get_table_client(self.table_names.user_profile)
         if not table:
             return
@@ -1013,6 +1106,12 @@ class TableManager:
         logger.info("[TABLE_UPSERT_USER_PROFILE] user=%s", row.username)
 
     def get_user_profile(self, username: str) -> Optional[Dict[str, Any]]:
+        """Retrieve user profile by username.
+        
+        PartitionKey: username
+        RowKey: "profile" (fixed)
+        Returns: Deserialized profile dict or None if not found
+        """
         table = self._get_table_client(self.table_names.user_profile)
         if not table or not username:
             return None

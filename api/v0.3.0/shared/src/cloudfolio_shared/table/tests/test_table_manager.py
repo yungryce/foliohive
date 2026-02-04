@@ -33,7 +33,7 @@ class _FakeTableClient:
     def create_table(self) -> None:  # pragma: no cover
         return None
 
-    def upsert_entity(self, entity: dict, _mode=None) -> None:
+    def upsert_entity(self, entity: dict, mode=None) -> None:
         key = (entity["PartitionKey"], entity["RowKey"])
         stored = dict(self.entities.get(key, {}))
         stored.update(entity)
