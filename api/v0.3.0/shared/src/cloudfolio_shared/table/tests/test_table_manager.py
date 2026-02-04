@@ -187,6 +187,37 @@ def test_job_metadata_roundtrip_and_partial_update(table_manager: TableManager) 
     assert len(jobs) == 1
 
 
+def test_job_metadata_timestamp_storage_and_restore(table_manager: TableManager) -> None:
+    created_at = "2026-02-01T10:00:00+00:00"
+    last_requeue_at = "2026-02-01T10:05:00+00:00"
+    completed_at = "2026-02-01T11:00:00+00:00"
+
+    table_manager.upsert_job_metadata(
+        JobMetadataRow(
+            username="alice",
+            job_id="job-2",
+            status="queued",
+            created_at=created_at,
+            last_requeue_at=last_requeue_at,
+        )
+    )
+    table_manager.update_job_metadata("alice", "job-2", {"completed_at": completed_at})
+
+    raw = table_manager._get_table_client(table_manager.table_names.job_metadata).entities[("alice", "job-2")]
+    assert ":" not in raw["created_at"]
+    assert "+" not in raw["created_at"]
+    assert ":" not in raw["last_requeue_at"]
+    assert "+" not in raw["last_requeue_at"]
+    assert ":" not in raw["completed_at"]
+    assert "+" not in raw["completed_at"]
+
+    fetched = table_manager.get_job_metadata("alice", "job-2")
+    assert fetched is not None
+    assert fetched["created_at"] == created_at
+    assert fetched["last_requeue_at"] == last_requeue_at
+    assert fetched["completed_at"] == completed_at
+
+
 def test_session_candidate_fk_validation_and_counter(table_manager: TableManager) -> None:
     table_manager.upsert_job_metadata(JobMetadataRow(username="alice", job_id="job-1"))
 
@@ -251,6 +282,28 @@ def test_repo_sync_status_validation_and_updates(table_manager: TableManager) ->
     assert fetched is not None
     assert fetched["status"] == "synced"
     assert fetched["synced_at"] == "t"
+
+
+def test_repo_sync_status_timestamp_storage_and_restore(table_manager: TableManager) -> None:
+    synced_at = "2026-02-02T09:00:00+00:00"
+    cached_at = "2026-02-02T10:00:00+00:00"
+
+    table_manager.upsert_repo_status(
+        RepoSyncStatusRow(job_id="job-2", repo_name="api", username="alice", status="pending")
+    )
+    table_manager.update_repo_status("job-2", "api", {"status": "synced", "synced_at": synced_at})
+    table_manager.update_repo_status("job-2", "api", {"status": "cached", "cached_at": cached_at})
+
+    raw = table_manager._get_table_client(table_manager.table_names.repo_sync_status).entities[("job-2", "api")]
+    assert ":" not in raw["synced_at"]
+    assert "+" not in raw["synced_at"]
+    assert ":" not in raw["cached_at"]
+    assert "+" not in raw["cached_at"]
+
+    fetched = table_manager.get_repo_status("job-2", "api")
+    assert fetched is not None
+    assert fetched["synced_at"] == synced_at
+    assert fetched["cached_at"] == cached_at
 
 
 def test_repo_languages_query_delete_and_cleanup(table_manager: TableManager) -> None:
@@ -321,6 +374,28 @@ def test_repo_languages_query_delete_and_cleanup(table_manager: TableManager) ->
     assert deleted == 2
 
 
+def test_repo_languages_timestamp_restore(table_manager: TableManager) -> None:
+    created_at = "2026-02-03T12:00:00+00:00"
+
+    table_manager.upsert_repo_languages(
+        RepoLanguagesRow(
+            job_id="job-3",
+            repo_language_key="api|Python",
+            repo_name="api",
+            language="Python",
+            bytes_count=100,
+            created_at=created_at,
+        )
+    )
+
+    raw = table_manager._get_table_client(table_manager.table_names.repo_languages).entities[("job-3", "api|Python")]
+    assert ":" not in raw["created_at"]
+    assert "+" not in raw["created_at"]
+
+    fetched = table_manager.query_repo_languages("job-3")["api"][0]
+    assert fetched["created_at"] == created_at
+
+
 def test_repo_api_usage_filters(table_manager: TableManager) -> None:
     table_manager.upsert_api_usage(
         RepoAPIUsageRow(
@@ -355,6 +430,34 @@ def test_repo_api_usage_filters(table_manager: TableManager) -> None:
     op_usage = table_manager.list_api_usage("alice", operation="freshness_check")
     assert len(op_usage) == 1
     assert op_usage[0]["api_calls_rest"] == 1
+
+
+def test_repo_api_usage_timestamp_restore(table_manager: TableManager) -> None:
+    created_at = "2026-02-04T07:30:00+00:00"
+    rate_limit_reset = "2026-02-04T08:00:00+00:00"
+
+    table_manager.upsert_api_usage(
+        RepoAPIUsageRow(
+            username="alice",
+            operation_key="meta|2026-02-04|repo-a",
+            operation="metadata_sync",
+            job_id="job-1",
+            repo_name="repo-a",
+            api_calls_rest=2,
+            created_at=created_at,
+            rate_limit_reset=rate_limit_reset,
+        )
+    )
+
+    raw = table_manager._get_table_client(table_manager.table_names.repo_api_usage).entities[("alice", "meta|2026-02-04|repo-a")]
+    assert ":" not in raw["created_at"]
+    assert "+" not in raw["created_at"]
+    assert ":" not in raw["rate_limit_reset"]
+    assert "+" not in raw["rate_limit_reset"]
+
+    fetched = table_manager.list_api_usage("alice", operation="metadata_sync")
+    assert fetched[0]["created_at"] == created_at
+    assert fetched[0]["rate_limit_reset"] == rate_limit_reset
 
 
 def test_user_profile_roundtrip(table_manager: TableManager) -> None:

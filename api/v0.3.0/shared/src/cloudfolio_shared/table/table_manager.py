@@ -478,10 +478,10 @@ class TableManager:
             "status": row.status,
             "bundle_fingerprint": row.bundle_fingerprint or "",
             "force_refresh": bool(row.force_refresh),
-            "last_requeue_at": row.last_requeue_at or "",
+            "last_requeue_at": _azure_safe_timestamp(row.last_requeue_at) if row.last_requeue_at else "",
             "trace_id": row.trace_id or "",
             "request_id": row.request_id or "",
-            "created_at": row.created_at or now,
+            "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
             "updated_at": now,
         }
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
@@ -523,7 +523,10 @@ class TableManager:
             "updated_at": _azure_safe_timestamp()
         }
         for key, value in updates.items():
-            entity[key] = value if value is not None else ""
+            if key.endswith("_at") and value:
+                entity[key] = _azure_safe_timestamp(value)
+            else:
+                entity[key] = value if value is not None else ""
         
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
 
@@ -580,7 +583,7 @@ class TableManager:
         status_filters = [f"status eq '{status}'" for status in status_list]
         filters = [f"({' or '.join(status_filters)})"]
         if updated_before:
-            filters.append(f"updated_at lt '{updated_before}'")
+            filters.append(f"updated_at lt '{_azure_safe_timestamp(updated_before)}'")
         filter_str = " and ".join(filters)
         query = list(table.list_entities(filter=filter_str))
         return [self._deserialize_job_metadata(e) for e in query]
@@ -592,12 +595,12 @@ class TableManager:
         payload["username"] = payload.get("PartitionKey")
         payload["job_id"] = payload.get("RowKey")
         payload["bundle_fingerprint"] = payload.get("bundle_fingerprint") or None
-        payload["last_requeue_at"] = payload.get("last_requeue_at") or None
         payload["trace_id"] = payload.get("trace_id") or None
         payload["request_id"] = payload.get("request_id") or None
         payload["force_refresh"] = bool(payload.get("force_refresh"))
-        payload["created_at"] = payload.get("created_at") or None
-        payload["updated_at"] = payload.get("updated_at") or None
+        for key in list(payload.keys()):
+            if key.endswith("_at"):
+                payload[key] = _restore_iso_timestamp(payload.get(key))
         return payload
 
 
@@ -681,7 +684,7 @@ class TableManager:
         payload["forks_count"] = int(payload.get("forks_count", 0))
         
         # Restore ISO format timestamps from Azure-safe format
-        for ts_field in ["github_created_at", "github_updated_at", "github_pushed_at"]:
+        for ts_field in ["github_created_at", "github_updated_at", "github_pushed_at", "created_at", "updated_at"]:
             if ts_field in payload:
                 payload[ts_field] = _restore_iso_timestamp(payload[ts_field])
         
@@ -715,9 +718,9 @@ class TableManager:
             "sync_message_id": row.sync_message_id or "",
             "cache_message_id": row.cache_message_id or "",
             "error": row.error or "",
-            "synced_at": row.synced_at or "",
-            "cached_at": row.cached_at or "",
-            "updated_at": row.updated_at or now,
+            "synced_at": _azure_safe_timestamp(row.synced_at) if row.synced_at else "",
+            "cached_at": _azure_safe_timestamp(row.cached_at) if row.cached_at else "",
+            "updated_at": _azure_safe_timestamp(row.updated_at) if row.updated_at else now,
         }
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
         logger.info(
@@ -801,8 +804,12 @@ class TableManager:
             "RowKey": repo_name,
             "updated_at": _azure_safe_timestamp()
         }
+        timestamp_fields = {"synced_at", "cached_at", "updated_at"}
         for key, value in updates.items():
-            entity[key] = value if value is not None else ""
+            if key in timestamp_fields and value:
+                entity[key] = _azure_safe_timestamp(value)
+            else:
+                entity[key] = value if value is not None else ""
         
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
 
@@ -816,10 +823,10 @@ class TableManager:
         payload["status"] = (payload.get("status") or "").lower() or None
         payload["sync_message_id"] = payload.get("sync_message_id") or None
         payload["cache_message_id"] = payload.get("cache_message_id") or None
-        payload["synced_at"] = payload.get("synced_at") or None
-        payload["cached_at"] = payload.get("cached_at") or None
+        payload["synced_at"] = _restore_iso_timestamp(payload.get("synced_at"))
+        payload["cached_at"] = _restore_iso_timestamp(payload.get("cached_at"))
         payload["error"] = payload.get("error") or None
-        payload["updated_at"] = payload.get("updated_at") or None
+        payload["updated_at"] = _restore_iso_timestamp(payload.get("updated_at"))
         return payload
 
     # ------------------------------------------------------------------
@@ -955,10 +962,8 @@ class TableManager:
             payload.pop(meta_key, None)
         payload["job_id"] = payload.pop("PartitionKey", None)
         payload["repo_language_key"] = payload.pop("RowKey", None)
-        try:
-            payload["topics"] = json.loads(payload.get("topics") or "[]")
-        except json.JSONDecodeError:
-            payload["topics"] = []
+        payload["created_at"] = _restore_iso_timestamp(payload.get("created_at"))
+        payload["updated_at"] = _restore_iso_timestamp(payload.get("updated_at"))
         return payload
 
     # ------------------------------------------------------------------
@@ -986,9 +991,9 @@ class TableManager:
             "api_calls_graphql": row.api_calls_graphql,
             "cache_hits": row.cache_hits,
             "rate_limit_remaining": row.rate_limit_remaining,
-            "rate_limit_reset": row.rate_limit_reset,
+            "rate_limit_reset": _azure_safe_timestamp(row.rate_limit_reset) if row.rate_limit_reset else "",
             "error": row.error,
-            "created_at": row.created_at or now,
+            "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
         }
         
         logger.debug(
@@ -1062,6 +1067,8 @@ class TableManager:
             payload.pop(meta_key, None)
         payload["username"] = payload.pop("PartitionKey", None)
         payload["operation_key"] = payload.pop("RowKey", None)
+        payload["created_at"] = _restore_iso_timestamp(payload.get("created_at"))
+        payload["rate_limit_reset"] = _restore_iso_timestamp(payload.get("rate_limit_reset"))
         return payload
 
     # ------------------------------------------------------------------

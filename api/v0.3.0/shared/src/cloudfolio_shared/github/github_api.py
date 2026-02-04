@@ -25,7 +25,6 @@ class GitHubAPI:
         self.token = token or os.getenv('GITHUB_TOKEN')
         if not self.token:
             logger.warning("GitHub API token is missing; unauthenticated requests may be rate-limited")
-            raise ValueError("GitHub API token is required")
 
         resolved_username = username or os.getenv('GITHUB_USERNAME')
         if not resolved_username:

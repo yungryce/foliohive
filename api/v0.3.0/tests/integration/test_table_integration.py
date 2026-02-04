@@ -7,12 +7,32 @@ Tests the hot/cold data separation:
 """
 from __future__ import annotations
 
+import os
+import sys
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 from unittest.mock import MagicMock
 
 import pytest
+
+from azure.core.exceptions import ResourceNotFoundError
+
+from cloudfolio_shared import FingerprintManager
+from cloudfolio_shared.table import (
+    JobMetadataRow,
+    RepoGitHubMetadataRow,
+    RepoSyncStatusRow,
+    TableManager,
+    TableNames,
+)
+
+
+_FUNCTION_APP_PATH = os.path.realpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "function-app")
+)
+if os.path.isdir(_FUNCTION_APP_PATH) and _FUNCTION_APP_PATH not in sys.path:
+    sys.path.insert(0, _FUNCTION_APP_PATH)
 
 
 @pytest.fixture
@@ -117,6 +137,124 @@ def mock_table_manager():
     manager.get_model_metadata = get_model_metadata
     
     return manager
+
+
+class _FakeTableClient:
+    def __init__(self) -> None:
+        self.entities: dict[tuple[str, str], dict] = {}
+
+    def create_table(self) -> None:  # pragma: no cover
+        return None
+
+    def upsert_entity(self, entity: dict, mode=None) -> None:
+        key = (entity["PartitionKey"], entity["RowKey"])
+        stored = dict(self.entities.get(key, {}))
+        stored.update(entity)
+        self.entities[key] = stored
+
+    def get_entity(self, partition_key: str, row_key: str) -> dict:
+        key = (partition_key, row_key)
+        if key not in self.entities:
+            raise ResourceNotFoundError("entity not found")
+        return dict(self.entities[key])
+
+    def delete_entity(self, partition_key: str, row_key: str) -> None:
+        key = (partition_key, row_key)
+        if key not in self.entities:
+            raise ResourceNotFoundError("entity not found")
+        del self.entities[key]
+
+    def list_entities(self, *args, **kwargs):  # type: ignore[override]
+        filter_str = kwargs.get("filter")
+        if filter_str is None and args:
+            filter_str = args[0]
+        select = kwargs.get("select")
+
+        for entity in self.entities.values():
+            if self._matches_filter(entity, filter_str or ""):
+                if select:
+                    yield {k: entity.get(k) for k in select}
+                else:
+                    yield dict(entity)
+
+    def query_entities(self, query_filter: str, *, _results_per_page=None, **_kwargs):
+        yield from self.list_entities(query_filter)
+
+    @staticmethod
+    def _extract_eq_values(filter_str: str, field: str) -> set[str]:
+        token = f"{field} eq '"
+        start = 0
+        values: set[str] = set()
+        while True:
+            idx = filter_str.find(token, start)
+            if idx == -1:
+                break
+            start_val = idx + len(token)
+            end_val = filter_str.find("'", start_val)
+            if end_val == -1:
+                break
+            values.add(filter_str[start_val:end_val])
+            start = end_val + 1
+        return values
+
+    @staticmethod
+    def _extract_lt_value(filter_str: str, field: str) -> str | None:
+        token = f"{field} lt '"
+        idx = filter_str.find(token)
+        if idx == -1:
+            return None
+        start_val = idx + len(token)
+        end_val = filter_str.find("'", start_val)
+        if end_val == -1:
+            return None
+        return filter_str[start_val:end_val]
+
+    def _matches_filter(self, entity: dict, filter_str: str) -> bool:
+        if not filter_str:
+            return True
+
+        partition_values = self._extract_eq_values(filter_str, "PartitionKey")
+        if partition_values and entity.get("PartitionKey") not in partition_values:
+            return False
+
+        row_key_values = self._extract_eq_values(filter_str, "RowKey")
+        if row_key_values and entity.get("RowKey") not in row_key_values:
+            return False
+
+        for field in ("repo_name", "job_id", "operation", "status"):
+            values = self._extract_eq_values(filter_str, field)
+            if values and entity.get(field) not in values:
+                return False
+
+        updated_before = self._extract_lt_value(filter_str, "updated_at")
+        if updated_before:
+            updated_at = entity.get("updated_at")
+            if not updated_at or str(updated_at) >= updated_before:
+                return False
+
+        created_before = self._extract_lt_value(filter_str, "created_at")
+        if created_before:
+            created_at = entity.get("created_at")
+            if not created_at or str(created_at) >= created_before:
+                return False
+
+        return True
+
+
+class _FakeServiceClient:
+    def __init__(self) -> None:
+        self.tables: dict[str, _FakeTableClient] = {}
+
+    def get_table_client(self, name: str) -> _FakeTableClient:
+        if name not in self.tables:
+            self.tables[name] = _FakeTableClient()
+        return self.tables[name]
+
+
+@pytest.fixture(name="real_table_manager")
+def _real_table_manager() -> TableManager:
+    service = _FakeServiceClient()
+    return TableManager(table_service_client=service, table_names=TableNames())
 
 
 class TestTableFirstArchitecture:
@@ -810,3 +948,82 @@ class TestBatchOperationsAndErrorHandling:
         assert result is not None
         # Verify None fields don't cause errors
         assert result['fingerprint'] == 'fp_xyz'
+
+
+class TestWorkerBlueprintTableIntegration:
+    def test_sync_worker_updates_status_and_job(self, monkeypatch, real_table_manager: TableManager) -> None:
+        from cloudfolio_shared.table import JobMetadataRow, RepoSyncStatusRow
+        from blueprints import sync_worker
+
+        monkeypatch.setattr(sync_worker, "table_manager", real_table_manager)
+
+        username = "testuser"
+        job_id = "job-xyz"
+        repo_name = "repo-1"
+
+        real_table_manager.upsert_job_metadata(
+            JobMetadataRow(username=username, job_id=job_id, status="queued")
+        )
+        real_table_manager.upsert_repo_status(
+            RepoSyncStatusRow(job_id=job_id, repo_name=repo_name, username=username, status="pending")
+        )
+
+        sync_worker._update_job_progress(job_id, username, repo_name, sync_failed=False, message_id="msg-1")
+
+        repo_status = real_table_manager.get_repo_status(job_id, repo_name)
+        assert repo_status is not None
+        assert repo_status["status"] == "synced"
+        assert repo_status["synced_at"] is not None
+
+        job = real_table_manager.get_job_metadata(username, job_id)
+        assert job is not None
+        assert job["status"] == "syncing"
+
+    def test_cache_worker_completes_job_and_sets_bundle_fingerprint(
+        self,
+        monkeypatch,
+        real_table_manager: TableManager,
+    ) -> None:
+        from cloudfolio_shared.table import JobMetadataRow, RepoGitHubMetadataRow, RepoSyncStatusRow
+        from blueprints import cache_worker
+
+        monkeypatch.setattr(cache_worker, "table_manager", real_table_manager)
+
+        username = "testuser"
+        job_id = "job-abc"
+        repo_name = "repo-2"
+
+        real_table_manager.upsert_job_metadata(
+            JobMetadataRow(username=username, job_id=job_id, status="syncing")
+        )
+        real_table_manager.upsert_repo_status(
+            RepoSyncStatusRow(job_id=job_id, repo_name=repo_name, username=username, status="synced")
+        )
+        real_table_manager.upsert_repo_github_metadata(
+            RepoGitHubMetadataRow(
+                username=username,
+                repo_name=repo_name,
+                fingerprint="fp-123",
+                description="Test repo",
+            )
+        )
+
+        cache_worker._update_cache_progress(
+            job_id,
+            username,
+            repo_name,
+            cache_failed=False,
+            message_id="msg-cache",
+        )
+
+        repo_status = real_table_manager.get_repo_status(job_id, repo_name)
+        assert repo_status is not None
+        assert repo_status["status"] == "cached"
+        assert repo_status["cached_at"] is not None
+
+        job = real_table_manager.get_job_metadata(username, job_id)
+        assert job is not None
+        expected_fingerprint = FingerprintManager.generate_bundle_fingerprint(["fp-123"])
+        assert job["status"] == "completed"
+        assert job["bundle_fingerprint"] == expected_fingerprint
+        assert job.get("completed_at") is not None

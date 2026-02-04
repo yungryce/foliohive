@@ -1,7 +1,7 @@
 """Cache worker blueprint.
 
 Consumes messages from the ``github-cache`` queue, fetches repository file contents
-(readme, config) and persists them to blob cache for client consumption and training.
+(readme, config) and persists them to blob cache for client consumption.
 
 This worker operates asynchronously from metadata sync - files are cached in the
 background while clients can access metadata immediately via table_manager.
@@ -22,7 +22,6 @@ from cloudfolio_shared import (
     FingerprintManager,
     GitHubAPI,
     GitHubRepoManager,
-    queue_manager,
     table_manager,
 )
 from cloudfolio_shared.table import RepoAPIUsageRow
@@ -36,14 +35,6 @@ bp = func.Blueprint()
 STANDARD_CONFIG_FETCH_LIMIT = 20
 STANDARD_CONFIG_MAX_CHARS = 4000
 READ_ME_EXCERPT_MAX_CHARS = 4096
-TRAINING_PARAMS = {"batch_size": 8, "epochs": 2}
-
-
-def _is_training_enabled() -> bool:
-    """Check if training feature is enabled via environment variable."""
-    return os.getenv("CF_TRAINING_ENABLED", "false").lower() == "true"
-
-
 def _get_repo_manager(username: str) -> GitHubRepoManager:
     if not username:
         raise ValueError("Username is required")
@@ -342,23 +333,7 @@ def _update_cache_progress(
             )
             logger.info("[JOB_COMPLETED] job=%s repos=%d fingerprint=%s", job_id, len(cached), fingerprint)
             
-            # Enqueue training job if feature is enabled
-            if _is_training_enabled():
-                enqueued = queue_manager.enqueue_training_job(
-                    job_id=job_id,
-                    username=username,
-                    repo_names=cached,
-                    bundle_fingerprint=fingerprint,
-                    training_params=TRAINING_PARAMS,
-                    experiment_name=os.getenv("TRAINING_EXPERIMENT", "default"),
-                    trace_id=trace_id,
-                )
-                if enqueued:
-                    logger.info("[TRAINING_ENQUEUED] job=%s - Training job enqueued", job_id)
-                else:
-                    logger.warning("[TRAINING_ENQUEUE_FAILED] job=%s - Failed to enqueue training", job_id)
-            else:
-                logger.info("[TRAINING_DISABLED] job=%s - Training feature disabled", job_id)
+            logger.info("[TRAINING_DISABLED] job=%s - Training queue deprecated", job_id)
         elif failed:
             table_manager.update_job_metadata(username, job_id, {"status": "failed"})
             logger.error("[JOB_FAILED] job=%s - All cache jobs failed", job_id)

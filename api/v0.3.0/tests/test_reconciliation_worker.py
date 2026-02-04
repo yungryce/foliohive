@@ -1,10 +1,19 @@
 from datetime import datetime, timedelta, timezone
 
+import os
+import sys
+
+_FUNCTION_APP_PATH = os.path.realpath(
+    os.path.join(os.path.dirname(__file__), "..", "function-app")
+)
+if os.path.isdir(_FUNCTION_APP_PATH) and _FUNCTION_APP_PATH not in sys.path:
+    sys.path.insert(0, _FUNCTION_APP_PATH)
+
 from blueprints.reconciliation_worker import (
     _compute_missing_repos,
     _parse_iso_ts,
-    _should_enqueue_merge,
     _should_requeue,
+    _should_trigger_cache_jobs,
 )
 
 
@@ -16,16 +25,16 @@ def test_compute_missing_repos_excludes_processed():
     assert missing == {"b"}
 
 
-def test_should_enqueue_merge_requires_all_processed_and_some_synced():
+def test_should_trigger_cache_jobs_requires_all_processed_and_some_synced():
     expected = ["a", "b"]
     synced = ["a"]
     failed = ["b"]
-    assert _should_enqueue_merge(expected, synced, failed) is True
+    assert _should_trigger_cache_jobs(expected, synced, failed) is True
 
     expected = ["a", "b"]
     synced = []
     failed = ["a", "b"]
-    assert _should_enqueue_merge(expected, synced, failed) is False
+    assert _should_trigger_cache_jobs(expected, synced, failed) is False
 
 
 def test_parse_iso_ts_handles_zulu_and_offset():

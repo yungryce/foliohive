@@ -72,24 +72,6 @@ class TestQueueMessageFormats:
         assert isinstance(message["synced_repos"], list)
         assert all(isinstance(r, str) for r in message["synced_repos"])
 
-    def test_training_job_message_format(self):
-        """Verify training job message has all required fields."""
-        message = {
-            "username": "testuser",
-            "bundle_cache_key": "repos_bundle_context_testuser",
-            "repo_names": ["repo-1", "repo-2", "repo-3"],
-            "training_params": {"batch_size": 8, "epochs": 2},
-        }
-
-        # Validate structure
-        assert "username" in message
-        assert "bundle_cache_key" in message
-        assert "repo_names" in message
-        assert "training_params" in message
-
-        assert isinstance(message["repo_names"], list)
-        assert len(message["repo_names"]) >= 3  # Minimum for training
-
     def test_status_update_message_format(self):
         """Verify status update message has all required fields."""
         job_id = str(uuid.uuid4())
@@ -126,7 +108,6 @@ class TestQueueRouting:
         queues = {
             "github-sync": [],
             "merge-results": [],
-            "model-training": [],
             "job-status-updates": [],
         }
 
@@ -178,22 +159,6 @@ class TestQueueRouting:
         assert len(merge_messages) == 1
         assert merge_messages[0]["trigger_source"] == "sync_complete"
 
-    def test_merge_worker_routes_to_training_queue(self, queue_router):
-        """Verify Merge Worker sends to model-training queue."""
-        message = {
-            "username": "testuser",
-            "bundle_cache_key": "repos_bundle_context_testuser",
-            "repo_names": [f"repo-{i}" for i in range(3)],
-            "training_params": {"batch_size": 8},
-        }
-        queue_router.send("model-training", message)
-
-        training_messages = queue_router.get_messages("model-training")
-        assert len(training_messages) == 1
-        assert training_messages[0]["bundle_cache_key"] == "repos_bundle_context_testuser"
-        assert len(training_messages[0]["repo_names"]) == 3
-
-
 # ---------------------------------------------------------------------------
 # Message Serialization Tests
 # ---------------------------------------------------------------------------
@@ -237,33 +202,18 @@ class TestMessageSerialization:
         assert deserialized == original
         assert deserialized["synced_repos"] == original["synced_repos"]
 
-    def test_training_message_json_roundtrip(self):
-        """Verify training messages survive JSON serialization."""
-        original = {
-            "username": "testuser",
-            "bundle_cache_key": "repos_bundle_context_testuser",
-            "repo_names": ["repo-1"],
-            "training_params": {"batch_size": 8, "learning_rate": 0.001},
-        }
-
-        serialized = json.dumps(original)
-        deserialized = json.loads(serialized)
-
-        assert deserialized == original
-        assert deserialized["bundle_cache_key"] == original["bundle_cache_key"]
-
     def test_message_with_unicode_content(self):
         """Verify messages with unicode content serialize correctly."""
         original = {
             "username": "testuser",
-            "bundle_cache_key": "repos_bundle_context_testuser",
-            "repo_names": ["i18n-repo", "国际化"],
+            "repo_name": "国际化",
+            "job_id": "job-1",
         }
 
         serialized = json.dumps(original, ensure_ascii=False)
         deserialized = json.loads(serialized)
 
-        assert "国际化" in deserialized["repo_names"][1]
+        assert deserialized["repo_name"] == "国际化"
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +232,6 @@ class TestInterWorkerCommunication:
             "queues": {
                 "github-sync": [],
                 "merge-results": [],
-                "model-training": [],
             },
         }
 
@@ -322,60 +271,6 @@ class TestInterWorkerCommunication:
         merge_msg = worker_context["queues"]["merge-results"][0]
         assert len(merge_msg["synced_repos"]) == total_repos
 
-    def test_merge_completion_triggers_training(self, worker_context):
-        """Verify merge completion triggers training job."""
-        job_id = str(uuid.uuid4())
-        username = "testuser"
-
-        # Simulate merged bundle
-        bundle = [
-            {"name": f"repo-{i}", "has_documentation": True, "readme": f"content-{i}"}
-            for i in range(4)
-        ]
-
-        # Cache the bundle
-        bundle_key = f"repos_bundle_context_{username}"
-        worker_context["cache"][bundle_key] = bundle
-
-        # Merge worker enqueues training
-        documented_count = len([r for r in bundle if r.get("has_documentation")])
-        if documented_count >= 3:
-            worker_context["queues"]["model-training"].append({
-                "username": username,
-                "bundle_cache_key": bundle_key,
-                "repo_names": [r["name"] for r in bundle],
-                "training_params": {"batch_size": 8},
-            })
-
-        # Verify training was triggered
-        assert len(worker_context["queues"]["model-training"]) == 1
-        training_msg = worker_context["queues"]["model-training"][0]
-        assert training_msg["bundle_cache_key"] == bundle_key
-        assert len(training_msg["repo_names"]) == 4
-
-    def test_insufficient_docs_skips_training(self, worker_context):
-        """Verify training is skipped when fewer than 3 documented repos."""
-        username = "testuser"
-
-        # Bundle with insufficient documentation
-        bundle = [
-            {"name": "repo-1", "has_documentation": True},
-            {"name": "repo-2", "has_documentation": False},
-            {"name": "repo-3", "has_documentation": False},
-        ]
-
-        documented_count = len([r for r in bundle if r.get("has_documentation")])
-        if documented_count >= 3:
-            worker_context["queues"]["model-training"].append({
-                "username": username,
-                "bundle_cache_key": f"repos_bundle_context_{username}",
-                "repo_names": [r["name"] for r in bundle],
-            })
-
-        # Verify training was NOT triggered
-        assert len(worker_context["queues"]["model-training"]) == 0
-
-
 # ---------------------------------------------------------------------------
 # Queue Manager Integration Tests
 # ---------------------------------------------------------------------------
@@ -403,7 +298,7 @@ class TestQueueManagerIntegration:
 
     def test_queue_manager_creates_required_queues(self, mock_queue_service):
         """Verify QueueManager creates all required queues."""
-        required_queues = ["github-sync", "merge-results", "model-training"]
+        required_queues = ["github-sync", "merge-results"]
 
         for queue_name in required_queues:
             client = mock_queue_service.get_queue_client(queue_name)

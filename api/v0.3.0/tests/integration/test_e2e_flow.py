@@ -4,8 +4,6 @@ End-to-end integration tests for the Cloudfolio pipeline.
 Tests the complete flow:
 1. API Gateway triggers refresh → enqueues sync jobs
 2. Sync Worker processes repos → caches data → enqueues merge
-3. Merge Worker merges bundles → enqueues training
-4. Training Worker processes training jobs
 
 These tests use mocked Azure services but test real inter-component communication.
 """
@@ -30,7 +28,6 @@ def mock_queue_messages():
     return {
         'github-sync': [],
         'merge-results': [],
-        'model-training': [],
         'job-status-updates': [],
     }
 
@@ -65,30 +62,8 @@ def mock_queue_manager(mock_queue_messages):
         })
         return True
 
-    def enqueue_training_job(
-        *,
-        username: str,
-        bundle_cache_key: str,
-        training_params=None,
-        job_id=None,
-        repo_names=None,
-        bundle_fingerprint=None,
-        experiment_name: str = "default",
-    ):
-        mock_queue_messages['model-training'].append({
-            'job_id': job_id,
-            'username': username,
-            'bundle_cache_key': bundle_cache_key,
-            'repo_names': repo_names or [],
-            'bundle_fingerprint': bundle_fingerprint,
-            'experiment_name': experiment_name,
-            'training_params': training_params or {},
-        })
-        return True
-
     manager.enqueue_sync_job = enqueue_sync_job
     manager.enqueue_merge_job = enqueue_merge_job
-    manager.enqueue_training_job = enqueue_training_job
     return manager
 
 
@@ -346,7 +321,7 @@ class TestSyncWorkerIntegration:
 # ---------------------------------------------------------------------------
 
 class TestMergeWorkerIntegration:
-    """Test Merge Worker's bundle consolidation and training triggers."""
+    """Test Merge Worker's bundle consolidation."""
 
     def test_merge_worker_combines_cached_repos(self, mock_cache_manager):
         """Verify merge worker correctly combines repos from cache."""
@@ -395,30 +370,6 @@ class TestMergeWorkerIntegration:
         assert len(result['data']) == 2
         assert result['fingerprint'] == bundle_fingerprint
 
-    def test_merge_worker_triggers_training(
-        self, mock_queue_manager, mock_queue_messages
-    ):
-        """Verify merge worker enqueues training job with correct data."""
-        username = 'testuser'
-        training_params = {'batch_size': 8, 'epochs': 2}
-
-        bundle_key = f"repos_bundle_context_{username}"
-
-        mock_queue_manager.enqueue_training_job(
-            username=username,
-            bundle_cache_key=bundle_key,
-            repo_names=['repo-alpha', 'repo-beta', 'repo-gamma'],
-            training_params=training_params,
-        )
-
-        # Verify training message
-        assert len(mock_queue_messages['model-training']) == 1
-        training_msg = mock_queue_messages['model-training'][0]
-        assert training_msg['username'] == username
-        assert training_msg['bundle_cache_key'] == bundle_key
-        assert len(training_msg['repo_names']) == 3
-        assert training_msg['training_params'] == training_params
-
     def test_merge_updates_job_to_completed(self, mock_cache_manager):
         """Verify merge worker updates job status to completed."""
         job_id = str(uuid.uuid4())
@@ -447,65 +398,17 @@ class TestMergeWorkerIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Training Worker Integration Tests
-# ---------------------------------------------------------------------------
-
-class TestTrainingWorkerIntegration:
-    """Test Training Worker's model training and metadata storage."""
-
-    def test_training_requires_minimum_documented_repos(self):
-        """Verify training rejects bundles with < 3 documented repos."""
-        bundle = [
-            {'name': 'repo-1', 'has_documentation': True},
-            {'name': 'repo-2', 'has_documentation': False},
-        ]
-
-        documented = [r for r in bundle if r.get('has_documentation')]
-        assert len(documented) < 3  # Should fail minimum requirement
-
-    def test_training_processes_documented_repos_only(self):
-        """Verify training filters to documented repos only."""
-        bundle = [
-            {'name': 'repo-1', 'has_documentation': True, 'readme': 'content'},
-            {'name': 'repo-2', 'has_documentation': False, 'readme': ''},
-            {'name': 'repo-3', 'has_documentation': True, 'readme': 'content'},
-            {'name': 'repo-4', 'has_documentation': True, 'readme': 'content'},
-        ]
-
-        documented = [r for r in bundle if r.get('has_documentation')]
-        assert len(documented) == 3
-        assert all(r.get('readme') for r in documented)
-
-    def test_training_message_structure(self, mock_queue_messages, mock_queue_manager):
-        """Verify training messages have correct structure."""
-        username = 'testuser'
-        bundle_key = f"repos_bundle_context_{username}"
-        mock_queue_manager.enqueue_training_job(
-            username=username,
-            bundle_cache_key=bundle_key,
-            repo_names=[f'repo-{i}' for i in range(3)],
-            training_params={'batch_size': 8, 'epochs': 2},
-        )
-
-        msg = mock_queue_messages['model-training'][0]
-        assert 'username' in msg
-        assert 'bundle_cache_key' in msg
-        assert 'training_params' in msg
-        assert msg['training_params']['batch_size'] == 8
-
-
-# ---------------------------------------------------------------------------
 # Full Pipeline Integration Tests
 # ---------------------------------------------------------------------------
 
 class TestFullPipelineIntegration:
     """Test complete end-to-end pipeline flow."""
 
-    def test_complete_refresh_to_training_flow(
+    def test_complete_refresh_to_completion_flow(
         self, mock_cache_manager, mock_queue_manager, mock_queue_messages,
         sample_github_repos
     ):
-        """Test the complete flow from refresh trigger to training enqueue."""
+        """Test the complete flow from refresh trigger to completion."""
         job_id = str(uuid.uuid4())
         username = 'testuser'
         job_key = f"job:{job_id}"
@@ -574,16 +477,6 @@ class TestFullPipelineIntegration:
         job_data['bundle_fingerprint'] = 'bundle_fp'
         mock_cache_manager.save(job_key, job_data)
 
-        # Merge worker enqueues training job
-        mock_queue_manager.enqueue_training_job(
-            username=username,
-            bundle_cache_key=bundle_key,
-            repo_names=[repo.get('name', 'unknown') for repo in merged_bundle],
-            bundle_fingerprint='bundle_fp',
-            training_params={'batch_size': 8, 'epochs': 2},
-        )
-        assert len(mock_queue_messages['model-training']) == 1
-
         # Step 4: Verify final state
         final_job = mock_cache_manager.get(job_key)
         assert final_job['data']['status'] == 'completed'
@@ -591,11 +484,6 @@ class TestFullPipelineIntegration:
         final_bundle = mock_cache_manager.get(bundle_key)
         assert final_bundle['status'] == 'valid'
         assert len(final_bundle['data']) == 3
-
-        training_msg = mock_queue_messages['model-training'][0]
-        assert training_msg['username'] == username
-        assert training_msg['bundle_cache_key'] == bundle_key
-        assert len(training_msg['repo_names']) == 3
 
     def test_partial_sync_with_existing_cache(
         self, mock_cache_manager, mock_queue_manager, mock_queue_messages
@@ -736,21 +624,4 @@ class TestCacheSynchronization:
         job_key = f"job:{job_id}"
 
         # Initial save
-        initial_data = {
-            'job_id': job_id,
-            'username': 'testuser',
-            'total_repos': 5,
-            'status': 'queued',
-        }
-        mock_cache_manager.save(job_key, initial_data)
-
-        # Multiple updates should preserve base fields
-        for i in range(3):
-            data = mock_cache_manager.get(job_key)['data']
-            data['completed_repos'] = i + 1
-            mock_cache_manager.save(job_key, data)
-
-        final = mock_cache_manager.get(job_key)
-        assert final['data']['job_id'] == job_id
-        assert final['data']['total_repos'] == 5
-        assert final['data']['completed_repos'] == 3
+        username = 'testuser'

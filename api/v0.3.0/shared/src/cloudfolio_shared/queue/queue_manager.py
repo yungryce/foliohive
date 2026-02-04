@@ -16,7 +16,6 @@ logger.propagate = True
 
 SYNC_QUEUE = "github-sync"
 CACHE_QUEUE = "github-cache"
-TRAINING_QUEUE = "model-training"
 JOB_STATUS_QUEUE = "job-status-updates"
 
 
@@ -47,7 +46,6 @@ class QueueManager:
         self.queue_names = queue_names or {
             SYNC_QUEUE: SYNC_QUEUE,
             CACHE_QUEUE: CACHE_QUEUE,
-            # TRAINING_QUEUE: TRAINING_QUEUE,
             JOB_STATUS_QUEUE: JOB_STATUS_QUEUE,
         }
         self.service_client = service_client or self._create_service_client()
@@ -259,38 +257,5 @@ class QueueManager:
     #         "queued_at": datetime.now(timezone.utc).isoformat(),
     #     }
     #     return bool(self.send_message(MERGE_QUEUE, message))
-
-    def enqueue_training_job(
-        self,
-        *,
-        username: str,
-        job_id: str,
-        repo_names: List[str],
-        bundle_fingerprint: str,
-        training_params: Optional[Dict] = None,
-        experiment_name: str = "default",
-        trace_id: Optional[str] = None,
-        request_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-    ) -> bool:
-        """Enqueue a training job.
-
-        Training worker will query tables using job_id to reconstruct
-        the bundle from normalized table data (no blob dependency).
-        """
-        message: Dict[str, Any] = {
-            "job_id": job_id,
-            "username": username,
-            "experiment_name": experiment_name,
-            "bundle_fingerprint": bundle_fingerprint,
-            "repo_names": repo_names or [],
-            "training_params": training_params or {},
-            "trace_id": trace_id,
-            "request_id": request_id,
-            "session_id": session_id,
-            "queued_at": datetime.now(timezone.utc).isoformat(),
-        }
-        return bool(self.send_message(TRAINING_QUEUE, message))
-
 
 queue_manager = QueueManager()

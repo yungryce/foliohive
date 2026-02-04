@@ -4,10 +4,9 @@ from datetime import datetime
 import pytest  # type: ignore
 
 from cloudfolio_shared.queue.queue_manager import (
+    CACHE_QUEUE,
     JOB_STATUS_QUEUE,
-    MERGE_QUEUE,
     SYNC_QUEUE,
-    TRAINING_QUEUE,
     QueueManager,
 )
 
@@ -55,7 +54,7 @@ def test_queue_manager_initializes_queues() -> None:
     manager = QueueManager(service_client=service)
 
     assert manager.is_enabled() is True
-    expected = {SYNC_QUEUE, MERGE_QUEUE, TRAINING_QUEUE, JOB_STATUS_QUEUE}
+    expected = {SYNC_QUEUE, CACHE_QUEUE, JOB_STATUS_QUEUE}
     assert expected.issubset(service.clients.keys())
     assert all(service.clients[name].created for name in expected)
 
@@ -99,23 +98,6 @@ def test_enqueue_sync_job_serializes_message(monkeypatch) -> None:
     queued_at = datetime.fromisoformat(payload["queued_at"].replace("Z", "+00:00"))
     tolerance = max(abs(before) * 1e-3, 1e-3)
     assert queued_at.timestamp() >= before - tolerance
-
-
-def test_enqueue_training_job_defaults_params(monkeypatch) -> None:
-    service = StubQueueServiceClient()
-    manager = QueueManager(service_client=service)
-
-    success = manager.enqueue_training_job(
-        username="tester",
-        bundle_cache_key="repos_bundle_context_tester",
-    )
-    assert success is True
-
-    payload = _decode_message(service.clients[TRAINING_QUEUE].messages.pop())
-    assert payload["username"] == "tester"
-    assert payload["training_params"] == {}
-    assert payload["bundle_cache_key"] == "repos_bundle_context_tester"
-    assert payload["repo_names"] == []
 
 
 def test_unknown_queue_alias_returns_false(monkeypatch) -> None:
