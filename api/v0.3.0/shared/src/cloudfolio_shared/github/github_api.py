@@ -158,4 +158,10 @@ class GitHubAPI:
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.warning("Failed to decode GitHub file content: %s", exc)
             return None
+    
+    def get_user_profile(self, username: str) -> Optional[Dict[str, Any]]:
+        """Fetch a GitHub user profile (GET /users/{username})."""
+        if not username:
+            raise ValueError("GitHub username is required")
+        return self.make_request("GET", f"users/{username}")
 

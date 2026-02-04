@@ -26,7 +26,7 @@ from cloudfolio_shared import (
     table_manager,
 )
 
-from cloudfolio_shared.table import JobMetadataRow, RepoSyncStatusRow, RepoAPIUsageRow
+from cloudfolio_shared.table import JobMetadataRow, RepoSyncStatusRow, RepoAPIUsageRow, UserProfileRow
 
 try:  # Azure SDK may be unavailable in local dev; ignore import failures gracefully
     from azure.core.exceptions import ResourceNotFoundError
@@ -41,6 +41,8 @@ logger.propagate = True
 bp = func.Blueprint()
 
 USERNAME_REQUIRED_MESSAGE = "Username required"
+PROFILE_TTL_SECONDS = int(os.getenv("CF_PROFILE_TTL_SECONDS", "21600"))
+PROFILE_TOP_LANGUAGES_LIMIT = 10
 
 
 def _get_trace_context(req: func.HttpRequest) -> Dict[str, str]:
@@ -172,6 +174,118 @@ def _parse_iso(timestamp: Optional[str]) -> datetime:
         return datetime.fromisoformat(timestamp)
     except ValueError:
         return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _is_profile_fresh(profile: Dict[str, Any], ttl_seconds: int) -> bool:
+    cached_at = profile.get("cached_at")
+    if not cached_at:
+        return False
+    cached_dt = _parse_iso(cached_at)
+    if cached_dt == datetime.min.replace(tzinfo=timezone.utc):
+        return False
+    return (datetime.now(timezone.utc) - cached_dt).total_seconds() < ttl_seconds
+
+
+def _build_profile_statistics(
+    repo_rows: List[Dict[str, Any]],
+    languages_by_repo: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    repo_count = len(repo_rows)
+    stars_total = sum(int(row.get("stars_count") or 0) for row in repo_rows)
+    forks_total = sum(int(row.get("forks_count") or 0) for row in repo_rows)
+
+    language_totals: Dict[str, int] = defaultdict(int)
+    for repo_languages in languages_by_repo.values():
+        for lang in repo_languages or []:
+            name = lang.get("language")
+            if not name:
+                continue
+            language_totals[name] += int(lang.get("bytes_count") or 0)
+
+    top_languages = [
+        {"language": name, "bytes": bytes_count}
+        for name, bytes_count in sorted(language_totals.items(), key=lambda item: item[1], reverse=True)
+    ][:PROFILE_TOP_LANGUAGES_LIMIT]
+
+    topics: List[str] = []
+    for row in repo_rows:
+        row_topics = row.get("topics") or []
+        if isinstance(row_topics, list):
+            topics.extend([topic for topic in row_topics if isinstance(topic, str) and topic])
+    unique_topics = sorted(set(topics))
+
+    return {
+        "repo_count": repo_count,
+        "stars_total": stars_total,
+        "forks_total": forks_total,
+        "top_languages": top_languages,
+        "topics": unique_topics,
+    }
+
+
+def _refresh_user_profile(username: str, cached_profile: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    repo_manager = _get_repo_manager(username)
+    profile = repo_manager.get_user_profile(username=username)
+    if not isinstance(profile, dict):
+        return cached_profile
+
+    fingerprint = FingerprintManager.generate_user_profile_fingerprint(profile)
+    cached_at = datetime.now(timezone.utc).isoformat()
+    row = UserProfileRow(
+        username=username,
+        github_id=profile.get("id"),
+        name=profile.get("name"),
+        bio=profile.get("bio"),
+        company=profile.get("company"),
+        location=profile.get("location"),
+        blog=profile.get("blog"),
+        email=profile.get("email"),
+        twitter_username=profile.get("twitter_username"),
+        avatar_url=profile.get("avatar_url"),
+        html_url=profile.get("html_url"),
+        public_repos=profile.get("public_repos") or 0,
+        public_gists=profile.get("public_gists") or 0,
+        followers=profile.get("followers") or 0,
+        following=profile.get("following") or 0,
+        github_created_at=profile.get("created_at"),
+        github_updated_at=profile.get("updated_at"),
+        fingerprint=fingerprint,
+        cached_at=cached_at,
+    )
+    table_manager.upsert_user_profile(row)
+    return (
+        table_manager.get_user_profile(username)
+        or {
+            "username": username,
+            "github_id": row.github_id,
+            "name": row.name,
+            "bio": row.bio,
+            "company": row.company,
+            "location": row.location,
+            "blog": row.blog,
+            "email": row.email,
+            "twitter_username": row.twitter_username,
+            "avatar_url": row.avatar_url,
+            "html_url": row.html_url,
+            "public_repos": row.public_repos,
+            "public_gists": row.public_gists,
+            "followers": row.followers,
+            "following": row.following,
+            "github_created_at": row.github_created_at,
+            "github_updated_at": row.github_updated_at,
+            "fingerprint": row.fingerprint,
+            "cached_at": cached_at,
+        }
+    )
+
+
+def _get_or_refresh_user_profile(username: str) -> Optional[Dict[str, Any]]:
+    cached = table_manager.get_user_profile(username)
+    if cached and _is_profile_fresh(cached, PROFILE_TTL_SECONDS):
+        return cached
+
+    refreshed = _refresh_user_profile(username, cached)
+    return refreshed
 
 
 def _fetch_candidate_jobs(username: str, job_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -912,6 +1026,39 @@ def get_candidate(req: func.HttpRequest) -> func.HttpResponse:
             )
             payload = _get_candidate_metadata(username, candidate_job, repo_rows)
             return _create_success_response(payload, request_id=trace.get("request_id"))
+
+
+        @bp.route(route="candidate/{username}/profile", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+        def get_candidate_profile(req: func.HttpRequest) -> func.HttpResponse:
+            """Retrieve aggregated candidate profile data.
+
+            Combines GitHub user profile (cached in tables), latest job metadata,
+            and repo statistics from normalized tables.
+            """
+            username = req.route_params.get("username")
+            if not username:
+                return _create_error_response(USERNAME_REQUIRED_MESSAGE, status_code=400, error_code="BAD_REQUEST")
+
+            trace = _get_trace_context(req)
+            job_id = req.params.get("job_id")
+            job = _fetch_candidate_jobs(username, job_id=job_id)
+            resolved_job_id = job.get("job_id") if job else None
+
+            _record_user_session(trace, username, resolved_job_id)
+
+            repo_rows = _query_repo_rows(username, job_id=resolved_job_id)
+            languages_by_repo = table_manager.query_repo_languages(resolved_job_id) if resolved_job_id else {}
+
+            profile = _get_or_refresh_user_profile(username)
+            statistics = _build_profile_statistics(repo_rows, languages_by_repo)
+
+            payload = {
+                "username": username,
+                "github_profile": profile,
+                "job_metadata": job,
+                "statistics": statistics,
+            }
+            return _create_success_response(payload, cache_control="no-cache", request_id=trace.get("request_id"))
         
         # Job exists but no repo data yet
         return _create_error_response(

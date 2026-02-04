@@ -127,6 +127,13 @@ class GitHubRepoManager:
                         repo['languages'] = languages
         return repos
 
+    def get_user_profile(self, username: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Fetch a GitHub user profile (GET /users/{username})."""
+        resolved_username = username or self.username
+        if not resolved_username:
+            raise ValueError(USERNAME_REQUIRED_ERROR)
+        return self.api.get_user_profile(resolved_username)
+
     @cache_manager.cache_decorator(
         cache_key_func=lambda username, repo, path, **kwargs: f"file_content:{username}:{repo}:{path}",
         ttl=3600,
