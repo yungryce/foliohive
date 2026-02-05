@@ -10,6 +10,7 @@ import logging
 import os
 import uuid
 from collections import defaultdict
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -223,6 +224,93 @@ def _build_profile_statistics(
     }
 
 
+def _build_profile_summary_payload(
+    *,
+    username: str,
+    profile: Optional[Dict[str, Any]],
+    job: Optional[Dict[str, Any]],
+    repo_rows: List[Dict[str, Any]],
+    languages_by_repo: Dict[str, List[Dict[str, Any]]],
+    statistics: Dict[str, Any],
+    max_repos: int = 8,
+) -> Dict[str, Any]:
+    """Build a compact, AI-friendly payload for profile summary generation."""
+    sorted_repos = sorted(
+        repo_rows,
+        key=lambda row: (
+            int(row.get("stars_count") or 0),
+            int(row.get("forks_count") or 0),
+            int(row.get("watchers") or 0),
+        ),
+        reverse=True,
+    )
+    top_repos = sorted_repos[:max_repos]
+
+    repo_summaries: List[Dict[str, Any]] = []
+    for repo in top_repos:
+        repo_name = repo.get("repo_name")
+        repo_topics = repo.get("topics")
+        repo_topics = repo_topics[:10] if isinstance(repo_topics, list) else []
+
+        repo_languages = languages_by_repo.get(repo_name) if repo_name else []
+        repo_languages_sorted = sorted(
+            repo_languages or [],
+            key=lambda lang: int(lang.get("bytes_count") or 0),
+            reverse=True,
+        )
+        top_repo_languages = [
+            lang.get("language")
+            for lang in repo_languages_sorted
+            if lang.get("language")
+        ][:3]
+
+        repo_summaries.append(
+            {
+                "name": repo_name,
+                "description": repo.get("description"),
+                "primary_language": repo.get("primary_language"),
+                "languages": top_repo_languages,
+                "topics": repo_topics,
+                "stats": {
+                    "stars": int(repo.get("stars_count") or 0),
+                    "forks": int(repo.get("forks_count") or 0),
+                    "watchers": int(repo.get("watchers") or 0),
+                    "open_issues": int(repo.get("open_issues") or 0),
+                },
+                "flags": {
+                    "is_fork": bool(repo.get("is_fork")),
+                    "is_archived": bool(repo.get("is_archived")),
+                },
+                "urls": {
+                    "github": repo.get("html_url"),
+                    "homepage": repo.get("homepage_url"),
+                },
+                "timestamps": {
+                    "created_at": repo.get("github_created_at"),
+                    "updated_at": repo.get("github_updated_at"),
+                    "pushed_at": repo.get("github_pushed_at"),
+                },
+            }
+        )
+
+    job_metadata = None
+    if job:
+        job_metadata = {
+            "job_id": job.get("job_id"),
+            "status": job.get("status"),
+            "updated_at": _restore_iso_timestamp(job.get("updated_at")) or job.get("updated_at"),
+            "created_at": _restore_iso_timestamp(job.get("created_at")) or job.get("created_at"),
+        }
+
+    return {
+        "username": username,
+        "github_profile": profile or {},
+        "job_metadata": job_metadata or {},
+        "statistics": statistics,
+        "top_repositories": repo_summaries,
+    }
+
+
 def _refresh_user_profile(username: str, cached_profile: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     repo_manager = _get_repo_manager(username)
     profile = repo_manager.get_user_profile(username=username)
@@ -253,30 +341,7 @@ def _refresh_user_profile(username: str, cached_profile: Optional[Dict[str, Any]
         cached_at=cached_at,
     )
     table_manager.upsert_user_profile(row)
-    return (
-        table_manager.get_user_profile(username)
-        or {
-            "username": username,
-            "github_id": row.github_id,
-            "name": row.name,
-            "bio": row.bio,
-            "company": row.company,
-            "location": row.location,
-            "blog": row.blog,
-            "email": row.email,
-            "twitter_username": row.twitter_username,
-            "avatar_url": row.avatar_url,
-            "html_url": row.html_url,
-            "public_repos": row.public_repos,
-            "public_gists": row.public_gists,
-            "followers": row.followers,
-            "following": row.following,
-            "github_created_at": row.github_created_at,
-            "github_updated_at": row.github_updated_at,
-            "fingerprint": row.fingerprint,
-            "cached_at": cached_at,
-        }
-    )
+    return table_manager.get_user_profile(username) or asdict(row)
 
 
 def _get_or_refresh_user_profile(username: str) -> Optional[Dict[str, Any]]:
@@ -973,7 +1038,7 @@ def get_repo_readme_summary(req: func.HttpRequest) -> func.HttpResponse:
 
 
 @bp.route(route="candidate/{username}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_candidate(req: func.HttpRequest) -> func.HttpResponse:
+def get_candidate_repos_metadata(req: func.HttpRequest) -> func.HttpResponse:
     """Retrieve candidate portfolio metadata.
     
     Returns repository metadata for a GitHub username. If no job_id is provided,
@@ -1028,38 +1093,6 @@ def get_candidate(req: func.HttpRequest) -> func.HttpResponse:
             return _create_success_response(payload, request_id=trace.get("request_id"))
 
 
-        @bp.route(route="candidate/{username}/profile", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-        def get_candidate_profile(req: func.HttpRequest) -> func.HttpResponse:
-            """Retrieve aggregated candidate profile data.
-
-            Combines GitHub user profile (cached in tables), latest job metadata,
-            and repo statistics from normalized tables.
-            """
-            username = req.route_params.get("username")
-            if not username:
-                return _create_error_response(USERNAME_REQUIRED_MESSAGE, status_code=400, error_code="BAD_REQUEST")
-
-            trace = _get_trace_context(req)
-            job_id = req.params.get("job_id")
-            job = _fetch_candidate_jobs(username, job_id=job_id)
-            resolved_job_id = job.get("job_id") if job else None
-
-            _record_user_session(trace, username, resolved_job_id)
-
-            repo_rows = _query_repo_rows(username, job_id=resolved_job_id)
-            languages_by_repo = table_manager.query_repo_languages(resolved_job_id) if resolved_job_id else {}
-
-            profile = _get_or_refresh_user_profile(username)
-            statistics = _build_profile_statistics(repo_rows, languages_by_repo)
-
-            payload = {
-                "username": username,
-                "github_profile": profile,
-                "job_metadata": job,
-                "statistics": statistics,
-            }
-            return _create_success_response(payload, cache_control="no-cache", request_id=trace.get("request_id"))
-        
         # Job exists but no repo data yet
         return _create_error_response(
             f"Candidate for '{username}' not ready (job in progress)",
@@ -1075,6 +1108,79 @@ def get_candidate(req: func.HttpRequest) -> func.HttpResponse:
         error_code="NOT_FOUND",
         request_id=trace.get("request_id"),
     )
+
+
+@bp.route(route="candidate/{username}/profile", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_candidate_profile(req: func.HttpRequest) -> func.HttpResponse:
+    """Retrieve aggregated candidate profile data.
+
+    Combines GitHub user profile (cached in tables), latest job metadata,
+    and repo statistics from normalized tables.
+    """
+    username = req.route_params.get("username")
+    if not username:
+        return _create_error_response(USERNAME_REQUIRED_MESSAGE, status_code=400, error_code="BAD_REQUEST")
+
+    trace = _get_trace_context(req)
+    job_id = req.params.get("job_id")
+    job = _fetch_candidate_jobs(username, job_id=job_id)
+    resolved_job_id = job.get("job_id") if job else None
+
+    _record_user_session(trace, username, resolved_job_id)
+
+    repo_rows = _query_repo_rows(username, job_id=resolved_job_id)
+    languages_by_repo = table_manager.query_repo_languages(resolved_job_id) if resolved_job_id else {}
+
+    profile = _get_or_refresh_user_profile(username)
+    statistics = _build_profile_statistics(repo_rows, languages_by_repo)
+
+    payload = {
+        "username": username,
+        "github_profile": profile,
+        "job_metadata": job,
+        "statistics": statistics,
+    }
+    return _create_success_response(payload, cache_control="no-cache", request_id=trace.get("request_id"))
+
+
+@bp.route(route="candidate/{username}/summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_candidate_summary(req: func.HttpRequest) -> func.HttpResponse:
+    """Generate an AI summary for a candidate profile (HTML output)."""
+    username = req.route_params.get("username")
+    if not username:
+        return _create_error_response(USERNAME_REQUIRED_MESSAGE, status_code=400, error_code="BAD_REQUEST")
+
+    trace = _get_trace_context(req)
+    job_id = req.params.get("job_id")
+    job = _fetch_candidate_jobs(username, job_id=job_id)
+    resolved_job_id = job.get("job_id") if job else None
+
+    _record_user_session(trace, username, resolved_job_id)
+
+    repo_rows = _query_repo_rows(username, job_id=resolved_job_id)
+    languages_by_repo = table_manager.query_repo_languages(resolved_job_id) if resolved_job_id else {}
+
+    profile = _get_or_refresh_user_profile(username)
+    statistics = _build_profile_statistics(repo_rows, languages_by_repo)
+    summary_payload = _build_profile_summary_payload(
+        username=username,
+        profile=profile,
+        job=job,
+        repo_rows=repo_rows,
+        languages_by_repo=languages_by_repo,
+        statistics=statistics,
+    )
+
+    assistant = AIAssistant(username=username)
+    summary_html = assistant.summarize_profile_html(summary_payload, username=username)
+
+    payload = {
+        "username": username,
+        "job_id": resolved_job_id,
+        "summary_html": summary_html,
+    }
+    return _create_success_response(payload, cache_control="no-cache", request_id=trace.get("request_id"))
+
 
 @bp.route(route="candidate/{username}/refresh", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:

@@ -3,25 +3,24 @@
 Date: 2026-02-04
 
 ## Goal
-Add a minimal candidate profile/summary capability that:
+Add a candidate profile/summary capability that:
 - Fetches GitHub user profile via `GET https://api.github.com/users/{username}` on-demand.
 - Aggregates existing repo/job metadata already stored in Azure Tables.
 - Uses a **fingerprint** to avoid redundant GitHub profile refetches.
 - Exposes API endpoints for UI consumption (profile + optional AI summary).
 
-## Non-goals (MVP)
+## Non-goals
 - No background refresh pipeline for user profiles.
 - No complex “diff” logic across historical profiles.
-- No heavy UI polish; just a functional profile page.
 
-## On-demand strategy (minimum viable)
+## On-demand strategy 
 1. API gateway receives `GET /candidate/{username}/profile`.
 2. Try to read cached profile from Table Storage (`UserProfile` table).
 3. If missing or stale (fingerprint mismatch/TTL), call GitHub `GET /users/{username}`.
 4. Persist fresh profile into `UserProfile` and return aggregated payload.
 
 Notes:
-- “Stale” for MVP can be defined as **time-based TTL** (e.g., 6h) *and/or* fingerprint mismatch.
+- “Stale” can be defined as **time-based TTL** (e.g., 6h) *and/or* fingerprint mismatch.
 - Fingerprint is computed from stable user profile fields (see Fingerprint strategy).
 
 ## Data model changes (Table Storage)
@@ -62,7 +61,7 @@ Fields (keep minimal, align with GitHub API fields):
 
 Implementation notes:
 - Keep string payload sizes small (fits Azure Table string caps).
-- Do not store full JSON blob as a single field in MVP.
+- Do not store full JSON blob as a single field.
 
 ### TableManager API (new methods)
 Add to `TableManager`:
@@ -73,7 +72,7 @@ Add to `TableManager`:
 ## Fingerprint strategy (required)
 Use `FingerprintManager` to compute a user-profile fingerprint.
 
-### B) Extend `FingerprintManager` (minimal)
+### B) Extend `FingerprintManager` 
 Add method:
 - `generate_user_profile_fingerprint(user_profile: Dict[str, Any]) -> str`
 
@@ -94,7 +93,7 @@ Example fingerprint payload:
 }
 ```
 
-MVP staleness check:
+Staleness check:
 - If no row in table ⇒ fetch from GitHub.
 - If row exists and `now - cached_at < TTL` ⇒ use row.
 - Else fetch from GitHub, recompute fingerprint; if fingerprint unchanged, just refresh `cached_at`.
@@ -108,8 +107,7 @@ Add:
 ### GitHubRepoManager (`github_repo_manager.py`)
 Add:
 - `get_user_profile(username: Optional[str] = None) -> Optional[Dict[str, Any]]`
-  - Simple wrapper around `GitHubAPI.get_user_profile()`.
-  - Optional caching via `cache_manager.cache_decorator` is acceptable but not required if Table Storage caching is implemented.
+  - Wrapper around `GitHubAPI.get_user_profile()`.
 
 ## API Gateway changes
 ### Endpoint: `GET /candidate/{username}/profile`
@@ -121,7 +119,7 @@ Responsibilities:
 - Load or refresh `UserProfile` from Table Storage using fingerprint + TTL logic.
 - Return aggregated profile payload.
 
-Aggregation output (MVP):
+Aggregation output:
 - `username`
 - `github_profile` (subset from table)
 - `job_metadata` (latest)
@@ -132,14 +130,14 @@ Aggregation output (MVP):
   - `top_languages` (by bytes)
   - `topics` (distinct)
 
-### Endpoint: `GET /candidate/{username}/summary` (optional but aligns with workflow)
+### Endpoint: `GET /candidate/{username}/summary` 
 Responsibilities:
 - Calls the profile aggregation logic above.
 - Selects top repos (e.g., by stars) from repo rows.
 - Calls `AIAssistant.generate_profile_summary(...)` (new method) to produce HTML.
 - Cache-control: `no-cache` for now (or add separate summary table later).
 
-## UI (minimal)
+## UI
 - Add route: `/profile/:username`.
 - Add service methods:
   - `getCandidateProfile(username)` → hits `/candidate/{username}/profile`.
@@ -159,7 +157,7 @@ Responsibilities:
    - Add `get_user_profile` wrapper.
 5. Update API gateway `function-app/blueprints/api_gateway.py`
    - Add `/candidate/{username}/profile`.
-   - Add `/candidate/{username}/summary` (optional).
+   - Add `/candidate/{username}/summary`.
    - Add shared helper `_build_profile_statistics`.
 6. UI
    - Add profile component + route.
@@ -172,7 +170,4 @@ Responsibilities:
   - Call `/candidate/{username}/profile` and confirm payload includes job + repo stats.
   - Call twice and confirm second call avoids GitHub call when within TTL (log-based verification).
 
-## Future enhancements (post-MVP)
-- Persist AI summary in a new `CandidateSummary` table with TTL + fingerprint.
-- Background refresh job (daily) for active candidates.
-- Add richer aggregation (recent activity, pinned repos via GraphQL, etc.).
+

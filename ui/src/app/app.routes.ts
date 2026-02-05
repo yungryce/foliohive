@@ -3,6 +3,7 @@ import { LandingComponent } from './landing/landing.component';
 import { ProjectsComponent } from './projects/projects.component';
 import { ProjectComponent } from './projects/project/project.component';
 import { AiComponent } from './ai/ai.component';
+import { ProfileComponent } from './profile/profile.component';
 import { DashboardComponent } from './dashboard/dashboard.component';
 import { AdminComponent } from './admin/admin.component';
 import { MonitoringComponent } from './admin/monitoring/monitoring.component';
@@ -11,6 +12,7 @@ import { adminGuard } from './guards/admin.guard';
 
 export const routes: Routes = [
   { path: '', component: LandingComponent },
+  { path: 'profile', component: ProfileComponent },
   { path: 'projects', component: ProjectsComponent },
   { path: 'projects/:repo', component: ProjectComponent },
   { path: 'ai', component: AiComponent },

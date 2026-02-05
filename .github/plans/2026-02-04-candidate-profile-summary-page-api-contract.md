@@ -1,9 +1,9 @@
-# Candidate Profile Summary Page — API Contract (MVP)
+# Candidate Profile Summary Page — API Contract
 
 Date: 2026-02-04
 
 ## Overview
-This doc defines the minimal response shapes for the candidate profile/summary feature.
+This doc defines response shapes for the candidate profile/summary feature.
 
 Base envelope matches existing API gateway:
 - `status`: `"success" | "error"`
@@ -67,7 +67,7 @@ Base envelope matches existing API gateway:
 - 404: candidate has no synced data (optional; or return empty `job_metadata`)
 - 500: internal
 
-## GET /candidate/{username}/summary (optional in MVP)
+## GET /candidate/{username}/summary
 ### Response: 200
 `data`:
 ```json
@@ -81,6 +81,3 @@ Base envelope matches existing API gateway:
 }
 ```
 
-## Notes for UI
-- UI should treat `job_metadata` as optional (candidate may not have run sync yet).
-- UI should treat `github_profile` as optional (GitHub API may fail/rate-limit); still show repo/job data.

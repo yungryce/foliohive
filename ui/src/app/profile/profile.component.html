@@ -1,0 +1,106 @@
+<div class="container mx-auto px-4 py-8 bg-(--bg) text-(--fg) transition-colors">
+  <div class="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+    <aside class="rounded-lg border border-(--border) bg-(--card) p-4 h-max">
+      <app-candidate-list heading="Candidates" (candidateSelected)="selectCandidate($event.username)"></app-candidate-list>
+    </aside>
+
+    <main>
+      <h1 class="text-2xl font-bold mb-3">Candidate Profile</h1>
+
+      <div *ngIf="!activeUsername" class="rounded-lg border border-(--border) bg-(--card) p-4">
+        <p class="text-sm text-(--muted)">Select a candidate to view profile details.</p>
+      </div>
+
+      <ng-container *ngIf="activeUsername">
+        <div class="rounded-lg border border-(--border) bg-(--card) p-4 mb-6">
+          <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div class="flex items-start gap-4">
+              <img
+                *ngIf="githubProfile?.avatar_url"
+                [src]="githubProfile.avatar_url"
+                [alt]="githubProfile.name || activeUsername"
+                class="h-20 w-20 rounded-xl border border-(--border) object-cover"
+              />
+              <div>
+                <div class="text-sm text-(--muted)">Active candidate</div>
+                <h2 class="text-xl font-semibold">{{ githubProfile?.name || activeUsername }}</h2>
+                <p *ngIf="githubProfile?.bio" class="text-sm text-(--muted) mt-1">
+                  {{ githubProfile.bio }}
+                </p>
+                <div class="mt-2 flex flex-wrap gap-2 text-xs text-(--muted)">
+                  <span *ngIf="githubProfile?.company">🏢 {{ githubProfile.company }}</span>
+                  <span *ngIf="githubProfile?.location">📍 {{ githubProfile.location }}</span>
+                  <a *ngIf="githubProfile?.html_url" [href]="githubProfile.html_url" target="_blank" rel="noopener">
+                    GitHub
+                  </a>
+                  <a *ngIf="githubProfile?.blog" [href]="formatBlogLink(githubProfile.blog)" target="_blank" rel="noopener">
+                    Website
+                  </a>
+                  <span *ngIf="githubProfile?.twitter_username">@{{ githubProfile.twitter_username }}</span>
+                </div>
+              </div>
+            </div>
+            <a routerLink="/projects" class="px-3 py-2 rounded bg-(--soft) hover:brightness-95">View projects</a>
+          </div>
+        </div>
+
+        <div *ngIf="loadingProfile" class="rounded-lg border border-(--border) bg-(--card) p-4 mb-6">
+          <p class="text-sm text-(--muted)">Loading profile data…</p>
+        </div>
+
+        <div *ngIf="profileError" class="rounded-lg border border-red-200 bg-red-50 p-4 mb-6 text-sm text-red-600">
+          {{ profileError }}
+        </div>
+
+        <ng-container *ngIf="profile && !loadingProfile">
+          <section class="grid gap-4 md:grid-cols-3 mb-6">
+            <div *ngFor="let stat of profileStats" class="rounded-lg border border-(--border) bg-(--card) p-4">
+              <div class="text-xs text-(--muted)">{{ stat.label }}</div>
+              <div class="text-lg font-semibold">{{ stat.value }}</div>
+            </div>
+          </section>
+
+          <section class="rounded-lg border border-(--border) bg-(--card) p-4 mb-6">
+            <h3 class="text-sm font-semibold mb-2">Top languages</h3>
+            <div *ngIf="topLanguages.length; else noLanguages" class="flex flex-wrap gap-2">
+              <span *ngFor="let lang of topLanguages" class="px-2 py-1 rounded bg-(--chip-bg) text-(--chip-fg) text-sm">
+                {{ lang.language }}
+              </span>
+            </div>
+            <ng-template #noLanguages>
+              <p class="text-sm text-(--muted)">No language data yet.</p>
+            </ng-template>
+          </section>
+
+          <section class="rounded-lg border border-(--border) bg-(--card) p-4 mb-6">
+            <h3 class="text-sm font-semibold mb-2">Topics</h3>
+            <div *ngIf="topics.length; else noTopics" class="flex flex-wrap gap-2">
+              <span *ngFor="let topic of topics" class="px-2 py-1 rounded bg-(--chip-bg) text-(--chip-fg) text-sm">
+                {{ topic }}
+              </span>
+            </div>
+            <ng-template #noTopics>
+              <p class="text-sm text-(--muted)">No topics detected.</p>
+            </ng-template>
+          </section>
+        </ng-container>
+
+        <section class="rounded-lg border border-(--border) bg-(--card) p-4">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-sm font-semibold">AI summary</h3>
+            <span *ngIf="loadingSummary" class="text-xs text-(--muted)">Generating…</span>
+          </div>
+
+          <div *ngIf="summaryError" class="text-sm text-red-600 mb-2">
+            {{ summaryError }}
+          </div>
+
+          <div *ngIf="summaryHtml" class="prose max-w-none *:text-(--fg)" [innerHTML]="summaryHtml"></div>
+          <div *ngIf="!summaryHtml && !loadingSummary" class="text-sm text-(--muted)">
+            Summary not available yet.
+          </div>
+        </section>
+      </ng-container>
+    </main>
+  </div>
+</div>

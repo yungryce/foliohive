@@ -240,6 +240,18 @@ class AIAssistant:
         request_id = f"readme-{int(time.time())}"
         return self.call_groq_api(system_message, query, request_id)
 
+    def summarize_profile_html(self, profile_payload: Dict[str, Any], username: Optional[str] = None) -> str:
+        """Summarize a candidate profile payload into HTML for the profile view."""
+        if not profile_payload:
+            return "<p>No profile data available.</p>"
+        if not self.openai_client:
+            return "<p>AI service not configured. Please check the Groq API key.</p>"
+
+        system_message = self._build_profile_summary_system(username or self.username)
+        query = json.dumps(profile_payload, ensure_ascii=False)
+        request_id = f"profile-{int(time.time())}"
+        return self.call_groq_api(system_message, query, request_id)
+
     def _build_readme_summary_system(self, repo_name: Optional[str] = None) -> str:
         """Build a system prompt that returns HTML-only README summary output."""
         repo_label = repo_name or "the repository"
@@ -260,5 +272,31 @@ class AIAssistant:
             "- <h3>Tech Stack</h3> with a bullet list (if present)\n"
             "- <h3>How to Run</h3> with steps (if present)\n"
             "- <h3>Notes</h3> for caveats or missing pieces (optional)\n"
+        )
+
+    def _build_profile_summary_system(self, username: Optional[str] = None) -> str:
+        """Build a system prompt that returns HTML-only profile summary output."""
+        candidate = username or "the candidate"
+        return (
+            "You are an assistant that summarizes GitHub candidate profiles into clean HTML for recruiters.\n"
+            f"Summarize the profile for {candidate} using the provided JSON payload.\n\n"
+            "Output rules:\n"
+            "- Return ONLY valid HTML (no Markdown, no code fences).\n"
+            "- Do not include <html>, <head>, or <body> tags.\n"
+            "- Use semantic tags: <h2>, <h3>, <p>, <ul>, <li>, <strong>, <code>, <pre>, <a>.\n"
+            "- Keep it concise (8-14 short bullets/paragraphs total).\n"
+            "- If a detail is not present in the data, omit it.\n"
+            "- Do not speculate about employment status or seniority.\n\n"
+            "Content goals:\n"
+            "- Provide a concise overview of the candidate.\n"
+            "- Highlight strengths based on repositories, languages, topics, and activity.\n"
+            "- Suggest what kind of systems or teams they would fit well in.\n"
+            "- Infer engineering style if evidence supports it (otherwise say 'Not enough signal').\n\n"
+            "Structure:\n"
+            "- <h2>Overview</h2> then 1 short paragraph\n"
+            "- <h3>Strengths</h3> with a bullet list\n"
+            "- <h3>Best Fit</h3> with a bullet list\n"
+            "- <h3>Engineering Style</h3> with 1 short paragraph or bullets\n"
+            "- <h3>Notable Signals</h3> for top repos/topics/languages (optional)\n"
         )
 
