@@ -22,7 +22,6 @@ export const authGuard: CanActivateFn = (route, state) => {
   }
 
   // Not authenticated - redirect to login
-  console.warn('[AuthGuard] User not authenticated, redirecting to login');
   authService.login('google', state.url); // Redirect back after login
   return false;
 };

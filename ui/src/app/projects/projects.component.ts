@@ -123,7 +123,6 @@ export class ProjectsComponent implements OnInit, OnDestroy {
 
             // Load/refresh data progressively as repos become available
             if (status.metadata_ready) {
-              console.log('[ProjectsComponent] Loading available repos (status=%s, cached=%d)', status.status, cached);
               this.loadRepoBundle();
             }
 
@@ -131,7 +130,6 @@ export class ProjectsComponent implements OnInit, OnDestroy {
             if (status.files_ready || status.status === 'completed') {
               this.building = false;
               this.buildMessage = `Build complete! ${cached} repositories ready.`;
-              console.log('[ProjectsComponent] Build completed, loading final bundle');
               this.loadRepoBundle(); // Final reload to ensure bundle_fingerprint
             } else if (status.status === 'failed') {
               this.building = false;

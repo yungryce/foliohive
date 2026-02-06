@@ -99,7 +99,6 @@ export class RepoBundleService {
         return res as JobStatusResponse;
       }),
       catchError(err => {
-        if (err?.status !== 404) console.error('getJobStatus error:', err);
         return of(null as any);
       })
     );
@@ -144,7 +143,6 @@ export class RepoBundleService {
         return payload;
       }),
       catchError(err => {
-        if (err?.status !== 404) console.error('getUserBundle error:', err);
         return of({ username, data: [] } as RepoBundleResponse);
       })
     );
@@ -165,7 +163,6 @@ export class RepoBundleService {
         return Array.isArray(candidates) ? (candidates as SessionCandidate[]) : [];
       }),
       catchError(err => {
-        console.warn('getSessionCandidates error:', err);
         return of([] as SessionCandidate[]);
       })
     );

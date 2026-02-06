@@ -23,13 +23,11 @@ export const adminGuard: CanActivateFn = (route, state) => {
 
   // Not authenticated - redirect to login
   if (!authService.isUserAuthenticated()) {
-    console.warn('[AdminGuard] User not authenticated, redirecting to login');
     authService.login('google', state.url); // Redirect back after login
     return false;
   }
 
   // Authenticated but not admin - redirect to home with error
-  console.warn('[AdminGuard] User lacks admin role, redirecting to home');
   router.navigate(['/'], { 
     queryParams: { error: 'insufficient_permissions' }
   });

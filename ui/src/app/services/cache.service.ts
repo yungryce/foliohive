@@ -149,10 +149,6 @@ export class CacheService {
     }
 
     keysToDelete.forEach(key => this.cache.delete(key));
-    
-    if (keysToDelete.length > 0) {
-      console.log(`Cache cleanup: Removed ${keysToDelete.length} expired entries`);
-    }
   }
 
   /**

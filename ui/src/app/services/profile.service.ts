@@ -53,7 +53,6 @@ export class ProfileService {
         return profile;
       }),
       catchError(err => {
-        console.warn('getCandidateProfile error:', err);
         return of({ username } as CandidateProfileResponse);
       })
     );
@@ -70,7 +69,6 @@ export class ProfileService {
         return (payload ?? { username }) as CandidateSummaryResponse;
       }),
       catchError(err => {
-        console.warn('getCandidateSummary error:', err);
         return of({ username, summary_html: '' } as CandidateSummaryResponse);
       })
     );

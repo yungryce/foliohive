@@ -26,6 +26,7 @@ from cloudfolio_shared import (
     RepoScoringService,
     table_manager,
 )
+from cloudfolio_shared.github.api_usage import ApiUsageTracker
 
 from cloudfolio_shared.table import JobMetadataRow, RepoSyncStatusRow, RepoAPIUsageRow, UserProfileRow
 
@@ -313,7 +314,8 @@ def _build_profile_summary_payload(
 
 def _refresh_user_profile(username: str, cached_profile: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     repo_manager = _get_repo_manager(username)
-    profile = repo_manager.get_user_profile(username=username)
+    usage_tracker = ApiUsageTracker(owner=username, repo="user_profile")
+    profile = repo_manager.get_user_profile(username=username, usage=usage_tracker)
     if not isinstance(profile, dict):
         return cached_profile
 
@@ -341,6 +343,16 @@ def _refresh_user_profile(username: str, cached_profile: Optional[Dict[str, Any]
         cached_at=cached_at,
     )
     table_manager.upsert_user_profile(row)
+    
+    # Record API usage for profile refresh (1 REST API call)
+    _record_api_usage(
+        username=username,
+        operation="profile_refresh",
+        api_usage_dict=usage_tracker.to_dict(),
+        job_id=None,
+        repo_name=None,
+    )
+    
     return table_manager.get_user_profile(username) or asdict(row)
 
 
@@ -762,6 +774,67 @@ def _bundle_from_cache(username: str) -> Optional[Dict[str, Any]]:
         "data": result.get("data"),
     }
 
+def _record_api_usage(
+    username: str,
+    operation: str,
+    api_usage_dict: Dict[str, Any],
+    *,
+    job_id: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> None:
+    """Record API usage for GitHub operations.
+    
+    Generic helper to record API calls, cache hits, and rate limit info
+    for observability and cost analysis across all operations.
+    
+    Args:
+        username: GitHub username (PartitionKey)
+        operation: Operation type (e.g., "freshness_check", "metadata_sync", "file_cache", "profile_refresh")
+        api_usage_dict: Dict with "totals" and optional "file_targets" keys
+        job_id: Optional job ID (None for user-level operations like freshness/profile)
+        repo_name: Optional repo name (None for user-level operations)
+    """
+    # Handle None or empty api_usage_dict gracefully
+    if not api_usage_dict:
+        api_usage_dict = {"totals": {"requests": 0}, "file_targets": {}}
+
+    totals = api_usage_dict.get("totals", {})
+    file_targets = api_usage_dict.get("file_targets", {})
+    cache_hits = sum(target.get("cache_hits", 0) for target in file_targets.values())
+
+    now = datetime.now(timezone.utc).isoformat()
+    # Sanitize timestamp for Azure Table RowKey (no :, /, \, #, ?)
+    safe_timestamp = now.replace(":", "-").replace("+", "_")
+
+    # Build composite RowKey: operation|timestamp|repo_name (or all_repos/user for user-level ops)
+    row_key_part = repo_name or "all_repos" if operation == "freshness_check" else repo_name or operation
+    operation_key = f"{operation}|{safe_timestamp}|{row_key_part}"
+
+    row = RepoAPIUsageRow(
+        username=username,
+        operation_key=operation_key,
+        operation=operation,
+        job_id=job_id,
+        repo_name=repo_name,
+        api_calls_rest=totals.get("requests", 0),
+        api_calls_graphql=0,
+        cache_hits=cache_hits,
+        created_at=safe_timestamp,
+    )
+
+    logger.info(
+        "[RECORD_API_USAGE] username=%s operation=%s job_id=%s repo_name=%s rest_calls=%d cache_hits=%d",
+        username,
+        operation,
+        job_id,
+        repo_name,
+        row.api_calls_rest,
+        cache_hits,
+    )
+    
+    table_manager.upsert_api_usage(row)
+
+
 def _persist_job_metadata(
     job_id: str,
     username: str,
@@ -812,10 +885,15 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
     )
 
     # Fetch current state from GitHub (unavoidable - freshness requires live data)
-    all_repos = repo_manager.get_all_repos_metadata(username=username, include_languages=False)
+    usage_tracker = ApiUsageTracker(owner=username, repo="all_repos")
+    all_repos = repo_manager.get_all_repos_metadata(
+        username=username,
+        include_languages=False,
+        usage=usage_tracker,
+    )
     
     # Track API usage for freshness check
-    api_usage = all_repos[0].get("api_usage") if all_repos and isinstance(all_repos, list) and isinstance(all_repos[0], dict) else {}
+    api_usage = usage_tracker.to_dict()
     
     current_fingerprints = {
         repo.get("name"): FingerprintManager.generate_metadata_fingerprint(repo)
@@ -868,7 +946,7 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
                 "[REPO_NEW] user=%s repo=%s",
                 username,
                 repo_name,
-            )  
+            )
     logger.info(
         "Repo freshness for user=%s: stale=%d, valid=%d",
         username,
@@ -877,29 +955,13 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
     )
     
     # Record API usage if we have trace context
-    if api_usage and trace:
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
-        # Sanitize timestamp for Azure Table RowKey (no :, /, \, #, ?)
-        safe_timestamp = now.replace(":", "-").replace("+", "_")
-        operation_key = f"freshness_check|{safe_timestamp}|all_repos"
-        
-        totals = api_usage.get("totals", {})
-        file_targets = api_usage.get("file_targets", {})
-        cache_hits = sum(target.get("cache_hits", 0) for target in file_targets.values())
-        
-        row = RepoAPIUsageRow(
-            username=username,
-            operation_key=operation_key,
-            operation="freshness_check",
-            job_id=None,  # No job_id for freshness checks
-            repo_name=None,  # User-level operation
-            api_calls_rest=totals.get("requests", 0),
-            api_calls_graphql=0,
-            cache_hits=cache_hits,
-            created_at=safe_timestamp,  # Use sanitized timestamp
-        )
-        table_manager.upsert_api_usage(row)
+    _record_api_usage(
+        username=username,
+        operation="freshness_check",
+        api_usage_dict=api_usage,
+        job_id=None,
+        repo_name=None,
+    )
     
     return {
         "stale_repos": stale_repos,
@@ -915,6 +977,7 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
 
 @bp.route(route="health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def health_check(req: func.HttpRequest) -> func.HttpResponse:
+    """Health check endpoint."""
     status = {
         "status": "ok",
         "cache": cache_manager.use_cache,

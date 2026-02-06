@@ -65,14 +65,62 @@ def _record_repo_tree_cache_hit(bound: Dict[str, Any]) -> None:
         cache_hit=True,
     )
 
+
+def _record_repo_metadata_cache_hit(bound: Dict[str, Any]) -> None:
+    usage = bound.get("usage")
+    if not isinstance(usage, ApiUsageTracker):
+        return
+    username = bound.get("username") or "unknown"
+    repo = bound.get("repo") or "unknown"
+    endpoint = f"repos/{username}/{repo}"
+    usage.record_request(
+        method="GET",
+        endpoint=endpoint,
+        endpoint_kind="rest",
+        purpose="repo_metadata",
+        target_key=repo,
+        status_code=None,
+        rate_remaining=None,
+        cache_hit=True,
+    )
+
+
+def _record_repo_list_cache_hit(bound: Dict[str, Any]) -> None:
+    usage = bound.get("usage")
+    if not isinstance(usage, ApiUsageTracker):
+        return
+    username = bound.get("username") or "unknown"
+    endpoint = f"users/{username}/repos"
+    usage.record_request(
+        method="GET",
+        endpoint=endpoint,
+        endpoint_kind="rest",
+        purpose="repo_list",
+        target_key=None,
+        status_code=None,
+        rate_remaining=None,
+        cache_hit=True,
+    )
+
 class GitHubRepoManager:
     def __init__(self, api: GitHubAPI, username: Optional[str] = None):
         """Initialize the GitHubRepoManager with API, cache, and file manager."""
         self.api = api
         self.username = username
 
-    @cache_manager.cache_decorator(cache_key_func=lambda username, repo, **kwargs: f"repo_metadata:{username}:{repo}", ttl=3600)
-    def get_repo_metadata(self, username: Optional[str]=None, repo: Optional[str]=None, include_languages: bool=False) -> Dict[str, Any]:
+    @cache_manager.cache_decorator(
+        cache_key_func=lambda username, repo, **kwargs: f"repo_metadata:{username}:{repo}",
+        ttl=3600,
+        on_cache_hit=_record_repo_metadata_cache_hit,
+    )
+    def get_repo_metadata(
+        self,
+        username: Optional[str]=None,
+        repo: Optional[str]=None,
+        include_languages: bool=False,
+        *,
+        usage: Optional[ApiUsageTracker] = None,
+    ) -> Dict[str, Any]:
         """Get metadata for a specific repository.
 
         Args:
@@ -90,17 +138,36 @@ class GitHubRepoManager:
         if not repo:
             raise ValueError("Repository name is required")
         endpoint = f"repos/{username}/{repo}"
-        repo_data = self.api.make_request('GET', endpoint)
+        usage_tracker = usage or ApiUsageTracker(owner=username, repo=repo)
+        repo_data = self.api.make_request('GET', endpoint, usage=usage_tracker, purpose="repo_metadata")
         if not isinstance(repo_data, dict):
             raise ValueError("Invalid response format for repository metadata")
         if include_languages:
-            languages = self.api.make_request('GET', f"{endpoint}/languages")
+            languages = self.api.make_request(
+                'GET',
+                f"{endpoint}/languages",
+                usage=usage_tracker,
+                purpose="repo_languages",
+                target_key=repo,
+            )
             if isinstance(languages, dict):
                 repo_data['languages'] = languages
+        repo_data["api_usage"] = usage_tracker.to_dict()
         return repo_data
 
-    @cache_manager.cache_decorator(cache_key_func=lambda username=None, **kwargs: f"repos_metadata:{username}:all", ttl=3600)
-    def get_all_repos_metadata(self, username: Optional[str]=None, per_page=100, include_languages: bool=False) -> List[Dict[str, Any]]:
+    @cache_manager.cache_decorator(
+        cache_key_func=lambda username=None, **kwargs: f"repos_metadata:{username}:all",
+        ttl=3600,
+        on_cache_hit=_record_repo_list_cache_hit,
+    )
+    def get_all_repos_metadata(
+        self,
+        username: Optional[str]=None,
+        per_page=100,
+        include_languages: bool=False,
+        *,
+        usage: Optional[ApiUsageTracker] = None,
+    ) -> List[Dict[str, Any]]:
         """Get metadata for all repositories.
 
         Args:
@@ -116,23 +183,47 @@ class GitHubRepoManager:
             raise ValueError(USERNAME_REQUIRED_ERROR)
         endpoint = f"users/{username}/repos"
         
-        repos = self.api.make_request('GET', endpoint, params={'per_page': per_page})
+        usage_tracker = usage or ApiUsageTracker(owner=username, repo="all_repos")
+        repos = self.api.make_request(
+            'GET',
+            endpoint,
+            params={'per_page': per_page},
+            usage=usage_tracker,
+            purpose="repo_list",
+        )
         if not isinstance(repos, list):
             raise ValueError("Invalid response format for repositories metadata")
         if include_languages:
             for repo in repos:
                 if isinstance(repo, dict) and 'name' in repo:
-                    languages = self.api.make_request('GET', f"repos/{username}/{repo['name']}/languages")
+                    languages = self.api.make_request(
+                        'GET',
+                        f"repos/{username}/{repo['name']}/languages",
+                        usage=usage_tracker,
+                        purpose="repo_languages",
+                        target_key=repo.get("name"),
+                    )
                     if isinstance(languages, dict):
                         repo['languages'] = languages
+        if repos and isinstance(repos[0], dict):
+            repos[0]["api_usage"] = usage_tracker.to_dict()
         return repos
 
-    def get_user_profile(self, username: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def get_user_profile(
+        self,
+        username: Optional[str] = None,
+        *,
+        usage: Optional[ApiUsageTracker] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Fetch a GitHub user profile (GET /users/{username})."""
         resolved_username = username or self.username
         if not resolved_username:
             raise ValueError(USERNAME_REQUIRED_ERROR)
-        return self.api.get_user_profile(resolved_username)
+        usage_tracker = usage or ApiUsageTracker(owner=resolved_username, repo="user_profile")
+        profile = self.api.get_user_profile(resolved_username, usage=usage_tracker)
+        if isinstance(profile, dict):
+            profile["api_usage"] = usage_tracker.to_dict()
+        return profile
 
     @cache_manager.cache_decorator(
         cache_key_func=lambda username, repo, path, **kwargs: f"file_content:{username}:{repo}:{path}",

@@ -98,7 +98,6 @@ export class CandidateContextService {
         }
       }
     } catch (error) {
-      console.warn('Failed to load persisted candidates', error);
     }
 
     try {
@@ -109,7 +108,6 @@ export class CandidateContextService {
         this.activeUsernameSubject.next(this.candidatesSubject.value[0].username);
       }
     } catch (error) {
-      console.warn('Failed to load active candidate', error);
     }
   }
 
@@ -134,7 +132,6 @@ export class CandidateContextService {
     try {
       storage.setItem(this.storageKey, JSON.stringify(list.slice(0, this.maxStored)));
     } catch (error) {
-      console.warn('Failed to persist candidates', error);
     }
   }
 
@@ -148,7 +145,6 @@ export class CandidateContextService {
         storage.removeItem(this.activeKey);
       }
     } catch (error) {
-      console.warn('Failed to persist active candidate', error);
     }
   }
 

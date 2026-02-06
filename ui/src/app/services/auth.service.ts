@@ -66,7 +66,6 @@ export class AuthService {
         return null;
       }),
       catchError(error => {
-        console.error('[AuthService] Failed to fetch user identity:', error);
         this.updateUserState(null);
         return of(null);
       })

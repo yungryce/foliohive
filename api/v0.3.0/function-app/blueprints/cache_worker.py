@@ -224,7 +224,7 @@ def _record_api_usage_for_file_cache(
     
     table_manager.upsert_api_usage(row)
     logger.info(
-        "[API_USAGE_RECORDED] operation=file_cache job=%s repo=%s rest_calls=%d cache_hits=%d",
+        "[API_CACHE_USAGE_RECORDED] operation=file_cache job=%s repo=%s rest_calls=%d cache_hits=%d",
         job_id,
         repo_name,
         row.api_calls_rest,

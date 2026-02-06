@@ -65,7 +65,6 @@ export class AiComponent implements OnInit, OnDestroy {
     
     // If we have a fresh job_id from URL, start polling for its completion
     if (jobIdFromUrl) {
-      console.log(`[AiComponent] Fresh job_id detected: ${jobIdFromUrl}, starting status polling`);
       this.activeJobId = jobIdFromUrl;
       this.startPollingJobStatus(jobIdFromUrl);
     } else {
@@ -107,13 +106,11 @@ export class AiComponent implements OnInit, OnDestroy {
   private startPollingJobStatus(jobId: string): void {
     const username = this.activeUsername;
     if (!username || !jobId) {
-      console.warn('[AiComponent] Cannot start polling: missing username or job_id');
       return;
     }
 
     this.polling = true;
     this.noRepositories = false;
-    console.log(`[AiComponent] Starting job status polling for ${username}, job_id: ${jobId}`);
 
     // Poll every 3 seconds for up to 2 minutes (40 attempts)
     this.pollSub = timer(0, 3000).pipe(
@@ -121,32 +118,26 @@ export class AiComponent implements OnInit, OnDestroy {
     ).subscribe({
       next: (statusResponse) => {
         if (!statusResponse) {
-          console.warn('[AiComponent] Job status returned null, stopping poll');
           this.stopPollingAndCheck();
           return;
         }
 
         this.status = statusResponse;
-        console.log(`[AiComponent] Job status: ${statusResponse.status}, metadata_ready: ${statusResponse.metadata_ready}, progress: ${statusResponse.progress?.percentage}%`);
 
         // Load metadata as soon as first repo is cached
         if (statusResponse.metadata_ready && !this.noRepositories) {
-          console.log(`[AiComponent] Metadata ready, loading candidate data`);
           this.loadMetadataOnly();
         }
 
         // Check if all files are complete
         if (statusResponse.files_ready || statusResponse.status === 'completed') {
-          console.log(`[AiComponent] All files ready, job completed`);
           this.stopPollingAndCheck();
         } else if (statusResponse.status === 'failed') {
-          console.error(`[AiComponent] Job failed`);
           this.stopPollingAndCheck();
         }
         // Continue polling for 'queued', 'syncing', or 'metadata_ready' status
       },
       error: (err) => {
-        console.error('[AiComponent] Job status polling error:', err);
         this.stopPollingAndCheck();
       }
     });
@@ -154,7 +145,6 @@ export class AiComponent implements OnInit, OnDestroy {
     // Safety timeout: stop polling after 2 minutes
     setTimeout(() => {
       if (this.polling) {
-        console.warn('[AiComponent] Polling timeout reached (2 minutes), stopping');
         this.stopPollingAndCheck();
       }
     }, 120000);
@@ -180,16 +170,13 @@ export class AiComponent implements OnInit, OnDestroy {
     const username = this.activeUsername;
     if (!username) return;
 
-    console.log(`[AiComponent] Loading metadata for ${username}`);
     this.repoService.getUserBundle(username, undefined, true).subscribe(bundle => {
       const hasRepos = Array.isArray(bundle?.data) && bundle.data.length > 0;
       this.noRepositories = !hasRepos;
       
       if (hasRepos) {
-        console.log(`[AiComponent] Metadata loaded with ${bundle.data.length} repositories`);
         this.loadSuggestions();
       } else {
-        console.log(`[AiComponent] No repositories found for ${username}`);
         this.suggested = [];
       }
     });
@@ -201,7 +188,6 @@ export class AiComponent implements OnInit, OnDestroy {
 
     // Don't check if we're still polling for an active job
     if (this.polling && this.activeJobId) {
-      console.log(`[AiComponent] Skipping bundle check - still polling job ${this.activeJobId}`);
       return;
     }
 
@@ -210,10 +196,8 @@ export class AiComponent implements OnInit, OnDestroy {
       this.noRepositories = !hasRepos;
       
       if (hasRepos) {
-        console.log(`[AiComponent] Bundle loaded with ${bundle.data.length} repositories`);
         this.loadSuggestions();
       } else {
-        console.log(`[AiComponent] No repositories found for ${username}`);
         this.suggested = [];
         this.answerHtml = null;
         this.repositoriesUsed = [];

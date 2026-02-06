@@ -36,7 +36,7 @@
                   <a *ngIf="githubProfile?.blog" [href]="formatBlogLink(githubProfile.blog)" target="_blank" rel="noopener">
                     Website
                   </a>
-                  <span *ngIf="githubProfile?.twitter_username">@{{ githubProfile.twitter_username }}</span>
+                  {{ githubProfile.twitter_username }}
                 </div>
               </div>
             </div>

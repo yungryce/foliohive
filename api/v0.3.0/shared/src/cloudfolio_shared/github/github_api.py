@@ -159,9 +159,14 @@ class GitHubAPI:
             logger.warning("Failed to decode GitHub file content: %s", exc)
             return None
     
-    def get_user_profile(self, username: str) -> Optional[Dict[str, Any]]:
+    def get_user_profile(
+        self,
+        username: str,
+        *,
+        usage: Optional[ApiUsageTracker] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Fetch a GitHub user profile (GET /users/{username})."""
         if not username:
             raise ValueError("GitHub username is required")
-        return self.make_request("GET", f"users/{username}")
+        return self.make_request("GET", f"users/{username}", usage=usage, purpose="user_profile")
 
