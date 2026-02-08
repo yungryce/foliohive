@@ -8,9 +8,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import uuid
 from collections import defaultdict
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -23,9 +24,9 @@ from cloudfolio_shared import (
     GitHubRepoManager,
     queue_manager,
     AIAssistant,
-    RepoScoringService,
     table_manager,
 )
+from cloudfolio_shared.ai.summary_manager import SummaryManager
 from cloudfolio_shared.github.api_usage import ApiUsageTracker
 
 from cloudfolio_shared.table import JobMetadataRow, RepoSyncStatusRow, RepoAPIUsageRow, UserProfileRow
@@ -34,6 +35,19 @@ try:  # Azure SDK may be unavailable in local dev; ignore import failures gracef
     from azure.core.exceptions import ResourceNotFoundError
 except Exception:  # pragma: no cover - falls back in environments without azure core
     ResourceNotFoundError = None
+
+
+@dataclass
+class CandidateContext:
+    """Context data for candidate endpoint operations.
+    
+    Encapsulates trace context, job metadata, and session tracking state
+    to standardize data flow across endpoints.
+    """
+    trace: Dict[str, str]
+    job: Optional[Dict[str, Any]]
+    job_id: Optional[str]
+    username: str
 
 
 logger = logging.getLogger("cloudfolio.api_gateway")
@@ -45,7 +59,6 @@ bp = func.Blueprint()
 USERNAME_REQUIRED_MESSAGE = "Username required"
 PROFILE_TTL_SECONDS = int(os.getenv("CF_PROFILE_TTL_SECONDS", "21600"))
 PROFILE_TOP_LANGUAGES_LIMIT = 10
-
 
 def _get_trace_context(req: func.HttpRequest) -> Dict[str, str]:
     """Build a small correlation context for logs.
@@ -63,7 +76,6 @@ def _get_trace_context(req: func.HttpRequest) -> Dict[str, str]:
         or ""
     )
     if not request_id:
-        logger.info("Generating new request ID for trace context")
         request_id = str(uuid.uuid4())
 
     trace_id = headers.get("X-Trace-Id") or headers.get("x-trace-id") or request_id
@@ -225,93 +237,6 @@ def _build_profile_statistics(
     }
 
 
-def _build_profile_summary_payload(
-    *,
-    username: str,
-    profile: Optional[Dict[str, Any]],
-    job: Optional[Dict[str, Any]],
-    repo_rows: List[Dict[str, Any]],
-    languages_by_repo: Dict[str, List[Dict[str, Any]]],
-    statistics: Dict[str, Any],
-    max_repos: int = 8,
-) -> Dict[str, Any]:
-    """Build a compact, AI-friendly payload for profile summary generation."""
-    sorted_repos = sorted(
-        repo_rows,
-        key=lambda row: (
-            int(row.get("stars_count") or 0),
-            int(row.get("forks_count") or 0),
-            int(row.get("watchers") or 0),
-        ),
-        reverse=True,
-    )
-    top_repos = sorted_repos[:max_repos]
-
-    repo_summaries: List[Dict[str, Any]] = []
-    for repo in top_repos:
-        repo_name = repo.get("repo_name")
-        repo_topics = repo.get("topics")
-        repo_topics = repo_topics[:10] if isinstance(repo_topics, list) else []
-
-        repo_languages = languages_by_repo.get(repo_name) if repo_name else []
-        repo_languages_sorted = sorted(
-            repo_languages or [],
-            key=lambda lang: int(lang.get("bytes_count") or 0),
-            reverse=True,
-        )
-        top_repo_languages = [
-            lang.get("language")
-            for lang in repo_languages_sorted
-            if lang.get("language")
-        ][:3]
-
-        repo_summaries.append(
-            {
-                "name": repo_name,
-                "description": repo.get("description"),
-                "primary_language": repo.get("primary_language"),
-                "languages": top_repo_languages,
-                "topics": repo_topics,
-                "stats": {
-                    "stars": int(repo.get("stars_count") or 0),
-                    "forks": int(repo.get("forks_count") or 0),
-                    "watchers": int(repo.get("watchers") or 0),
-                    "open_issues": int(repo.get("open_issues") or 0),
-                },
-                "flags": {
-                    "is_fork": bool(repo.get("is_fork")),
-                    "is_archived": bool(repo.get("is_archived")),
-                },
-                "urls": {
-                    "github": repo.get("html_url"),
-                    "homepage": repo.get("homepage_url"),
-                },
-                "timestamps": {
-                    "created_at": repo.get("github_created_at"),
-                    "updated_at": repo.get("github_updated_at"),
-                    "pushed_at": repo.get("github_pushed_at"),
-                },
-            }
-        )
-
-    job_metadata = None
-    if job:
-        job_metadata = {
-            "job_id": job.get("job_id"),
-            "status": job.get("status"),
-            "updated_at": _restore_iso_timestamp(job.get("updated_at")) or job.get("updated_at"),
-            "created_at": _restore_iso_timestamp(job.get("created_at")) or job.get("created_at"),
-        }
-
-    return {
-        "username": username,
-        "github_profile": profile or {},
-        "job_metadata": job_metadata or {},
-        "statistics": statistics,
-        "top_repositories": repo_summaries,
-    }
-
-
 def _refresh_user_profile(username: str, cached_profile: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     repo_manager = _get_repo_manager(username)
     usage_tracker = ApiUsageTracker(owner=username, repo="user_profile")
@@ -400,6 +325,48 @@ def _record_user_session(trace: Dict[str, str], username: str, job_id: Optional[
             exc,
         )
 
+
+def _prepare_candidate_context(
+    req: func.HttpRequest,
+    username: str,
+    *,
+    job_id: Optional[str] = None,
+    record_session: bool = True,
+) -> CandidateContext:
+    """Prepare candidate context with trace, job metadata, and session tracking.
+    
+    Standardizes the common pattern of:
+    1. Extract trace context from request
+    2. Fetch/resolve job metadata
+    3. Record session tracking
+    
+    Args:
+        req: HTTP request object
+        username: GitHub username
+        job_id: Optional specific job ID (None = fetch latest)
+        record_session: Whether to record session tracking (default: True)
+    
+    Returns:
+        CandidateContext with trace, job, job_id, and username
+    """
+    trace = _get_trace_context(req)
+    
+    # Resolve job_id from request params if not provided
+    resolved_job_id = job_id or req.params.get("job_id")
+    job = _fetch_candidate_jobs(username, job_id=resolved_job_id)
+    final_job_id = job.get("job_id") if job else None
+    
+    # Record session tracking if enabled
+    if record_session:
+        _record_user_session(trace, username, final_job_id)
+    
+    return CandidateContext(
+        trace=trace,
+        job=job,
+        job_id=final_job_id,
+        username=username,
+    )
+
 def _check_repo_cache_status(
     username: str,
     repo: str,
@@ -479,6 +446,127 @@ def _check_repo_cache_status(
     else:
         result["status"] = "pending"
         result["message"] = f"Unexpected status: {current_status}"
+    
+    return result
+
+
+def _select_repos_for_context(
+    repo_rows: List[Dict[str, Any]],
+    strategy: str = "recent",
+    max_repos: int = 8,
+) -> List[Dict[str, Any]]:
+    """Select repos based on strategy for early context building.
+    
+    Centralizes repo selection to avoid redundant file fetching and duplication.
+    Used in endpoints to select which repos to fetch file contents for.
+    
+    Args:
+        repo_rows: List of repository metadata rows
+        strategy: Selection strategy (recent, random, top_starred)
+        max_repos: Maximum number of repos to select
+    
+    Returns:
+        Selected repo rows (filtered and sorted per strategy)
+    """
+    
+    if not repo_rows:
+        return []
+    
+    if strategy == "recent":
+        # Sort by last updated (most recent first)
+        def get_update_time(repo: Dict[str, Any]) -> datetime:
+            updated = repo.get("github_updated_at") or repo.get("updated_at", "")
+            if not updated:
+                return datetime.min
+            try:
+                # Handle ISO format with +00:00 or Z
+                updated = updated.replace("+00:00", "").replace("Z", "")
+                return datetime.fromisoformat(updated)
+            except Exception:
+                return datetime.min
+        
+        sorted_repos = sorted(repo_rows, key=get_update_time, reverse=True)
+        return sorted_repos[:max_repos]
+    
+    elif strategy == "random":
+        # Random sample for diversity
+        if len(repo_rows) <= max_repos:
+            return repo_rows
+        return random.sample(repo_rows, max_repos)
+    
+    elif strategy == "top_starred":
+        # Sort by stars (most starred first)
+        sorted_repos = sorted(
+            repo_rows,
+            key=lambda r: r.get("stars_count", 0),
+            reverse=True
+        )
+        return sorted_repos[:max_repos]
+    
+    else:
+        # Default to recent
+        logger.warning("Unknown selection strategy '%s', defaulting to 'recent'", strategy)
+        return _select_repos_for_context(repo_rows, "recent", max_repos)
+
+
+def _get_repo_files_for_summary(
+    username: str,
+    repo_name: str,
+    max_files: int = 5,
+) -> Dict[str, Any]:
+    """Get cached file contents for a repo (readme + config files).
+    
+    Args:
+        username: GitHub username
+        repo_name: Repository name
+        max_files: Maximum number of files to retrieve per repo
+    
+    Returns:
+        Dict with readme_content and config_files list
+    """
+    result = {
+        "repo_name": repo_name,
+        "readme_content": None,
+        "config_files": [],
+    }
+    
+    try:
+        # Get readme content
+        readme_key = cache_manager.generate_cache_key(
+            kind="file",
+            username=username,
+            repo=repo_name,
+            file_type="readme",
+            filename="PRIMARY",
+        )
+        readme_result = cache_manager.get(readme_key)
+        if readme_result.get("status") == "valid":
+            result["readme_content"] = readme_result.get("data", "")
+        
+        # Get config files (up to max_files)
+        config_key = cache_manager.generate_cache_key(
+            kind="file",
+            username=username,
+            repo=repo_name,
+            file_type="config",
+            filename="ALL",
+        )
+        config_result = cache_manager.get(config_key)
+        if config_result.get("status") == "valid":
+            config_data = config_result.get("data", {})
+            if isinstance(config_data, dict):
+                # Limit to max_files config files
+                config_items = list(config_data.items())[:max_files]
+                result["config_files"] = [
+                    {"filename": filename, "content": content}
+                    for filename, content in config_items
+                ]
+    
+    except Exception as exc:
+        logger.warning(
+            "Failed to retrieve file contents for %s/%s: %s",
+            username, repo_name, exc
+        )
     
     return result
 
@@ -581,21 +669,25 @@ def _query_repo_rows(
 
 
 def _build_repo_detail_entry(
-    username: str,
     repo_name: str,
     *,
-    job_id: Optional[str] = None,
+    ctx: CandidateContext,
 ) -> Dict[str, Any]:
-    """Helper: build a single repo bundle entry using normalized tables."""
-    job = _fetch_candidate_jobs(username, job_id)
-    resolved_job_id = job.get("job_id") if job else None
-
-    repo_rows = _query_repo_rows(username, job_id=resolved_job_id, repo_names=[repo_name])
+    """Helper: build a single repo bundle entry using normalized tables.
+    
+    Args:
+        repo_name: Repository name
+        ctx: Candidate context with resolved job_id and username
+    
+    Returns:
+        Dict with job_id and repo_entry
+    """
+    repo_rows = _query_repo_rows(ctx.username, job_id=ctx.job_id, repo_names=[repo_name])
     github_metadata = repo_rows[0] if repo_rows else None
 
     languages = None
-    if resolved_job_id:
-        all_languages = table_manager.query_repo_languages(resolved_job_id)
+    if ctx.job_id:
+        all_languages = table_manager.query_repo_languages(ctx.job_id)
         languages = all_languages.get(repo_name)
 
     entry = _repo_row_to_bundle_entry(languages=languages, github_metadata=github_metadata)
@@ -603,7 +695,7 @@ def _build_repo_detail_entry(
         entry["name"] = repo_name
 
     return {
-        "job_id": resolved_job_id,
+        "job_id": ctx.job_id,
         "repo_entry": entry,
     }
 
@@ -755,25 +847,6 @@ def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[
     logger.info("Built candidate metadata: %s", json.dumps(result, indent=2))
     return result
 
-
-def _bundle_from_cache(username: str) -> Optional[Dict[str, Any]]:
-    """Load bundle from cache (not job metadata).
-    
-    Per normalized schema: only 'bundle' kind is cached to storage.
-    Job metadata queries go to table_manager exclusively.
-    """
-    bundle_cache_key = cache_manager.generate_cache_key(kind="bundle", username=username)
-    result = cache_manager.get(bundle_cache_key)
-    if result.get("status") != "valid" or result.get("data") is None:
-        return None
-    return {
-        "username": username,
-        "fingerprint": result.get("fingerprint"),
-        "last_modified": result.get("last_modified"),
-        "size_bytes": result.get("size_bytes"),
-        "data": result.get("data"),
-    }
-
 def _record_api_usage(
     username: str,
     operation: str,
@@ -879,22 +952,15 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
     """
     repo_manager = _get_repo_manager(username)
 
-    logger.info(
-        "[API_GATEWAY_FRESHNESS] user=%s - Fetching all repos metadata from GitHub (1 API call)",
-        username,
-    )
-
-    # Fetch current state from GitHub (unavoidable - freshness requires live data)
+    # Track API usage for freshness check
     usage_tracker = ApiUsageTracker(owner=username, repo="all_repos")
     all_repos = repo_manager.get_all_repos_metadata(
         username=username,
         include_languages=False,
         usage=usage_tracker,
     )
-    
-    # Track API usage for freshness check
     api_usage = usage_tracker.to_dict()
-    
+
     current_fingerprints = {
         repo.get("name"): FingerprintManager.generate_metadata_fingerprint(repo)
         for repo in all_repos
@@ -923,37 +989,13 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
         # Fingerprint mismatch = stale
         if current_fingerprint and current_fingerprint != cached_fingerprint:
             stale_repos.append({**repo_metadata, "fingerprint": current_fingerprint})
-            logger.info(
-                "[REPO_STALE] user=%s repo=%s cached_fp=%s current_fp=%s",
-                username,
-                repo_name,
-                cached_fingerprint or "<none>",
-                current_fingerprint[:8],
-            )
         # Fingerprint match = valid (don't re-sync)
         elif current_fingerprint and current_fingerprint == cached_fingerprint:
             valid_repos.append(repo_metadata)
-            logger.info(
-                "[REPO_FRESH] user=%s repo=%s fp=%s",
-                username,
-                repo_name,
-                current_fingerprint[:8],
-            )
         # New repo (no cached fingerprint)
         else:
             stale_repos.append({**repo_metadata, "fingerprint": current_fingerprint})
-            logger.info(
-                "[REPO_NEW] user=%s repo=%s",
-                username,
-                repo_name,
-            )
-    logger.info(
-        "Repo freshness for user=%s: stale=%d, valid=%d",
-        username,
-        len(stale_repos),
-        len(valid_repos),
-    )
-    
+
     # Record API usage if we have trace context
     _record_api_usage(
         username=username,
@@ -962,7 +1004,7 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
         job_id=None,
         repo_name=None,
     )
-    
+
     return {
         "stale_repos": stale_repos,
         "cached_bundle": valid_repos,
@@ -986,263 +1028,39 @@ def health_check(req: func.HttpRequest) -> func.HttpResponse:
     return _create_success_response(status, cache_control="no-cache")
 
 
-@bp.route(route="candidate/{username}/{repo}/cache-status", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_repo_cache_status(req: func.HttpRequest) -> func.HttpResponse:
-    """Check cache status for a repository and enqueue job if needed."""
-    username = req.route_params.get("username")
-    repo = req.route_params.get("repo")
-    if not username or not repo:
-        return _create_error_response("Username and repository name are required", 400)
-    
+@bp.route(route="session/candidates", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_session_candidates(req: func.HttpRequest) -> func.HttpResponse:
+    """List usernames recently viewed in this session.
+
+    Returns browsing history for the session, useful for 'recently viewed' UI features.
+    """
     trace = _get_trace_context(req)
-    job_id = req.params.get("job_id")
-    
-    logger.info(
-        "[CACHE_STATUS_REQUEST] request_id=%s username=%s repo=%s job_id=%s",
-        trace["request_id"],
-        username,
-        repo,
-        job_id or "auto",
-    )
-    
-    status_result = _check_repo_cache_status(
-        username,
-        repo,
-        job_id=job_id,
-        trace_id=trace.get("trace_id"),
-    )
-    
-    logger.info(
-        "[CACHE_STATUS_RESPONSE] request_id=%s username=%s repo=%s status=%s",
-        trace["request_id"],
-        username,
-        repo,
-        status_result.get("status"),
-    )
-    
-    return _create_success_response(status_result, cache_control="no-cache")
+    session_id = trace.get("session_id")
+    if not session_id:
+        return _create_error_response("X-Session-Id required", 400)
 
+    limit = 10
+    limit_param = req.params.get("limit")
+    if limit_param:
+        try:
+            limit = max(1, min(50, int(limit_param)))
+        except (TypeError, ValueError):
+            limit = 10
 
-@bp.route(route="candidate/{username}/{repo}/readme-summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_repo_readme_summary(req: func.HttpRequest) -> func.HttpResponse:
-    """Generate an AI summary for a repository README (HTML output)."""
-    username = req.route_params.get("username")
-    repo = req.route_params.get("repo")
-    if not username or not repo:
-        return _create_error_response("Username and repository name are required", 400)
-    trace = _get_trace_context(req)
-    logger.info(
-        "[REPO_README_SUMMARY_REQUEST] request_id=%s username=%s repo=%s",
-        trace["request_id"],
-        username,
-        repo,
-    )
-
-    # Check cache status first
-    status_result = _check_repo_cache_status(
-        username,
-        repo,
-        trace_id=trace.get("trace_id"),
-    )
-    
-    if status_result.get("status") != "cached":
-        logger.info(
-            "[REPO_README_SUMMARY_PENDING] request_id=%s username=%s repo=%s status=%s",
-            trace["request_id"],
-            username,
-            repo,
-            status_result.get("status"),
-        )
-        return _create_error_response(
-            status_result.get("message", "Cache not ready"),
-            202,  # Accepted - processing
-            error_code="CACHE_NOT_READY",
-            request_id=trace["request_id"],
-        )
-    else:
-        logger.info(
-            "[REPO_README_SUMMARY_CACHED] request_id=%s username=%s repo=%s - Cache is ready, status=%s",
-            trace["request_id"],
-            username,
-            repo,
-            status_result.get("status"),
-        )
-    
-    # Cache is ready - retrieve and generate summary
-    try:
-        files_payload = _get_repo_file_content(username, repo, file_type="readme")
-        primary_readme = files_payload.get("primary_readme") or ""
-    except ValueError as exc:
-        return _create_error_response(str(exc), 404, request_id=trace["request_id"])
-
-    if not primary_readme:
-        return _create_error_response("No README content available", 404, request_id=trace["request_id"])
-
-    assistant = AIAssistant(username=username)
-    summary_html = assistant.summarize_readme_html(primary_readme, repo_name=repo)
-
-    detail = _build_repo_detail_entry(username, repo, job_id=status_result.get("job_id"))
+    candidates = table_manager.list_session_candidates(session_id, limit=limit)
     payload = {
-        "username": username,
-        "repo": repo,
-        "job_id": detail.get("job_id"),
-        "repo_entry": detail.get("repo_entry"),
-        "readme_summary_html": summary_html,
+        "candidates": [
+            {
+                "username": row.get("username"),
+                "latest_job_id": row.get("latest_job_id"),
+                "last_viewed_at": row.get("last_viewed_at"),
+                "query_count": row.get("query_count"),
+            }
+            for row in candidates
+            if row.get("username")
+        ]
     }
-
-    logger.info(
-        "[REPO_README_SUMMARY_RESPONSE] request_id=%s username=%s repo=%s status=success",
-        trace["request_id"],
-        username,
-        repo,
-    )
-
     return _create_success_response(payload, cache_control="no-cache")
-
-
-@bp.route(route="candidate/{username}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_candidate_repos_metadata(req: func.HttpRequest) -> func.HttpResponse:
-    """Retrieve candidate portfolio metadata.
-    
-    Returns repository metadata for a GitHub username. If no job_id is provided,
-    returns the latest completed job. Queries normalized tables for real-time data.
-    
-    Query parameters:
-        job_id (optional): Specific job ID to retrieve
-    
-    Returns:
-        200: Candidate metadata with repository list
-        404: No job found or job still in progress
-        400: Invalid request (missing username)
-    
-    Response structure:
-        {
-            "username": str,
-            "job_id": str,
-            "fingerprint": str,
-            "status": str,
-            "data": [repo_metadata...]
-        }
-    """
-    username = req.route_params.get("username")
-    if not username:
-        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400, error_code="VALIDATION_ERROR")
-    
-    job_id = req.params.get("job_id")
-
-    trace = _get_trace_context(req)
-    logger.info(
-        "[CANDIDATE_REQUEST] request_id=%s username=%s",
-        trace["request_id"],
-        username,
-    )
-    candidate_job = _fetch_candidate_jobs(username, job_id=job_id)
-    if candidate_job is None:
-        return _create_error_response("No job found for user", 404, error_code="NOT_FOUND", request_id=trace.get("request_id"))
-    job_id = candidate_job.get("job_id")
-
-    # Try table storage first (most recent data)
-    if job_id:
-        repo_rows = _query_repo_rows(username, job_id=job_id)
-        if repo_rows:
-            logger.info(
-                "[CANDIDATE_RESPONSE] request_id=%s username=%s job_id=%s source=table repos=%d",
-                trace["request_id"],
-                username,
-                job_id,
-                len(repo_rows),
-            )
-            payload = _get_candidate_metadata(username, candidate_job, repo_rows)
-            return _create_success_response(payload, request_id=trace.get("request_id"))
-
-
-        # Job exists but no repo data yet
-        return _create_error_response(
-            f"Candidate for '{username}' not ready (job in progress)",
-            404,
-            error_code="NOT_READY",
-            request_id=trace.get("request_id"),
-        )
-
-    # No job found for username
-    return _create_error_response(
-        f"No candidate found for '{username}'. Trigger refresh first.",
-        404,
-        error_code="NOT_FOUND",
-        request_id=trace.get("request_id"),
-    )
-
-
-@bp.route(route="candidate/{username}/profile", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_candidate_profile(req: func.HttpRequest) -> func.HttpResponse:
-    """Retrieve aggregated candidate profile data.
-
-    Combines GitHub user profile (cached in tables), latest job metadata,
-    and repo statistics from normalized tables.
-    """
-    username = req.route_params.get("username")
-    if not username:
-        return _create_error_response(USERNAME_REQUIRED_MESSAGE, status_code=400, error_code="BAD_REQUEST")
-
-    trace = _get_trace_context(req)
-    job_id = req.params.get("job_id")
-    job = _fetch_candidate_jobs(username, job_id=job_id)
-    resolved_job_id = job.get("job_id") if job else None
-
-    _record_user_session(trace, username, resolved_job_id)
-
-    repo_rows = _query_repo_rows(username, job_id=resolved_job_id)
-    languages_by_repo = table_manager.query_repo_languages(resolved_job_id) if resolved_job_id else {}
-
-    profile = _get_or_refresh_user_profile(username)
-    statistics = _build_profile_statistics(repo_rows, languages_by_repo)
-
-    payload = {
-        "username": username,
-        "github_profile": profile,
-        "job_metadata": job,
-        "statistics": statistics,
-    }
-    return _create_success_response(payload, cache_control="no-cache", request_id=trace.get("request_id"))
-
-
-@bp.route(route="candidate/{username}/summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_candidate_summary(req: func.HttpRequest) -> func.HttpResponse:
-    """Generate an AI summary for a candidate profile (HTML output)."""
-    username = req.route_params.get("username")
-    if not username:
-        return _create_error_response(USERNAME_REQUIRED_MESSAGE, status_code=400, error_code="BAD_REQUEST")
-
-    trace = _get_trace_context(req)
-    job_id = req.params.get("job_id")
-    job = _fetch_candidate_jobs(username, job_id=job_id)
-    resolved_job_id = job.get("job_id") if job else None
-
-    _record_user_session(trace, username, resolved_job_id)
-
-    repo_rows = _query_repo_rows(username, job_id=resolved_job_id)
-    languages_by_repo = table_manager.query_repo_languages(resolved_job_id) if resolved_job_id else {}
-
-    profile = _get_or_refresh_user_profile(username)
-    statistics = _build_profile_statistics(repo_rows, languages_by_repo)
-    summary_payload = _build_profile_summary_payload(
-        username=username,
-        profile=profile,
-        job=job,
-        repo_rows=repo_rows,
-        languages_by_repo=languages_by_repo,
-        statistics=statistics,
-    )
-
-    assistant = AIAssistant(username=username)
-    summary_html = assistant.summarize_profile_html(summary_payload, username=username)
-
-    payload = {
-        "username": username,
-        "job_id": resolved_job_id,
-        "summary_html": summary_html,
-    }
-    return _create_success_response(payload, cache_control="no-cache", request_id=trace.get("request_id"))
 
 
 @bp.route(route="candidate/{username}/refresh", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
@@ -1295,17 +1113,9 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
     body = _parse_json(req)
     force_refresh = bool(body.get("force_refresh", False))
 
-    logger.info(
-        "[REFRESH_REQUEST] request_id=%s session_id=%s username=%s force_refresh=%s",
-        trace["request_id"],
-        trace["session_id"],
-        username,
-        force_refresh,
-    )
-
     try:
         freshness = _identify_repo_freshness(username, trace=trace)
-    except Exception as exc:
+    except (ValueError, TypeError, KeyError) as exc:
         logger.error("Failed to analyze repo freshness: %s", exc, exc_info=True)
         return _create_error_response("Failed to analyze repositories", 500)
 
@@ -1314,12 +1124,6 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
 
     # If nothing is stale and not forcing refresh, return early
     if not stale_repos and not force_refresh:
-        logger.info(
-            "[REFRESH_RESPONSE] request_id=%s username=%s status=fresh repos=%d",
-            trace["request_id"],
-            username,
-            len(valid_repos),
-        )
         return _create_success_response({"status": "fresh", "repos_count": len(valid_repos)})
 
     # Determine repos to queue: stale only, or stale + valid if force_refresh
@@ -1328,17 +1132,6 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
         return _create_success_response({"status": "fresh", "repos_count": 0})
 
     job_id = str(uuid.uuid4())
-    expected_repo_names = [repo.get("name") for repo in repos_to_queue if repo.get("name")]
-
-    logger.info(
-        "[REFRESH_JOB_CREATED] request_id=%s username=%s job_id=%s stale=%d valid=%d total_to_queue=%d",
-        trace["request_id"],
-        username,
-        job_id,
-        len(stale_repos),
-        len(valid_repos),
-        len(expected_repo_names),
-    )
 
     _persist_job_metadata(
         job_id,
@@ -1361,12 +1154,6 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
                     status="pending",
                 )
             )
-    logger.info(
-        "[REFRESH_PENDING_CREATED] job=%s user=%s repos=%d",
-        job_id,
-        username,
-        len(expected_repo_names),
-    )
 
     enqueued = 0
     for repo_metadata in repos_to_queue:
@@ -1385,15 +1172,6 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
             session_id=trace.get("session_id"),
         ):
             enqueued += 1
-
-    logger.info(
-        "[REFRESH_ENQUEUED] request_id=%s username=%s job_id=%s enqueued=%d/%d",
-        trace["request_id"],
-        username,
-        job_id,
-        enqueued,
-        len(expected_repo_names),
-    )
 
     if enqueued == 0:
         return _create_error_response("Failed to enqueue sync jobs", 502)
@@ -1460,44 +1238,35 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
     if not job_id:
         return _create_error_response("job_id query parameter required", 400)
 
-    trace = _get_trace_context(req)
-    logger.info(
-        "[STATUS_REQUEST] request_id=%s session_id=%s username=%s job_id=%s",
-        trace["request_id"],
-        trace["session_id"],
-        username,
-        job_id,
-    )
-
     job = table_manager.get_job_metadata(username, job_id)
     if not job:
         return _create_error_response("Job not found", 404)
-    
+
     job_status = job.get("status", "unknown")
-    
+
     # Compute detailed progress from RepoSyncStatus (for UI progress bars)
     statuses = table_manager.list_repo_statuses(job_id)
     total = len(statuses)
-    
+
     # Single pass to collect repo names by status
     status_counts = defaultdict(int)
     status_lists = defaultdict(list)
-    
+
     for row in statuses:
         status = row.get("status")
         repo_name = row.get("repo_name")
         if status in ("pending", "synced", "cached", "failed") and repo_name:
             status_counts[status] += 1
             status_lists[status].append(repo_name)
-    
+
     pending = status_lists["pending"]
     synced = status_lists["synced"]
     cached = status_lists["cached"]
     failed = status_lists["failed"]
-    
+
     # Completed = cached files + failed (terminal states)
     completed = len(cached) + len(failed)
-    
+
     payload = {
         "job_id": job_id,
         "username": username,
@@ -1521,161 +1290,252 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
             "failed": failed[:10],
         },
     }
-    logger.info(
-        "[STATUS_RESPONSE] request_id=%s job=%s status=%s metadata_ready=%s files_ready=%s total=%d cached=%d synced=%d pending=%d failed=%d",
-        trace["request_id"],
-        job_id,
-        payload["status"],
-        payload["metadata_ready"],
-        payload["files_ready"],
-        total,
-        len(cached),
-        len(synced),
-        len(pending),
-        len(failed),
-    )
+
     return _create_success_response(payload, cache_control="no-cache")
 
 
-@bp.route(route="session/bundle/{username}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_session_bundle(req: func.HttpRequest) -> func.HttpResponse:
-    """Retrieve bundle for username with session tracking.
+@bp.route(route="candidate/{username}/{repo}/cache-status", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_repo_cache_status(req: func.HttpRequest) -> func.HttpResponse:
+    """Check cache status for a repository and enqueue job if needed."""
 
-    This endpoint combines bundle retrieval with session candidate tracking,
-    useful for UI contexts where browsing history should be recorded.
+    username = req.route_params.get("username")
+    repo = req.route_params.get("repo")
+    if not username:
+        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
+    if not repo:
+        return _create_error_response("Repository name is required", 400)
+    
+    # Don't record session for polling endpoints
+    ctx = _prepare_candidate_context(req, username, record_session=False)
+
+    status_result = _check_repo_cache_status(
+        username,
+        repo,
+        job_id=ctx.job_id,
+        trace_id=ctx.trace.get("trace_id"),
+    )
+
+    return _create_success_response(status_result, cache_control="no-cache")
+
+
+@bp.route(route="candidate/{username}", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_candidate_repos_metadata(req: func.HttpRequest) -> func.HttpResponse:
+    """Retrieve candidate portfolio metadata.
+    
+    Returns repository metadata for a GitHub username. If no job_id is provided,
+    returns the latest completed job. Queries normalized tables for real-time data.
+    
+    Query parameters:
+        job_id (optional): Specific job ID to retrieve
+    
+    Returns:
+        200: Candidate metadata with repository list
+        404: No job found or job still in progress
+        400: Invalid request (missing username)
+    
+    Response structure:
+        {
+            "username": str,
+            "job_id": str,
+            "fingerprint": str,
+            "status": str,
+            "data": [repo_metadata...]
+        }
     """
     username = req.route_params.get("username")
     if not username:
-        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
+        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400, error_code="VALIDATION_ERROR")
 
-    trace = _get_trace_context(req)
-    session_id = trace.get("session_id")
-    if not session_id:
-        return _create_error_response("X-Session-Id header required for session tracking", 400)
+    ctx = _prepare_candidate_context(req, username)
 
-    requested_job_id = req.params.get("job_id")
-    logger.info(
-        "[SESSION_BUNDLE_REQUEST] request_id=%s session_id=%s username=%s job_id=%s",
-        trace["request_id"],
-        session_id,
-        username,
-        requested_job_id or "<latest>",
+    # Try table storage first (most recent data)
+    if ctx.job_id:
+        repo_rows = _query_repo_rows(username, job_id=ctx.job_id)
+        if repo_rows:
+            payload = _get_candidate_metadata(username, ctx.job, repo_rows)
+            return _create_success_response(payload, request_id=ctx.trace.get("request_id"))
+
+        # Job exists but no repo data yet
+        return _create_error_response(
+            f"Candidate for '{username}' not ready (job in progress)",
+            404,
+            error_code="NOT_READY",
+            request_id=ctx.trace.get("request_id"),
+        )
+
+    # No job found for username
+    return _create_error_response(
+        f"No candidate found for '{username}'. Trigger refresh first.",
+        404,
+        error_code="NOT_FOUND",
+        request_id=ctx.trace.get("request_id"),
     )
 
-    session = _fetch_candidate_jobs(username, requested_job_id)
-    resolved_job_id = session.get("job_id") if session else requested_job_id
 
-    # Record session tracking
-    _record_user_session(trace, username, resolved_job_id)
+@bp.route(route="candidate/{username}/profile", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_candidate_profile(req: func.HttpRequest) -> func.HttpResponse:
+    """Retrieve aggregated candidate profile data.
 
-    repo_rows = _query_repo_rows(username, job_id=resolved_job_id)
-
-    if session and repo_rows:
-        logger.info(
-            "[SESSION_BUNDLE_RESPONSE] request_id=%s session_id=%s username=%s job_id=%s source=table repos=%d",
-            trace["request_id"],
-            session_id,
-            username,
-            resolved_job_id or "<unknown>",
-            len(repo_rows),
-        )
-        payload = _get_candidate_metadata(username, session, repo_rows)
-        return _create_success_response(payload)
-
-    cache_payload = _bundle_from_cache(username)
-    if cache_payload:
-        logger.info(
-            "[SESSION_BUNDLE_RESPONSE] request_id=%s session_id=%s username=%s source=cache repos=%d",
-            trace["request_id"],
-            session_id,
-            username,
-            len(cache_payload.get("data") or []),
-        )
-        return _create_success_response(cache_payload)
-
-    if session:
-        return _create_error_response(f"Bundle for '{username}' not ready", 404)
-
-    return _create_error_response(f"No valid bundle found for '{username}'", 404)
-
-
-@bp.route(route="session/candidates", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_session_candidates(req: func.HttpRequest) -> func.HttpResponse:
-    """List usernames recently viewed in this session.
-
-    Returns browsing history for the session, useful for 'recently viewed' UI features.
+    Combines GitHub user profile (cached in tables), latest job metadata,
+    and repo statistics from normalized tables.
     """
-    trace = _get_trace_context(req)
-    session_id = trace.get("session_id")
-    if not session_id:
-        return _create_error_response("X-Session-Id required", 400)
+    username = req.route_params.get("username")
+    if not username:
+        return _create_error_response(USERNAME_REQUIRED_MESSAGE, status_code=400, error_code="BAD_REQUEST")
 
-    limit = 10
-    limit_param = req.params.get("limit")
-    if limit_param:
-        try:
-            limit = max(1, min(50, int(limit_param)))
-        except (TypeError, ValueError):
-            limit = 10
+    ctx = _prepare_candidate_context(req, username)
 
-    candidates = table_manager.list_session_candidates(session_id, limit=limit)
+    repo_rows = _query_repo_rows(username, job_id=ctx.job_id)
+    languages_by_repo = table_manager.query_repo_languages(ctx.job_id) if ctx.job_id else {}
+
+    profile = _get_or_refresh_user_profile(username)
+    statistics = _build_profile_statistics(repo_rows, languages_by_repo)
+
     payload = {
-        "candidates": [
-            {
-                "username": row.get("username"),
-                "latest_job_id": row.get("latest_job_id"),
-                "last_viewed_at": row.get("last_viewed_at"),
-                "query_count": row.get("query_count"),
-            }
-            for row in candidates
-            if row.get("username")
-        ]
+        "username": username,
+        "github_profile": profile,
+        "job_metadata": ctx.job,
+        "statistics": statistics,
     }
+    return _create_success_response(payload, cache_control="no-cache", request_id=ctx.trace.get("request_id"))
+
+
+@bp.route(route="candidate/{username}/summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_candidate_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
+    """Generate an AI summary for a candidate profile (HTML output)."""
+    username = req.route_params.get("username")
+    if not username:
+        return _create_error_response(USERNAME_REQUIRED_MESSAGE, status_code=400, error_code="BAD_REQUEST")
+
+    profile = _get_or_refresh_user_profile(username)
+    ctx = _prepare_candidate_context(req, username)
+    repo_rows = _query_repo_rows(username, job_id=ctx.job_id)
+    languages_by_repo = table_manager.query_repo_languages(ctx.job_id) if ctx.job_id else {}
+    statistics = _build_profile_statistics(repo_rows, languages_by_repo)
+
+    # Select repos early to minimize file fetching
+    selected_repos = _select_repos_for_context(repo_rows, strategy="recent", max_repos=5)
+    
+    # Build repo files dict only for selected repos
+    repo_files = {}
+    for repo in selected_repos:
+        repo_name = repo.get("repo_name")
+        if repo_name:
+            files = _get_repo_files_for_summary(username, repo_name, max_files=5)
+            if files.get("readme_content") or files.get("config_files"):
+                repo_files[repo_name] = files
+
+    # New path: Use SummaryManager with caching
+    manager = SummaryManager(username=username)
+
+    result = manager.get_or_generate_profile_summary(
+        job_id=ctx.job_id or "default",
+        profile=profile or {},
+        repo_rows=repo_rows,
+        statistics=statistics,
+        repo_files=repo_files,
+    )
+    
+    payload = {
+        "username": username,
+        "job_id": ctx.job_id,
+        "summary_html": result["summary_html"],
+        "cache_metadata": result.get("metadata", {})
+    }
+    
+    return _create_success_response(payload, cache_control="no-cache", request_id=ctx.trace.get("request_id"))
+
+
+@bp.route(route="candidate/{username}/{repo}/readme-summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_repo_readme_summary(req: func.HttpRequest) -> func.HttpResponse:
+    """Generate an AI summary for a repository README (HTML output)."""
+    username = req.route_params.get("username")
+    repo = req.route_params.get("repo")
+    if not username or not repo:
+        return _create_error_response("Username and repository name are required", 400)
+
+    ctx = _prepare_candidate_context(req, username)
+
+    # Get cached file contents (readme + config files)
+    files = _get_repo_files_for_summary(username, repo, max_files=5)
+    readme_content = files.get("readme_content", "")
+
+    # Convert config_files list to dict mapping {filename: content}
+    config_files_dict = None
+    config_files_list = files.get("config_files", [])
+    if config_files_list:
+        config_files_dict = {cf["filename"]: cf["content"] for cf in config_files_list}
+
+    # Get repo metadata for context
+    detail = _build_repo_detail_entry(repo, ctx=ctx)
+    repo_entry = detail.get("repo_entry", {})
+
+    # New path: Use SummaryManager with caching
+    manager = SummaryManager(username=username)
+
+    result = manager.get_or_generate_readme_summary(
+        job_id=ctx.job_id or "default",
+        repo_name=repo,
+        readme_content=readme_content,
+        repo_metadata=repo_entry,
+        config_files=config_files_dict,
+    )
+
+    payload = {
+        "username": username,
+        "repo": repo,
+        "job_id": ctx.job_id,
+        "repo_entry": repo_entry,
+        "readme_summary_html": result["summary_html"],
+        "cache_metadata": result.get("metadata", {})
+    }
+
     return _create_success_response(payload, cache_control="no-cache")
 
 
 @bp.route(route="ai", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
+    """Process AI query against candidate's portfolio using bundle-level context.
+    
+    Supports selection strategies:
+    - recent: Most recently updated repos (default, shows current work)
+    - random: Random sampling for diversity
+    - top_starred: Most popular repos by stars
+    """
     body = _parse_json(req)
     query = body.get("query")
     username = body.get("username")
     if not query or not username:
         return _create_error_response("Request body must contain 'query' and 'username'", 400)
 
-    repos_bundle = None
-    session = _fetch_candidate_jobs(username)
-    job_id = session.get("job_id") if session else None
-    repo_rows = _query_repo_rows(username, job_id=job_id) if session else []
-    if session and repo_rows:
-        table_bundle = _get_candidate_metadata(username, session, repo_rows)
-        repos_bundle = table_bundle.get("data")
-
-    if not repos_bundle:
-        return _create_error_response("No repository bundle available. Trigger refresh first.", 400)
-
-    include_readme_summary = bool(body.get("include_readme_summary"))
-    repo_name = body.get("repo_name")
-    readme_summary_html = None
-    if include_readme_summary and repo_name:
-        try:
-            files_payload = _get_repo_file_content(username, repo_name, file_type="readme")
-            primary_readme = files_payload.get("primary_readme") or ""
-            if primary_readme:
-                assistant = AIAssistant(username=username)
-                readme_summary_html = assistant.summarize_readme_html(primary_readme, repo_name=repo_name)
-        except Exception:
-            readme_summary_html = None
-
-    try:
-        scoring_service = RepoScoringService(username=username)
-        scored = scoring_service.score_repositories(query, repos_bundle)
-        assistant = AIAssistant(username=username)
-        response = assistant.process_scored_repositories(query, scored)
-        if readme_summary_html:
-            response["readme_summary_html"] = readme_summary_html
-        return _create_success_response(response)
-    except Exception as exc:
-        logger.error("AI query failed: %s", exc, exc_info=True)
-        return _create_error_response("Failed to process query", 500)
-
-
+    # Fetch candidate session and repo data
+    ctx = _prepare_candidate_context(req, username)
+    repo_rows = _query_repo_rows(username, job_id=ctx.job_id) if ctx else []
+    
+    if not ctx or not repo_rows:
+        return _create_error_response("No repository data available. Trigger refresh first.", 400)
+    
+    # Select repos early to minimize file fetching
+    selected_repos = _select_repos_for_context(repo_rows, strategy="recent", max_repos=5)
+    
+    # New path: Use SummaryManager with bundle-level context and caching
+    manager = SummaryManager(username=username)
+    
+    # Build repo_files dict only for selected repos
+    repo_files = {}
+    for repo_row in selected_repos:
+        repo_name = repo_row.get("repo_name")
+        if repo_name:
+            files = _get_repo_files_for_summary(username, repo_name, max_files=5)
+            repo_files[repo_name] = files
+    
+    # Use SummaryManager to build bundle context and generate response
+    # Pass selected_repos instead of repo_rows to avoid redundant selection in SummaryManager
+    response = manager.get_or_generate_query_response(
+        job_id=ctx.job_id or "default",
+        query=query,
+        repo_rows=selected_repos,  # Already filtered by strategy
+        repo_files=repo_files,
+    )
+    
+    return _create_success_response(response)

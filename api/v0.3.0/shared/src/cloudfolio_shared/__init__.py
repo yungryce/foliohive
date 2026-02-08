@@ -5,7 +5,7 @@ This package contains the reusable logic those blueprints depend on.
 
 Usage:
     from cloudfolio_shared import cache_manager, GitHubAPI, queue_manager
-    from cloudfolio_shared import AIAssistant, RepoScoringService
+    from cloudfolio_shared import AIAssistant
 """
 
 __version__ = "1.0.0"
@@ -65,11 +65,5 @@ def __getattr__(name: str):
     if name == "AIAssistant":
         from cloudfolio_shared.ai.ai_assistant import AIAssistant
         return AIAssistant
-    if name == "RepoScoringService":
-        from cloudfolio_shared.ai.repo_scoring_service import RepoScoringService
-        return RepoScoringService
-    if name == "FileTypeAnalyzer":
-        from cloudfolio_shared.ai.type_analyzer import FileTypeAnalyzer
-        return FileTypeAnalyzer
     
     raise AttributeError(f"module 'cloudfolio_shared' has no attribute '{name}'")

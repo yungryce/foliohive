@@ -3,4 +3,7 @@
 Keep imports light here — import heavy ML dependencies inside functions.
 """
 
-__all__ = ["ai_assistant", "repo_scoring_service", "fine_tuning", "type_analyzer"]
+from cloudfolio_shared.ai.ai_assistant import AIAssistant
+from cloudfolio_shared.ai.summary_manager import SummaryManager
+
+__all__ = ["AIAssistant", "SummaryManager", "ai_assistant", "summary_manager"]

@@ -32,7 +32,6 @@ dependencies = [
     "numpy",
     "openai",
     "pyyaml",
-    "groq",
     "scikit-learn",
 ]
 

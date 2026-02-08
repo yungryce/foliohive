@@ -262,7 +262,7 @@ def extract_language_terms(query: str) -> List[str]:
         'typescript': [r'\btypescript\b', r'\bts\b'],
         'java': [r'\bjava\b', r'\bspring\b', r'\bspringboot\b', r'\bmaven\b', r'\bgradle\b'],
         'c++': [r'\bc\+\+\b', r'\bcpp\b', r'\bcplus\b'],
-        'c#': [r'\bc#\b', r'\bcsharp\b', r'\bdotnet\b', r'\b\.net\b'],
+        'c#': [r'(?<!\w)c#(?!\w)', r'\bcsharp\b', r'\bdotnet\b', r'\b\.net\b'],
         'c': [r'\bc\b', r'\bc language\b', r'\bbrainfuck\b', r'\blimbo\b', r'\bm\b'],  # Added regex for 'c'
         'php': [r'\bphp\b', r'\blaravel\b', r'\bsymfony\b', r'\bcomposer\b', r'\bblade\b'],
         'go': [r'\bgolang\b', r'\bgo\b'],

@@ -2,234 +2,255 @@ import json
 import os
 import logging
 import time
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
+# Model configuration - OpenAI GPT models only
+MODEL_CONFIG = {
+    "default": {
+        "name": "gpt-5-nano",
+        "provider": "openai",
+        "api_key_env": "OPENAI_API_KEY",
+        "base_url": "https://api.openai.com/v1",
+    },
+    "balanced": {
+        "name": "gpt-4o-mini",
+        "provider": "openai",
+        "api_key_env": "OPENAI_API_KEY",
+        "base_url": "https://api.openai.com/v1",
+    },
+}
+
 class AIAssistant:
     """
-    Builds rich context from repository data and generates AI responses using Groq.
-    Optimized for llama-3.1-8b-instant with 131k context window.
+    Builds rich context from repository data and generates AI responses.
+    Uses OpenAI GPT models with gpt-5-nano as default for optimal cost/performance.
     """
-    # Increased limit for larger context window
-    MAX_TOKENS = 32000  # Safe limit for llama-3.1-8b-instant (out of 131k)
 
     def __init__(self, username: Optional[str] = None):
-        """Initialize the AI Assistant with API credentials."""
+        """Initialize the AI Assistant with OpenAI API credentials."""
         logger.info("Initializing AI Assistant for user: %s", username or "<unknown>")
         self.username = username
-        self.groq_api_key = os.getenv("GROQ_API_KEY")
-        self.openai_client = self._initialize_openai_client()
+        
+        # Initialize OpenAI client (single provider)
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not self.openai_api_key:
+            logger.error("OPENAI_API_KEY not configured - AI processing disabled")
+            self.client = None
+        else:
+            try:
+                self.client = OpenAI(
+                    api_key=self.openai_api_key,
+                    base_url="https://api.openai.com/v1"
+                )
+                logger.info("Initialized OpenAI client with gpt-5-nano as default")
+            except Exception as e:
+                logger.error("Failed to initialize OpenAI client: %s", str(e))
+                self.client = None
 
-    def _initialize_openai_client(self) -> Optional[OpenAI]:
-        """Initialize OpenAI client for Groq API."""
-        if not self.groq_api_key:
-            logger.warning("Groq API key not configured - AI processing disabled")
-            return None
-        return OpenAI(
-            api_key=self.groq_api_key,
-            base_url="https://api.groq.com/openai/v1"
-        )
+    def _get_model_name(self, model_tier: str = "default") -> str:
+        """Get model name for specified tier."""
+        model_config = MODEL_CONFIG.get(model_tier, MODEL_CONFIG["default"])
+        return model_config["name"]
 
-    def process_scored_repositories(self, query: str, scored_repos: List[Dict[str, Any]], max_repos: int = 3) -> Dict[str, Any]:
-        """
-        Process pre-scored repositories to generate AI responses.
+
+    def process_query_with_bundle(self, query: str, bundle_context: Dict[str, Any], model_tier: str = "default") -> Dict[str, Any]:
+        """Process query with pre-built bundle context containing multiple repo summaries.
         
         Args:
-            query: User's query string
-            scored_repos: List of repositories with scores already calculated
-            max_repos: Maximum number of repositories to include in context
+            query: User query string
+            bundle_context: Pre-built context with multiple repo summaries
+            model_tier: Model tier to use (default/balanced)
             
         Returns:
             Dictionary with AI response and metadata
         """
         try:
-            logger.info("Processing AI response for query '%s'", query[:100])
-            if not scored_repos:
-                target = self.username or "this candidate"
+            logger.info("Processing query with bundle context: %d repos", bundle_context.get("repos_included", 0))
+            
+            if not bundle_context.get("repositories"):
                 return {
-                    "response": f"No repositories found for {target}.",
+                    "response": f"No repositories found for {self.username or 'this candidate'}.",
                     "repositories_used": [],
                     "total_repositories": 0,
                     "query": query
                 }
-
-            # Get top repositories
-            top_repos = scored_repos[:max_repos]
             
-            # Generate AI system message with context
-            system_message = self.build_rules_context(top_repos, query=query)
-
-            # Get LLM response
-            if not self.groq_api_key:
-                logger.warning("Groq API key not configured - AI processing disabled")
-                repositories_used = [
-                    {"name": repo.get("name", "Unknown"), "relevance_score": repo.get("total_relevance_score", 0)}
-                    for repo in top_repos
-                ]
+            # Build system message with bundle context
+            system_message = self._build_query_bundle_system(query, bundle_context)
+            
+            # Call AI with specified model tier
+            request_id = f"query-bundle-{int(time.time())}"
+            ai_response = self.call_ai_api(system_message, query, request_id, model_tier=model_tier)
+            
+            if not ai_response or "error" in ai_response.lower():
                 return {
-                    "response": "AI processing is disabled: GROQ_API_KEY not configured.",
-                    "repositories_used": repositories_used,
-                    "total_repositories": len(scored_repos),
+                    "response": ai_response or "AI processing unavailable.",
+                    "repositories_used": [
+                        {"name": r["name"], "stars": r.get("stars", 0)}
+                        for r in bundle_context.get("repositories", [])
+                    ],
+                    "total_repositories": bundle_context.get("repos_included", 0),
                     "query": query
                 }
-                
-            # Call AI with context
-            request_id = f"req-{int(time.time())}"
-            ai_response = self.call_groq_api(system_message, query, request_id)
             
             # Build response with metadata
             repositories_used = [
-                {"name": repo.get("name", "Unknown"), "relevance_score": repo.get("total_relevance_score", 0)}
-                for repo in top_repos
+                {"name": r["name"], "stars": r.get("stars", 0), "primary_language": r.get("primary_language")}
+                for r in bundle_context.get("repositories", [])
             ]
             
             return {
                 "response": ai_response,
                 "repositories_used": repositories_used,
-                "total_repositories": len(scored_repos),
+                "total_repositories": bundle_context.get("repos_included", 0),
                 "query": query
             }
         except Exception as e:
-            logger.error("Error during AI processing: %s", str(e), exc_info=True)
+            logger.error("Error during bundle query processing: %s", str(e), exc_info=True)
             return {
                 "response": f"Error processing query: {str(e)}",
                 "repositories_used": [],
-                "total_repositories": len(scored_repos) if scored_repos else 0,
+                "total_repositories": bundle_context.get("repos_included", 0),
                 "query": query
             }
 
-
-
-
-    def build_rules_context(self, tiered_context: Dict[str, Any], query: str, options: Optional[Dict[str, Any]] = None) -> str:
-        """
-        Build the full system prompt, encapsulating:
-        - how to respond
-        - what to respond
-        - formatting to use
-        - contexts to use (built from the provided tiered_context)
-        """
-        options = options or {}
-        include_secondary = options.get("include_secondary", False)
-        include_tertiary = options.get("include_tertiary", False)
-
-        # Get repository names and scores for all repositories in the tiered context
-        repo_names_with_scores = []
-        for key in ["primary_repo", "secondary_repo", "tertiary_repo"]:
-            repo = tiered_context.get(key)
-            if repo:
-                repo_name = repo.get("name", "Unknown")
-                score_metadata = repo.get("score_metadata", {})
-                total_score = score_metadata.get("total_relevance_score", 0)
-                repo_names_with_scores.append(f"{repo_name} (relevance: {total_score:.2f})")
-
-        # Context assembly
-        context_parts: List[str] = []
-        for label in ["primary_repo", "secondary_repo", "tertiary_repo"]:
-            if label == "secondary_repo" and not include_secondary:
-                continue
-            if label == "tertiary_repo" and not include_tertiary:
-                continue
-            repo = tiered_context.get(label)
-            if repo:
-                context_parts.append(self._repo_section(repo, label.replace("_repo", "")))
+    def _build_query_bundle_system(self, query: str, bundle_context: Dict[str, Any]) -> str:
+        """Build system prompt for query with bundle context.
+        
+        Args:
+            query: User query string
+            bundle_context: Bundle context with multiple repo summaries
             
+        Returns:
+            System prompt string
+        """
+        repos = bundle_context.get("repositories", [])
+        strategy = bundle_context.get("selection_strategy", "recent")
+        
+        # Build repo list
+        repo_list = []
+        for repo in repos:
+            name = repo["name"]
+            lang = repo.get("primary_language", "Unknown")
+            stars = repo.get("stars", 0)
+            repo_list.append(f"- **{name}** ({lang}, {stars} stars)")
+        
+        repos_intro = "\n".join(repo_list)
+        
+        # Build detailed repo contexts
+        context_parts = []
+        for i, repo in enumerate(repos, 1):
+            context = [f"### Repository {i}: {repo['name']}"]
+            
+            if repo.get("description"):
+                context.append(f"**Description:** {repo['description']}")
+            
+            if repo.get("primary_language"):
+                context.append(f"**Primary Language:** {repo['primary_language']}")
+            
+            if repo.get("stars") or repo.get("forks"):
+                context.append(f"**Stats:** {repo.get('stars', 0)} stars, {repo.get('forks', 0)} forks")
+            
+            if repo.get("readme_summary"):
+                context.append(f"\n**README Summary:**\n{repo['readme_summary']}")
+            
+            if repo.get("config_summaries"):
+                context.append("\n**Configuration Files:**")
+                for config in repo['config_summaries']:
+                    context.append(f"\n*{config['filename']}:*\n```\n{config['content']}\n```")
+            
+            context_parts.append("\n".join(context))
+        
         context_str = "\n\n".join(context_parts)
-
-        # Build a list of all repositories for the introduction
-        repos_list = ", ".join(repo_names_with_scores)
-        repositories_intro = f"The following repositories were found to be most relevant to the query '{query}':\n{repos_list}\n\n"
-
-        # Rules and formatting guidance
-        how_to_respond = (
-            "When answering:\n"
-            "- Begin by mentioning the repositories used to answer the query.\n"
-            "- Highlight architecture patterns, components, and technical implementations when relevant.\n"
-            "- Draw connections between different projects and technologies.\n"
-            "- Use README content to understand project goals and features.\n"
-            "- Use skills indexes and manifests to identify competencies.\n"
-            "- Organize your response with clear sections and specific examples.\n"
-            "- Be specific about technical implementations and challenges solved.\n"
-        )
-
-        formatting = (
-            "Formatting:\n"
-            "- Use Markdown with headings, bullet points, and short paragraphs.\n"
-            "- Use code blocks for snippets or configuration when helpful.\n"
-            "- Keep the response concise but technically rich.\n"
-        )
-
-        # Format what_to_respond separately
-        repo_names_only = ", ".join([r.split(" (")[0] for r in repo_names_with_scores])
-        what_to_respond = (
-            "What to respond:\n"
-            f"- Start by mentioning that your answer is based on the repositories: {repo_names_only}\n"
-            "- Provide an accurate answer grounded in the supplied repository context.\n"
-            "- If asked about a technology or skill, cite the most relevant project(s) and details.\n"
-            "- If information is missing, state limitations briefly and proceed with best-available context.\n"
-        )
-
+        
+        # Strategy description
+        strategy_desc = {
+            "recent": "most recently updated (showing current work)",
+            "random": "randomly selected (for diversity)",
+            "top_starred": "most starred (most popular)"
+        }.get(strategy, strategy)
+        
         candidate = self.username or "the candidate"
-
-        # Use a single format operation with all parameters
+        
         system_template = (
-            "You are an AI assistant that helps recruiters understand {candidate}'s GitHub portfolio projects.\n"
-            "These projects are retrieved dynamically for the requested username and have been pre-processed to surface repositories "
-            "most relevant to the user's query.\n\n"
-            "{repositories_intro}"
-            "Detailed context is provided for the primary repository, but be aware of all relevant repositories in your response.\n"
-            "Provide a response to '{query}' using the following information.\n\n"
-            "PORTFOLIO REPOSITORY ANALYSIS:\n"
-            "{context}\n\n"
-            "{how_to_respond}\n"
-            "{formatting}\n"
-            "{what_to_respond}"
-        ).format(
-            candidate=candidate,
-            repositories_intro=repositories_intro,
-            query=query,
-            context=context_str,
-            how_to_respond=how_to_respond,
-            formatting=formatting,
-            what_to_respond=what_to_respond
+            f"You are an AI assistant helping recruiters understand {candidate}'s GitHub portfolio.\n\n"
+            f"**Context Selection:** The following {len(repos)} repositories were selected as {strategy_desc}:\n\n"
+            f"{repos_intro}\n\n"
+            "**Your Task:**\n"
+            f"Answer the query: '{query}'\n\n"
+            "**How to Respond:**\n"
+            "- Use ONLY the information provided in the repository contexts below\n"
+            "- Reference specific repositories by name when citing evidence\n"
+            "- If a technology/skill is mentioned, identify which repos demonstrate it\n"
+            "- Draw connections between projects when relevant\n"
+            "- Be specific about technical implementations\n"
+            "- If information is missing, state it briefly and work with what's available\n\n"
+            "**Formatting:**\n"
+            "- Use Markdown with headings, bullets, and code blocks as appropriate\n"
+            "- Keep response concise but technically rich\n"
+            "- Start with a direct answer, then provide supporting details\n\n"
+            "**REPOSITORY CONTEXTS:**\n\n"
+            f"{context_str}\n"
         )
         
         return system_template
 
-    def call_groq_api(self, system_message: str, query: str, request_id: str) -> str:
+
+
+
+    def call_ai_api(self, system_message: str, query: str, request_id: str, model_tier: str = "default") -> str:
         """
-        Call the Groq API with the prepared messages.
+        Call OpenAI API with the prepared messages using specified model tier.
+        
+        Args:
+            system_message: System prompt
+            query: User query
+            request_id: Request ID for logging
+            model_tier: Model tier to use (default=gpt-5-nano, balanced=gpt-4o-mini)
+            
+        Returns:
+            AI response string
         """
-        if not self.openai_client:
-            return "I'm sorry, but the AI service is not configured. Please check the Groq API key."
+        if not self.client:
+            return "I'm sorry, but the AI service is not configured. Please check OPENAI_API_KEY."
+        
+        model_name = self._get_model_name(model_tier)
+        
         try:
-            logger.info("Request ID: %s - Calling Groq API", request_id)
-            response = self.openai_client.chat.completions.create(
-                model="llama-3.1-8b-instant",
+            logger.info("Request ID: %s - Calling OpenAI API (model: %s)", request_id, model_name)
+            response = self.client.chat.completions.create(
+                model=model_name,
                 messages=[
                     {"role": "system", "content": system_message},
                     {"role": "user", "content": query}
                 ],
-                max_tokens=1500,  # Increased output tokens
+                max_tokens=2000,
                 temperature=0.7,
                 stream=False
             )
             ai_response = response.choices[0].message.content
-            logger.info("Request ID: %s - Received AI response (%s chars)", request_id, len(ai_response))
+            logger.info("Request ID: %s - Received AI response (%s chars) from %s", request_id, len(ai_response), model_name)
             return ai_response
         except Exception as e:
-            logger.error("Request ID: %s - Groq API error: %s", request_id, str(e))
+            logger.error("Request ID: %s - OpenAI API error (%s): %s", request_id, model_name, str(e))
             return f"I encountered an error while processing your query with the AI service: {str(e)}"
 
 
-    def summarize_readme_html(self, readme_text: str, repo_name: Optional[str] = None) -> str:
-        """Summarize a README into HTML formatted for the project detail view."""
+    def summarize_readme_html(self, readme_text: str, repo_name: Optional[str] = None, model_tier: str = "default") -> str:
+        """Summarize a README into HTML formatted for the project detail view.
+        
+        Args:
+            readme_text: README content to summarize
+            repo_name: Repository name
+            model_tier: Model tier to use (default=gpt-5-nano, balanced=gpt-4o-mini)
+        """
         if not readme_text:
             return "<p>No README content available.</p>"
-        if not self.openai_client:
-            return "<p>AI service not configured. Please check the Groq API key.</p>"
+        if not self.client:
+            return "<p>AI service not configured. Please check OPENAI_API_KEY.</p>"
 
         system_message = self._build_readme_summary_system(repo_name)
         query = (
@@ -238,19 +259,25 @@ class AIAssistant:
             f"{readme_text}"
         )
         request_id = f"readme-{int(time.time())}"
-        return self.call_groq_api(system_message, query, request_id)
+        return self.call_ai_api(system_message, query, request_id, model_tier=model_tier)
 
-    def summarize_profile_html(self, profile_payload: Dict[str, Any], username: Optional[str] = None) -> str:
-        """Summarize a candidate profile payload into HTML for the profile view."""
+    def summarize_profile_html(self, profile_payload: Dict[str, Any], username: Optional[str] = None, model_tier: str = "default") -> str:
+        """Summarize a candidate profile payload into HTML for the profile view.
+        
+        Args:
+            profile_payload: Profile data to summarize
+            username: GitHub username
+            model_tier: Model tier to use (default=gpt-5-nano, balanced=gpt-4o-mini)
+        """
         if not profile_payload:
             return "<p>No profile data available.</p>"
-        if not self.openai_client:
-            return "<p>AI service not configured. Please check the Groq API key.</p>"
+        if not self.client:
+            return "<p>AI service not configured. Please check OPENAI_API_KEY.</p>"
 
         system_message = self._build_profile_summary_system(username or self.username)
         query = json.dumps(profile_payload, ensure_ascii=False)
         request_id = f"profile-{int(time.time())}"
-        return self.call_groq_api(system_message, query, request_id)
+        return self.call_ai_api(system_message, query, request_id, model_tier=model_tier)
 
     def _build_readme_summary_system(self, repo_name: Optional[str] = None) -> str:
         """Build a system prompt that returns HTML-only README summary output."""
@@ -280,23 +307,31 @@ class AIAssistant:
         return (
             "You are an assistant that summarizes GitHub candidate profiles into clean HTML for recruiters.\n"
             f"Summarize the profile for {candidate} using the provided JSON payload.\n\n"
+            "The payload includes:\n"
+            "- GitHub profile metadata (bio, location, followers, etc.)\n"
+            "- Repository statistics (stars, forks, languages, topics)\n"
+            "- Recent repository file contents (READMEs and config files) for quality analysis\n\n"
             "Output rules:\n"
             "- Return ONLY valid HTML (no Markdown, no code fences).\n"
             "- Do not include <html>, <head>, or <body> tags.\n"
             "- Use semantic tags: <h2>, <h3>, <p>, <ul>, <li>, <strong>, <code>, <pre>, <a>.\n"
-            "- Keep it concise (8-14 short bullets/paragraphs total).\n"
+            "- Keep it concise (10-16 short bullets/paragraphs total).\n"
             "- If a detail is not present in the data, omit it.\n"
             "- Do not speculate about employment status or seniority.\n\n"
             "Content goals:\n"
             "- Provide a concise overview of the candidate.\n"
-            "- Highlight strengths based on repositories, languages, topics, and activity.\n"
-            "- Suggest what kind of systems or teams they would fit well in.\n"
-            "- Infer engineering style if evidence supports it (otherwise say 'Not enough signal').\n\n"
+            "- Analyze code quality, documentation style, and technical depth from file contents.\n"
+            "- Identify skills, tools, and technologies used (infer from config files like package.json, requirements.txt, Dockerfile, etc.).\n"
+            "- Highlight strengths based on repositories, languages, topics, and recent activity.\n"
+            "- Assess engineering practices (testing, CI/CD, documentation, architecture).\n"
+            "- Suggest what kind of systems or teams they would fit well in.\n\n"
             "Structure:\n"
             "- <h2>Overview</h2> then 1 short paragraph\n"
+            "- <h3>Technical Skills & Tools</h3> with a bullet list (inferred from config files)\n"
+            "- <h3>Code Quality & Practices</h3> with a bullet list\n"
             "- <h3>Strengths</h3> with a bullet list\n"
-            "- <h3>Best Fit</h3> with a bullet list\n"
-            "- <h3>Engineering Style</h3> with 1 short paragraph or bullets\n"
-            "- <h3>Notable Signals</h3> for top repos/topics/languages (optional)\n"
+            "- <h3>Best Fit</h3> with a bullet list (team types, project types)\n"
+            "- <h3>Recent Activity</h3> with 1 short paragraph about most recent work\n"
+            "- <h3>Notable Projects</h3> for top repos (optional)\n"
         )
 
