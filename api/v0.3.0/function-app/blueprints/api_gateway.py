@@ -834,17 +834,6 @@ def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[
         "data": entries,
     }
 
-    logger.info(
-        "[CANDIDATE_METADATA_BUILT] job=%s user=%s repos=%d cached=%d synced=%d pending=%d failed=%d",
-        job_id,
-        username,
-        len(entries),
-        status_counts.get("cached", 0),
-        status_counts.get("synced", 0),
-        status_counts.get("pending", 0),
-        status_counts.get("failed", 0),
-    )
-    logger.info("Built candidate metadata: %s", json.dumps(result, indent=2))
     return result
 
 def _record_api_usage(
@@ -1410,6 +1399,8 @@ def get_candidate_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     profile = _get_or_refresh_user_profile(username)
     ctx = _prepare_candidate_context(req, username)
     repo_rows = _query_repo_rows(username, job_id=ctx.job_id)
+    for repo in repo_rows:
+        logger.info("Repo metadata for summary - user=%s repo=%s metadata=%s", username, repo.get("repo_name"), {k: v for k, v in repo.items() if k != "description"})
     languages_by_repo = table_manager.query_repo_languages(ctx.job_id) if ctx.job_id else {}
     statistics = _build_profile_statistics(repo_rows, languages_by_repo)
 
@@ -1421,7 +1412,7 @@ def get_candidate_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     for repo in selected_repos:
         repo_name = repo.get("repo_name")
         if repo_name:
-            files = _get_repo_files_for_summary(username, repo_name, max_files=5)
+            files = _get_repo_files_for_summary(username, repo_name, max_files=2)
             if files.get("readme_content") or files.get("config_files"):
                 repo_files[repo_name] = files
 
@@ -1435,14 +1426,14 @@ def get_candidate_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
         statistics=statistics,
         repo_files=repo_files,
     )
-    
+
     payload = {
         "username": username,
         "job_id": ctx.job_id,
         "summary_html": result["summary_html"],
         "cache_metadata": result.get("metadata", {})
     }
-    
+
     return _create_success_response(payload, cache_control="no-cache", request_id=ctx.trace.get("request_id"))
 
 

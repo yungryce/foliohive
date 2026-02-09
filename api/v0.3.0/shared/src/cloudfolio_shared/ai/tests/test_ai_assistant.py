@@ -33,7 +33,7 @@ class TestAIAssistantInitialization:
 
 
 class TestProcessQueryWithBundle:
-    """Test process_query_with_bundle method."""
+    """Test psummarize_query_html method."""
 
     @patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'})
     def test_empty_bundle_returns_no_repos_response(self):
@@ -41,7 +41,7 @@ class TestProcessQueryWithBundle:
         assistant = AIAssistant(username="test_user")
         
         bundle_context = {"repositories": [], "repos_included": 0}
-        result = assistant.process_query_with_bundle("test query", bundle_context)
+        result = assistant.psummarize_query_html("test query", bundle_context)
         
         assert "No repositories found" in result["response"]
         assert result["repositories_used"] == []
@@ -57,7 +57,7 @@ class TestProcessQueryWithBundle:
             "repositories": [{"name": "repo1", "stars": 10}],
             "repos_included": 1
         }
-        result = assistant.process_query_with_bundle("test query", bundle_context)
+        result = assistant.psummarize_query_html("test query", bundle_context)
         
         assert "not configured" in result["response"] or "OPENAI_API_KEY" in result["response"]
         assert len(result["repositories_used"]) == 1
@@ -85,7 +85,7 @@ class TestProcessQueryWithBundle:
             "selection_strategy": "recent"
         }
         
-        result = assistant.process_query_with_bundle("What languages?", bundle_context)
+        result = assistant.psummarize_query_html("What languages?", bundle_context)
         
         assert result["response"] == "AI response here"
         assert len(result["repositories_used"]) == 2
@@ -387,8 +387,8 @@ class TestModelTierSelection:
 
     @patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'})
     @patch('cloudfolio_shared.ai.ai_assistant.OpenAI')
-    def test_process_query_with_bundle_accepts_model_tier(self, mock_openai_class):
-        """Test process_query_with_bundle accepts and uses model_tier parameter."""
+    def test_psummarize_query_html_accepts_model_tier(self, mock_openai_class):
+        """Test psummarize_query_html accepts and uses model_tier parameter."""
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=MagicMock(content="Query response"))]
@@ -400,7 +400,7 @@ class TestModelTierSelection:
             "repositories": [{"name": "repo1", "stars": 10}],
             "repos_included": 1
         }
-        result = assistant.process_query_with_bundle("query", bundle_context, model_tier="balanced")
+        result = assistant.psummarize_query_html("query", bundle_context, model_tier="balanced")
         
         assert result["response"] == "Query response"
         call_args = mock_client.chat.completions.create.call_args

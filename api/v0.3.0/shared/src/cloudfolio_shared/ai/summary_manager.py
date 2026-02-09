@@ -247,8 +247,6 @@ class SummaryManager:
         query: str,
         repo_rows: List[Dict[str, Any]],
         repo_files: Dict[str, Dict[str, Any]],
-        selection_strategy: str = "recent",
-        max_repos: int = 8
     ) -> Dict[str, Any]:
         """Get cached or generate new query response with multi-repo context.
         
@@ -277,7 +275,7 @@ class SummaryManager:
 
         # Generate response via AIAssistant with rich context and appropriate model tier
         model_tier = MODEL_ASSIGNMENTS.get(summary_type, "default")
-        result = self.ai_assistant.process_query_with_bundle(
+        result = self.ai_assistant.summarize_query_html(
             query=query,
             bundle_context=context,
             model_tier=model_tier
@@ -289,7 +287,6 @@ class SummaryManager:
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "job_id": job_id,
             "summary_type": summary_type,
-            "selection_strategy": selection_strategy,
             "repositories_used": [
                 {"name": r["name"], "stars": r.get("stars", 0), "primary_language": r.get("primary_language")}
                 for r in repos_included
@@ -312,7 +309,6 @@ class SummaryManager:
 
         return {
             **result,
-            "selection_strategy": selection_strategy,
             "metadata": metadata
         }
 
@@ -555,33 +551,38 @@ class SummaryManager:
         
         # Calculate per-repo budgets
         num_repos = len(repo_rows)
+        logger.info("Building profile context for user '%s' with %d repos. Total token budget for repos: %d", self.username, num_repos, token_budget.get("readme", 0) + token_budget.get("config", 0))
         readme_budget_per_repo = token_budget.get("readme", 0) // max(num_repos, 1)
         config_budget_per_repo = token_budget.get("config", 0) // max(num_repos, 1)
         
         # Build context for each repo
         for repo in repo_rows:
-            repo_name = repo.get("name")
+            repo_name = repo.get("repo_name")
+            logger.info("Processing repo '%s' for profile context. Repo metadata: %s", repo_name, {k: repo.get(k) for k in ['description', 'primary_language', 'languages', 'topics', 'stats']})
             if not repo_name:
                 continue
             
             files = repo_files.get(repo_name, {})
             readme = files.get("readme_content", "")
             configs = files.get("config_files", [])
+            logger.info("Profile context - processing repo '%s': readme length=%d chars, config files=%d", repo_name, len(readme), len(configs) if isinstance(configs, list) else 0)
             
             # Build mini repo context
             repo_context = {
                 "name": repo_name,
                 "description": repo.get("description", ""),
-                "primary_language": repo.get("primary_language"),
+                # "primary_language": repo.get("primary_language"),
                 "languages": repo.get("languages", [])[:3],  # Top 3
-                "topics": repo.get("topics", [])[:5],  # Top 5
-                "stars": repo.get("stats", {}).get("stars", 0),
-                "forks": repo.get("stats", {}).get("forks", 0),
+                # "topics": repo.get("topics", [])[:5],  # Top 5
+                # "stars": repo.get("stats", {}).get("stars", 0),
+                # "forks": repo.get("stats", {}).get("forks", 0),
             }
             
             # Add chunked README
             if readme and readme_budget_per_repo > 0:
                 repo_context["readme_chunk"] = self.chunk_readme(readme, readme_budget_per_repo)
+                logger.info("Profile context - repo '%s': README chunked to %d tokens", repo_name, self.estimate_tokens(repo_context["readme_chunk"]))
+                logger.info("Profile context - repo '%s': README chunk content preview: %s", repo_name, repo_context["readme_chunk"])
             
             # Add chunked configs
             if configs and config_budget_per_repo > 0:

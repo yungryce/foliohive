@@ -54,9 +54,160 @@ class AIAssistant:
         """Get model name for specified tier."""
         model_config = MODEL_CONFIG.get(model_tier, MODEL_CONFIG["default"])
         return model_config["name"]
+    
+    def _validate_response(self, response, request_id: str, max_tokens: int) -> tuple[bool, Optional[str], str]:
+        """
+        Validate OpenAI response for content and completion status.
+        
+        Args:
+            response: OpenAI chat completion response object
+            request_id: Request ID for logging
+            max_tokens: Maximum tokens configured for this request
+            
+        Returns:
+            Tuple of (is_valid, content, warning_message)
+            - is_valid: True if response has valid content
+            - content: Response content (None if invalid)
+            - warning_message: Warning/error message if any issues detected
+        """
+        if not response or not response.choices:
+            return False, None, "OpenAI API returned empty response"
+        
+        choice = response.choices[0]
+        content = choice.message.content
+        finish_reason = choice.finish_reason
+        
+        # Check for truncation (hit max_completion_tokens limit)
+        if finish_reason == "length":
+            warning = f"Response truncated (hit max_completion_tokens={max_tokens}). Returned {len(content) if content else 0} chars."
+            logger.warning("Request ID: %s - %s", request_id, warning)
+            if not content or not content.strip():
+                return False, None, warning
+            return True, content, warning
+        
+        # Check for None content
+        if content is None:
+            return False, None, "OpenAI returned None content (possible API issue)"
+        
+        # Check for empty response
+        if not content.strip():
+            return False, None, "OpenAI returned empty response"
+        
+        return True, content, None
+    
+    # ---------------------------------------------------------------------------
+    # Core method to call OpenAI API with prepared messages and handle response
+    # ---------------------------------------------------------------------------
 
 
-    def process_query_with_bundle(self, query: str, bundle_context: Dict[str, Any], model_tier: str = "default") -> Dict[str, Any]:
+    def call_ai_api(self, system_message: str, query: str, request_id: str, model_tier: str = "default", max_completion_tokens: int = 1500) -> str:
+        """
+        Call OpenAI API with the prepared messages using specified model tier.
+        
+        Args:
+            system_message: System prompt
+            query: User query
+            request_id: Request ID for logging
+            model_tier: Model tier to use (default=gpt-5-nano, balanced=gpt-4o-mini)
+            max_completion_tokens: Maximum tokens for response (default=1500, readme=800, profile=1200, query=1500)
+            
+        Returns:
+            AI response string
+        """
+        if not self.client:
+            return "I'm sorry, but the AI service is not configured. Please check OPENAI_API_KEY."
+        
+        model_name = self._get_model_name(model_tier)
+        
+        try:
+            logger.info("Request ID: %s - Calling OpenAI API (model: %s, max_tokens: %d)", request_id, model_name, max_completion_tokens)
+            response = self.client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": query}
+                ],
+                max_completion_tokens=max_completion_tokens,
+                stream=False
+            )
+            
+            # Validate response before processing
+            is_valid, ai_response, warning = self._validate_response(response, request_id, max_completion_tokens)
+            
+            if warning:
+                logger.warning("Request ID: %s - %s", request_id, warning)
+            
+            if not is_valid:
+                return f"Unable to generate a complete response from the AI service. {warning or 'Please try again.'}"
+            
+            # Log response preview safely
+            preview = ai_response[:200].replace("\n", " ") if ai_response else "<empty>"
+            logger.info("[response preview] %s", preview)
+            
+            actual_tokens = response.usage.completion_tokens if response.usage else 0
+            logger.info("Request ID: %s - Received AI response (%s chars, %d actual tokens) from %s", request_id, len(ai_response), actual_tokens, model_name)
+            return ai_response
+        except Exception as e:
+            logger.error("Request ID: %s - OpenAI API error (%s): %s", request_id, model_name, str(e))
+            return f"I encountered an error while processing your query with the AI service: {str(e)}"
+
+    # ---------------------------------------------------------------------------
+    # Public methods to generate specific summaries (README, profile) using the core API call method
+    # ---------------------------------------------------------------------------
+
+    def summarize_readme_html(self, readme_text: str, repo_name: Optional[str] = None, model_tier: str = "default") -> str:
+        """Summarize a README into HTML formatted for the project detail view.
+        
+        Args:
+            readme_text: README content to summarize
+            repo_name: Repository name
+            model_tier: Model tier to use (default=gpt-5-nano, balanced=gpt-4o-mini)
+        """
+        if not readme_text:
+            return "<p>No README content available.</p>"
+        if not self.client:
+            return "<p>AI service not configured. Please check OPENAI_API_KEY.</p>"
+
+        system_message = self._build_readme_summary_system(repo_name)
+        query = (
+            f"Repository: {repo_name or 'Unknown'}\n\n"
+            "README:\n"
+            f"{readme_text}"
+        )
+        request_id = f"readme-{int(time.time())}"
+        result = self.call_ai_api(system_message, query, request_id, model_tier=model_tier, max_completion_tokens=4000)
+        
+        # Check if result is an error message from call_ai_api
+        if "Unable to generate" in result or "encountered an error" in result:
+            return f"<p><strong>Note:</strong> {result}</p>"
+        
+        return result
+
+    def summarize_profile_html(self, profile_payload: Dict[str, Any], username: Optional[str] = None, model_tier: str = "default") -> str:
+        """Summarize a candidate profile payload into HTML for the profile view.
+        
+        Args:
+            profile_payload: Profile data to summarize
+            username: GitHub username
+            model_tier: Model tier to use (default=gpt-5-nano, balanced=gpt-4o-mini)
+        """
+        if not profile_payload:
+            return "<p>No profile data available.</p>"
+        if not self.client:
+            return "<p>AI service not configured. Please check OPENAI_API_KEY.</p>"
+
+        system_message = self._build_profile_summary_system(username or self.username)
+        query = json.dumps(profile_payload, ensure_ascii=False)
+        request_id = f"profile-{int(time.time())}"
+        result = self.call_ai_api(system_message, query, request_id, model_tier=model_tier, max_completion_tokens=6000)
+        
+        # Check if result is an error message from call_ai_api
+        if "Unable to generate" in result or "encountered an error" in result:
+            return f"<p><strong>Note:</strong> {result}</p>"
+        
+        return result
+
+    def summarize_query_html(self, query: str, bundle_context: Dict[str, Any], model_tier: str = "default") -> Dict[str, Any]:
         """Process query with pre-built bundle context containing multiple repo summaries.
         
         Args:
@@ -83,9 +234,10 @@ class AIAssistant:
             
             # Call AI with specified model tier
             request_id = f"query-bundle-{int(time.time())}"
-            ai_response = self.call_ai_api(system_message, query, request_id, model_tier=model_tier)
+            ai_response = self.call_ai_api(system_message, query, request_id, model_tier=model_tier, max_completion_tokens=4000)
             
-            if not ai_response or "error" in ai_response.lower():
+            # Validate response - check for error messages from call_ai_api
+            if not ai_response or "Unable to generate" in ai_response or "encountered an error" in ai_response:
                 return {
                     "response": ai_response or "AI processing unavailable.",
                     "repositories_used": [
@@ -95,13 +247,13 @@ class AIAssistant:
                     "total_repositories": bundle_context.get("repos_included", 0),
                     "query": query
                 }
-            
+
             # Build response with metadata
             repositories_used = [
                 {"name": r["name"], "stars": r.get("stars", 0), "primary_language": r.get("primary_language")}
                 for r in bundle_context.get("repositories", [])
             ]
-            
+
             return {
                 "response": ai_response,
                 "repositories_used": repositories_used,
@@ -116,6 +268,67 @@ class AIAssistant:
                 "total_repositories": bundle_context.get("repos_included", 0),
                 "query": query
             }
+
+
+    # ---------------------------------------------------------------------------
+    # Helper methods to build system prompts for different tasks
+    # ---------------------------------------------------------------------------
+
+    def _build_profile_summary_system(self, username: Optional[str] = None) -> str:
+        """Build a system prompt that returns HTML-only profile summary output."""
+        candidate = username or "the candidate"
+        return (
+            "You are an assistant that summarizes GitHub candidate profiles into clean HTML for recruiters.\n"
+            f"Summarize the profile for {candidate} using the provided JSON payload.\n\n"
+            "The payload includes:\n"
+            "- GitHub profile metadata (bio, location, followers, etc.)\n"
+            "- Repository statistics (stars, forks, languages, topics)\n"
+            "- Recent repository file contents (READMEs and config files) for quality analysis\n\n"
+            "Output rules:\n"
+            "- Return ONLY valid HTML (no Markdown, no code fences).\n"
+            "- Do not include <html>, <head>, or <body> tags.\n"
+            "- Use semantic tags: <h2>, <h3>, <p>, <ul>, <li>, <strong>, <code>, <pre>, <a>.\n"
+            "- Keep it concise (10-16 short bullets/paragraphs total).\n"
+            "- If a detail is not present in the data, omit it.\n"
+            "- Do not speculate about employment status or seniority.\n\n"
+            "Content goals:\n"
+            "- Provide a concise overview of the candidate.\n"
+            "- Analyze code quality, documentation style, and technical depth from file contents.\n"
+            "- Identify skills, tools, and technologies used (infer from config files like package.json, requirements.txt, Dockerfile, etc.).\n"
+            "- Highlight strengths based on repositories, languages, topics, and recent activity.\n"
+            "- Assess engineering practices (testing, CI/CD, documentation, architecture).\n"
+            "- Suggest what kind of systems or teams they would fit well in.\n\n"
+            "Structure:\n"
+            "- <h2>Overview</h2> then 1 short paragraph\n"
+            "- <h3>Technical Skills & Tools</h3> with a bullet list (inferred from config files)\n"
+            "- <h3>Code Quality & Practices</h3> with a bullet list\n"
+            "- <h3>Strengths</h3> with a bullet list\n"
+            "- <h3>Best Fit</h3> with a bullet list (team types, project types)\n"
+            "- <h3>Recent Activity</h3> with 1 short paragraph about most recent work\n"
+            "- <h3>Notable Projects</h3> for top repos (optional)\n"
+        )
+
+    def _build_readme_summary_system(self, repo_name: Optional[str] = None) -> str:
+        """Build a system prompt that returns HTML-only README summary output."""
+        repo_label = repo_name or "the repository"
+        return (
+            "You are an assistant that summarizes GitHub README files into clean HTML.\n"
+            f"Summarize the README for {repo_label}.\n\n"
+            "Output rules:\n"
+            "- Return ONLY valid HTML (no Markdown, no code fences).\n"
+            "- Do not include <html>, <head>, or <body> tags.\n"
+            "- Use semantic tags: <h2>, <h3>, <p>, <ul>, <li>, <code>, <pre>, <a>.\n"
+            "- Keep it concise (6-12 short bullets/paragraphs total).\n"
+            "- If setup/run steps exist, include them in a short list.\n"
+            "- Avoid inline styles; rely on the host application's CSS.\n"
+            "- If a detail is not in the README, omit it.\n\n"
+            "Structure:\n"
+            "- <h2>Overview</h2> then 1-2 paragraphs\n"
+            "- <h3>Key Features</h3> with a bullet list\n"
+            "- <h3>Tech Stack</h3> with a bullet list (if present)\n"
+            "- <h3>How to Run</h3> with steps (if present)\n"
+            "- <h3>Notes</h3> for caveats or missing pieces (optional)\n"
+        )
 
     def _build_query_bundle_system(self, query: str, bundle_context: Dict[str, Any]) -> str:
         """Build system prompt for query with bundle context.
@@ -197,141 +410,3 @@ class AIAssistant:
         )
         
         return system_template
-
-
-
-
-    def call_ai_api(self, system_message: str, query: str, request_id: str, model_tier: str = "default") -> str:
-        """
-        Call OpenAI API with the prepared messages using specified model tier.
-        
-        Args:
-            system_message: System prompt
-            query: User query
-            request_id: Request ID for logging
-            model_tier: Model tier to use (default=gpt-5-nano, balanced=gpt-4o-mini)
-            
-        Returns:
-            AI response string
-        """
-        if not self.client:
-            return "I'm sorry, but the AI service is not configured. Please check OPENAI_API_KEY."
-        
-        model_name = self._get_model_name(model_tier)
-        
-        try:
-            logger.info("Request ID: %s - Calling OpenAI API (model: %s)", request_id, model_name)
-            response = self.client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": query}
-                ],
-                max_tokens=2000,
-                temperature=0.7,
-                stream=False
-            )
-            ai_response = response.choices[0].message.content
-            logger.info("Request ID: %s - Received AI response (%s chars) from %s", request_id, len(ai_response), model_name)
-            return ai_response
-        except Exception as e:
-            logger.error("Request ID: %s - OpenAI API error (%s): %s", request_id, model_name, str(e))
-            return f"I encountered an error while processing your query with the AI service: {str(e)}"
-
-
-    def summarize_readme_html(self, readme_text: str, repo_name: Optional[str] = None, model_tier: str = "default") -> str:
-        """Summarize a README into HTML formatted for the project detail view.
-        
-        Args:
-            readme_text: README content to summarize
-            repo_name: Repository name
-            model_tier: Model tier to use (default=gpt-5-nano, balanced=gpt-4o-mini)
-        """
-        if not readme_text:
-            return "<p>No README content available.</p>"
-        if not self.client:
-            return "<p>AI service not configured. Please check OPENAI_API_KEY.</p>"
-
-        system_message = self._build_readme_summary_system(repo_name)
-        query = (
-            f"Repository: {repo_name or 'Unknown'}\n\n"
-            "README:\n"
-            f"{readme_text}"
-        )
-        request_id = f"readme-{int(time.time())}"
-        return self.call_ai_api(system_message, query, request_id, model_tier=model_tier)
-
-    def summarize_profile_html(self, profile_payload: Dict[str, Any], username: Optional[str] = None, model_tier: str = "default") -> str:
-        """Summarize a candidate profile payload into HTML for the profile view.
-        
-        Args:
-            profile_payload: Profile data to summarize
-            username: GitHub username
-            model_tier: Model tier to use (default=gpt-5-nano, balanced=gpt-4o-mini)
-        """
-        if not profile_payload:
-            return "<p>No profile data available.</p>"
-        if not self.client:
-            return "<p>AI service not configured. Please check OPENAI_API_KEY.</p>"
-
-        system_message = self._build_profile_summary_system(username or self.username)
-        query = json.dumps(profile_payload, ensure_ascii=False)
-        request_id = f"profile-{int(time.time())}"
-        return self.call_ai_api(system_message, query, request_id, model_tier=model_tier)
-
-    def _build_readme_summary_system(self, repo_name: Optional[str] = None) -> str:
-        """Build a system prompt that returns HTML-only README summary output."""
-        repo_label = repo_name or "the repository"
-        return (
-            "You are an assistant that summarizes GitHub README files into clean HTML.\n"
-            f"Summarize the README for {repo_label}.\n\n"
-            "Output rules:\n"
-            "- Return ONLY valid HTML (no Markdown, no code fences).\n"
-            "- Do not include <html>, <head>, or <body> tags.\n"
-            "- Use semantic tags: <h2>, <h3>, <p>, <ul>, <li>, <code>, <pre>, <a>.\n"
-            "- Keep it concise (6-12 short bullets/paragraphs total).\n"
-            "- If setup/run steps exist, include them in a short list.\n"
-            "- Avoid inline styles; rely on the host application's CSS.\n"
-            "- If a detail is not in the README, omit it.\n\n"
-            "Structure:\n"
-            "- <h2>Overview</h2> then 1-2 paragraphs\n"
-            "- <h3>Key Features</h3> with a bullet list\n"
-            "- <h3>Tech Stack</h3> with a bullet list (if present)\n"
-            "- <h3>How to Run</h3> with steps (if present)\n"
-            "- <h3>Notes</h3> for caveats or missing pieces (optional)\n"
-        )
-
-    def _build_profile_summary_system(self, username: Optional[str] = None) -> str:
-        """Build a system prompt that returns HTML-only profile summary output."""
-        candidate = username or "the candidate"
-        return (
-            "You are an assistant that summarizes GitHub candidate profiles into clean HTML for recruiters.\n"
-            f"Summarize the profile for {candidate} using the provided JSON payload.\n\n"
-            "The payload includes:\n"
-            "- GitHub profile metadata (bio, location, followers, etc.)\n"
-            "- Repository statistics (stars, forks, languages, topics)\n"
-            "- Recent repository file contents (READMEs and config files) for quality analysis\n\n"
-            "Output rules:\n"
-            "- Return ONLY valid HTML (no Markdown, no code fences).\n"
-            "- Do not include <html>, <head>, or <body> tags.\n"
-            "- Use semantic tags: <h2>, <h3>, <p>, <ul>, <li>, <strong>, <code>, <pre>, <a>.\n"
-            "- Keep it concise (10-16 short bullets/paragraphs total).\n"
-            "- If a detail is not present in the data, omit it.\n"
-            "- Do not speculate about employment status or seniority.\n\n"
-            "Content goals:\n"
-            "- Provide a concise overview of the candidate.\n"
-            "- Analyze code quality, documentation style, and technical depth from file contents.\n"
-            "- Identify skills, tools, and technologies used (infer from config files like package.json, requirements.txt, Dockerfile, etc.).\n"
-            "- Highlight strengths based on repositories, languages, topics, and recent activity.\n"
-            "- Assess engineering practices (testing, CI/CD, documentation, architecture).\n"
-            "- Suggest what kind of systems or teams they would fit well in.\n\n"
-            "Structure:\n"
-            "- <h2>Overview</h2> then 1 short paragraph\n"
-            "- <h3>Technical Skills & Tools</h3> with a bullet list (inferred from config files)\n"
-            "- <h3>Code Quality & Practices</h3> with a bullet list\n"
-            "- <h3>Strengths</h3> with a bullet list\n"
-            "- <h3>Best Fit</h3> with a bullet list (team types, project types)\n"
-            "- <h3>Recent Activity</h3> with 1 short paragraph about most recent work\n"
-            "- <h3>Notable Projects</h3> for top repos (optional)\n"
-        )
-
