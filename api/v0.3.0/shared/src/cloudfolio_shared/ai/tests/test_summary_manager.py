@@ -632,7 +632,7 @@ class TestHighLevelAPIMethods:
     def test_get_or_generate_query_response(self, mock_assistant_class):
         """Test query response generation."""
         mock_assistant = MagicMock()
-        mock_assistant.psummarize_query_html.return_value = {
+        mock_assistant.summarize_query_html.return_value = {
             "response": "Answer here",
             "repositories_used": [{"name": "repo1"}],
             "total_repositories": 1,

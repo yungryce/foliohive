@@ -23,11 +23,11 @@ from cloudfolio_shared import (
     GitHubAPI,
     GitHubRepoManager,
     queue_manager,
-    AIAssistant,
     table_manager,
 )
 from cloudfolio_shared.ai.summary_manager import SummaryManager
 from cloudfolio_shared.github.api_usage import ApiUsageTracker
+from cloudfolio_shared.ai.data_filter import get_standard_config_file_candidates
 
 from cloudfolio_shared.table import JobMetadataRow, RepoSyncStatusRow, RepoAPIUsageRow, UserProfileRow
 
@@ -228,7 +228,16 @@ def _build_profile_statistics(
             topics.extend([topic for topic in row_topics if isinstance(topic, str) and topic])
     unique_topics = sorted(set(topics))
 
+    logger.info(
+        "Built profile statistics for user. Repo count: %d, Stars total: %d, Forks total: %d, Unique topics: %d",
+        repo_count,
+        stars_total,
+        forks_total,
+        len(unique_topics),
+    )
+
     return {
+        "repo_names": [row.get("repo_name") for row in repo_rows if row.get("repo_name")],
         "repo_count": repo_count,
         "stars_total": stars_total,
         "forks_total": forks_total,
@@ -486,6 +495,7 @@ def _select_repos_for_context(
                 return datetime.min
         
         sorted_repos = sorted(repo_rows, key=get_update_time, reverse=True)
+        logger.info("selected repos for context using 'recent' strategy: %s", [repo.get("repo_name") for repo in sorted_repos[:max_repos]])
         return sorted_repos[:max_repos]
     
     elif strategy == "random":
@@ -508,22 +518,13 @@ def _select_repos_for_context(
         logger.warning("Unknown selection strategy '%s', defaulting to 'recent'", strategy)
         return _select_repos_for_context(repo_rows, "recent", max_repos)
 
-
 def _get_repo_files_for_summary(
     username: str,
     repo_name: str,
     max_files: int = 5,
 ) -> Dict[str, Any]:
-    """Get cached file contents for a repo (readme + config files).
+    """Get cached file contents for a repo (readme + config files)."""
     
-    Args:
-        username: GitHub username
-        repo_name: Repository name
-        max_files: Maximum number of files to retrieve per repo
-    
-    Returns:
-        Dict with readme_content and config_files list
-    """
     result = {
         "repo_name": repo_name,
         "readme_content": None,
@@ -543,24 +544,62 @@ def _get_repo_files_for_summary(
         if readme_result.get("status") == "valid":
             result["readme_content"] = readme_result.get("data", "")
         
-        # Get config files (up to max_files)
-        config_key = cache_manager.generate_cache_key(
-            kind="file",
-            username=username,
-            repo=repo_name,
-            file_type="config",
-            filename="ALL",
-        )
-        config_result = cache_manager.get(config_key)
-        if config_result.get("status") == "valid":
-            config_data = config_result.get("data", {})
-            if isinstance(config_data, dict):
-                # Limit to max_files config files
-                config_items = list(config_data.items())[:max_files]
-                result["config_files"] = [
-                    {"filename": filename, "content": content}
-                    for filename, content in config_items
-                ]
+        # Use the SAME discovery logic as cache_worker
+        repo_manager = _get_repo_manager(username)
+        path_index = repo_manager.get_repo_path_index(username=username, repo=repo_name)
+        path_index_set = set(path_index) if path_index else set()
+        
+        if path_index_set:
+            file_candidates = get_standard_config_file_candidates(limit=max_files * 2)
+            readme_candidates = ["README.md", "README.rst", "README.txt", "readme.md"]
+            
+            # Call the SAME method the cache_worker uses
+            target_paths = repo_manager._discover_file_target_paths_by_level(
+                path_index=path_index_set,
+                file_candidates=file_candidates,
+                readme_candidates=readme_candidates,
+                limit=max_files,
+            )
+            
+            logger.info(
+                "Discovered %d paths for %s/%s: %s",
+                len(target_paths), username, repo_name, target_paths[:3]
+            )
+            
+            # Filter out readme files (we only want config)
+            readme_set = {name.lower() for name in readme_candidates}
+            config_paths = [
+                path for path in target_paths 
+                if os.path.basename(path).lower() not in readme_set
+            ]
+            
+            # Fetch from cache using discovered paths
+            collected_configs = []
+            for full_path in config_paths[:max_files]:
+                config_key = cache_manager.generate_cache_key(
+                    kind="file",
+                    username=username,
+                    repo=repo_name,
+                    file_type="config",
+                    filename=full_path,
+                )
+                
+                config_result = cache_manager.get(config_key)
+                if config_result.get("status") == "valid":
+                    content = config_result.get("data", "")
+                    if content:
+                        display_name = full_path.split("/")[-1]
+                        collected_configs.append({
+                            "filename": display_name,
+                            "path": full_path,
+                            "content": content
+                        })
+                        logger.info(
+                            "Retrieved config from cache: repo=%s path=%s",
+                            repo_name, full_path
+                        )
+            
+            result["config_files"] = collected_configs
     
     except Exception as exc:
         logger.warning(
@@ -1399,13 +1438,11 @@ def get_candidate_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     profile = _get_or_refresh_user_profile(username)
     ctx = _prepare_candidate_context(req, username)
     repo_rows = _query_repo_rows(username, job_id=ctx.job_id)
-    for repo in repo_rows:
-        logger.info("Repo metadata for summary - user=%s repo=%s metadata=%s", username, repo.get("repo_name"), {k: v for k, v in repo.items() if k != "description"})
     languages_by_repo = table_manager.query_repo_languages(ctx.job_id) if ctx.job_id else {}
     statistics = _build_profile_statistics(repo_rows, languages_by_repo)
 
     # Select repos early to minimize file fetching
-    selected_repos = _select_repos_for_context(repo_rows, strategy="recent", max_repos=5)
+    selected_repos = _select_repos_for_context(repo_rows, strategy="recent", max_repos=15)
     
     # Build repo files dict only for selected repos
     repo_files = {}
@@ -1413,8 +1450,8 @@ def get_candidate_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
         repo_name = repo.get("repo_name")
         if repo_name:
             files = _get_repo_files_for_summary(username, repo_name, max_files=2)
-            if files.get("readme_content") or files.get("config_files"):
-                repo_files[repo_name] = files
+            repo_files[repo_name] = files
+            logger.info("Included files for summary context user=%s repo=%s readme=%s config_files=%d", username, repo_name, bool(files.get("readme_content")), len(files.get("config_files", [])))
 
     # New path: Use SummaryManager with caching
     manager = SummaryManager(username=username)

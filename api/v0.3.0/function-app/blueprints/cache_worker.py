@@ -147,7 +147,6 @@ def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] 
         logger.info("Caching readme file: repo=%s file=%s key=%s", repo_name, cache_filename, file_key)
         cache_manager.save(file_key, content, ttl=None)
         cached_count += 1
-        logger.debug("[FILE_CACHED] repo=%s type=readme file=%s", repo_name, cache_filename)
     
     # Cache config files
     for filename, content in config_files.items():
@@ -161,7 +160,6 @@ def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] 
         logger.info("Caching config file: repo=%s file=%s key=%s", repo_name, filename, file_key)
         cache_manager.save(file_key, content, ttl=None)
         cached_count += 1
-        logger.debug("[FILE_CACHED] repo=%s type=config file=%s", repo_name, filename)
     
     logger.info(
         "[FILES_FETCH_COMPLETE] repo=%s - Cached %d files (readme + config)",

@@ -551,21 +551,18 @@ class SummaryManager:
         
         # Calculate per-repo budgets
         num_repos = len(repo_rows)
-        logger.info("Building profile context for user '%s' with %d repos. Total token budget for repos: %d", self.username, num_repos, token_budget.get("readme", 0) + token_budget.get("config", 0))
         readme_budget_per_repo = token_budget.get("readme", 0) // max(num_repos, 1)
         config_budget_per_repo = token_budget.get("config", 0) // max(num_repos, 1)
         
         # Build context for each repo
         for repo in repo_rows:
             repo_name = repo.get("repo_name")
-            logger.info("Processing repo '%s' for profile context. Repo metadata: %s", repo_name, {k: repo.get(k) for k in ['description', 'primary_language', 'languages', 'topics', 'stats']})
             if not repo_name:
                 continue
             
             files = repo_files.get(repo_name, {})
             readme = files.get("readme_content", "")
             configs = files.get("config_files", [])
-            logger.info("Profile context - processing repo '%s': readme length=%d chars, config files=%d", repo_name, len(readme), len(configs) if isinstance(configs, list) else 0)
             
             # Build mini repo context
             repo_context = {
@@ -581,8 +578,6 @@ class SummaryManager:
             # Add chunked README
             if readme and readme_budget_per_repo > 0:
                 repo_context["readme_chunk"] = self.chunk_readme(readme, readme_budget_per_repo)
-                logger.info("Profile context - repo '%s': README chunked to %d tokens", repo_name, self.estimate_tokens(repo_context["readme_chunk"]))
-                logger.info("Profile context - repo '%s': README chunk content preview: %s", repo_name, repo_context["readme_chunk"])
             
             # Add chunked configs
             if configs and config_budget_per_repo > 0:
