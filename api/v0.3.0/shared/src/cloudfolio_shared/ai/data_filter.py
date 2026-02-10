@@ -1,8 +1,13 @@
 # Expand the TECHNICAL_TERMS dictionary for more comprehensive matches
 # including: common file extensions, version patterns, and technical terms.
+import logging
 import re
 from typing import List, Sequence
 
+
+logger = logging.getLogger("cloudfolio.data_filter")
+logger.setLevel(logging.INFO)
+logger.propagate = True
 
 # Check for advanced skills keywords
 advanced_skills = {
@@ -233,9 +238,9 @@ STANDARD_CONFIG_FILE_CANDIDATES: Sequence[str] = (
 )
 
 
-def get_standard_config_file_candidates(*, limit: int = 40) -> List[str]:
+def get_standard_config_file_candidates() -> List[str]:
     """Return a deterministic, bounded list of config file paths to try-fetch."""
-    bounded = list(STANDARD_CONFIG_FILE_CANDIDATES)[: max(0, int(limit))]
+    bounded = list(STANDARD_CONFIG_FILE_CANDIDATES)
     # De-dupe while preserving order
     seen = set()
     result: List[str] = []
@@ -244,6 +249,7 @@ def get_standard_config_file_candidates(*, limit: int = 40) -> List[str]:
             continue
         seen.add(path)
         result.append(path)
+        logger.info("Added standard config file candidate: %s", path)
     return result
 
 

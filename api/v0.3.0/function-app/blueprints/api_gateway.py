@@ -25,6 +25,7 @@ from cloudfolio_shared import (
     queue_manager,
     table_manager,
 )
+from cloudfolio_shared.cache.repo_cache_retrieval import repo_cache_retrieval
 from cloudfolio_shared.ai.summary_manager import SummaryManager
 from cloudfolio_shared.github.api_usage import ApiUsageTracker
 from cloudfolio_shared.ai.data_filter import get_standard_config_file_candidates
@@ -521,93 +522,87 @@ def _select_repos_for_context(
 def _get_repo_files_for_summary(
     username: str,
     repo_name: str,
-    max_files: int = 5,
+    max_files: int = 10,
+    path_retrieve: bool = False,
+    job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Get cached file contents for a repo (readme + config files)."""
+    """Get cached file contents for a repo (readme + config files).
     
-    result = {
-        "repo_name": repo_name,
-        "readme_content": None,
-        "config_files": [],
-    }
+    Retrieves discovered paths from table storage, then uses RepoCacheRetrieval
+    to get pre-cached files with proper categorization.
+    Discovery and caching happens asynchronously in cache_worker.py.
     
+    Args:
+        username: GitHub username
+        repo_name: Repository name
+        max_files: Maximum config files to retrieve (readme files not limited)
+        path_retrieve: If True, only retrieve primary readme; if False, get all cached files
+        job_id: Optional job ID to retrieve discovered paths from table storage
+        
+    Returns:
+        Dict with repo_name, readme_content, readme_files, config_files
+    """
     try:
-        # Get readme content
-        readme_key = cache_manager.generate_cache_key(
-            kind="file",
+        if path_retrieve:
+            # Primary readme only (no discovery needed)
+            logger.info(
+                "Path-based retrieval for %s/%s (primary readme only)",
+                username, repo_name
+            )
+            return repo_cache_retrieval.get_repo_files(
+                username=username,
+                repo=repo_name,
+                discovered_paths=None,
+                max_config_files=0,
+            )
+        
+        # Retrieve discovered paths from table storage if job_id provided
+        discovered_paths = None
+        if job_id:
+            try:
+                paths_row = table_manager.get_repo_discovered_paths(job_id, repo_name)
+                if paths_row:
+                    discovered_paths = paths_row.get("discovered_paths")
+                    logger.info(
+                        "Retrieved discovered paths for %s/%s job=%s: %d paths",
+                        username, repo_name, job_id, len(discovered_paths or [])
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to retrieve discovered paths for %s/%s job=%s: %s",
+                    username, repo_name, job_id, exc
+                )
+        
+        # Retrieve all cached files with limits
+        result = repo_cache_retrieval.get_repo_files(
             username=username,
             repo=repo_name,
-            file_type="readme",
-            filename="PRIMARY",
+            discovered_paths=discovered_paths,
+            readme_candidates=["README.md", "README.rst", "README.txt", "readme.md"],
+            max_config_files=max_files,
         )
-        readme_result = cache_manager.get(readme_key)
-        if readme_result.get("status") == "valid":
-            result["readme_content"] = readme_result.get("data", "")
         
-        # Use the SAME discovery logic as cache_worker
-        repo_manager = _get_repo_manager(username)
-        path_index = repo_manager.get_repo_path_index(username=username, repo=repo_name)
-        path_index_set = set(path_index) if path_index else set()
+        logger.info(
+            "Retrieved cached files for %s/%s: readme=%s, config_count=%d",
+            username,
+            repo_name,
+            "yes" if result.get("readme_content") else "no",
+            len(result.get("config_files", [])),
+        )
         
-        if path_index_set:
-            file_candidates = get_standard_config_file_candidates(limit=max_files * 2)
-            readme_candidates = ["README.md", "README.rst", "README.txt", "readme.md"]
-            
-            # Call the SAME method the cache_worker uses
-            target_paths = repo_manager._discover_file_target_paths_by_level(
-                path_index=path_index_set,
-                file_candidates=file_candidates,
-                readme_candidates=readme_candidates,
-                limit=max_files,
-            )
-            
-            logger.info(
-                "Discovered %d paths for %s/%s: %s",
-                len(target_paths), username, repo_name, target_paths[:3]
-            )
-            
-            # Filter out readme files (we only want config)
-            readme_set = {name.lower() for name in readme_candidates}
-            config_paths = [
-                path for path in target_paths 
-                if os.path.basename(path).lower() not in readme_set
-            ]
-            
-            # Fetch from cache using discovered paths
-            collected_configs = []
-            for full_path in config_paths[:max_files]:
-                config_key = cache_manager.generate_cache_key(
-                    kind="file",
-                    username=username,
-                    repo=repo_name,
-                    file_type="config",
-                    filename=full_path,
-                )
-                
-                config_result = cache_manager.get(config_key)
-                if config_result.get("status") == "valid":
-                    content = config_result.get("data", "")
-                    if content:
-                        display_name = full_path.split("/")[-1]
-                        collected_configs.append({
-                            "filename": display_name,
-                            "path": full_path,
-                            "content": content
-                        })
-                        logger.info(
-                            "Retrieved config from cache: repo=%s path=%s",
-                            repo_name, full_path
-                        )
-            
-            result["config_files"] = collected_configs
+        return result
     
     except Exception as exc:
         logger.warning(
-            "Failed to retrieve file contents for %s/%s: %s",
+            "Failed to retrieve cached files for %s/%s: %s",
             username, repo_name, exc
         )
-    
-    return result
+        return {
+            "repo_name": repo_name,
+            "readme_content": None,
+            "readme_files": {},
+            "config_files": [],
+        }
 
 
 def _get_repo_file_content(
@@ -1449,7 +1444,7 @@ def get_candidate_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     for repo in selected_repos:
         repo_name = repo.get("repo_name")
         if repo_name:
-            files = _get_repo_files_for_summary(username, repo_name, max_files=2)
+            files = _get_repo_files_for_summary(username, repo_name, max_files=2, job_id=ctx.job_id)
             repo_files[repo_name] = files
             logger.info("Included files for summary context user=%s repo=%s readme=%s config_files=%d", username, repo_name, bool(files.get("readme_content")), len(files.get("config_files", [])))
 
@@ -1485,7 +1480,7 @@ def get_repo_readme_summary(req: func.HttpRequest) -> func.HttpResponse:
     ctx = _prepare_candidate_context(req, username)
 
     # Get cached file contents (readme + config files)
-    files = _get_repo_files_for_summary(username, repo, max_files=5)
+    files = _get_repo_files_for_summary(username, repo, max_files=5, job_id=ctx.job_id)
     readme_content = files.get("readme_content", "")
 
     # Convert config_files list to dict mapping {filename: content}
@@ -1554,7 +1549,7 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
     for repo_row in selected_repos:
         repo_name = repo_row.get("repo_name")
         if repo_name:
-            files = _get_repo_files_for_summary(username, repo_name, max_files=5)
+            files = _get_repo_files_for_summary(username, repo_name, max_files=5, job_id=ctx.job_id)
             repo_files[repo_name] = files
     
     # Use SummaryManager to build bundle context and generate response

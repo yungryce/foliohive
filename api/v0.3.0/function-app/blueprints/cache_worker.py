@@ -24,7 +24,8 @@ from cloudfolio_shared import (
     GitHubRepoManager,
     table_manager,
 )
-from cloudfolio_shared.table import RepoAPIUsageRow
+from cloudfolio_shared.cache.repo_cache_retrieval import repo_cache_retrieval
+from cloudfolio_shared.table import RepoAPIUsageRow, RepoDiscoveredPathsRow
 
 logger = logging.getLogger("cloudfolio.cache_worker")
 logger.setLevel(logging.INFO)
@@ -102,6 +103,7 @@ def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] 
     - Config file contents (package.json, Dockerfile, etc.)
     
     Individual files cached separately (kind="file") for selective retrieval.
+    Discovered file paths are persisted to table storage for later retrieval.
     This operation is expensive and runs asynchronously from metadata sync.
     
     Returns:
@@ -134,31 +136,36 @@ def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] 
     # Cache individual file blobs for selective retrieval
     cached_count = 0
     
-    # Cache readme files (excluding the one used as primary readme)
+    # Cache readme files using centralized key generation
     for filename, content in readme_files.items():
-        cache_filename = "PRIMARY" if content == primary_readme else filename
-        file_key = cache_manager.generate_cache_key(
-            kind="file",
-            username=username,
-            repo=repo_name,
-            file_type="readme",
-            filename=cache_filename,
-        )
-        logger.info("Caching readme file: repo=%s file=%s key=%s", repo_name, cache_filename, file_key)
-        cache_manager.save(file_key, content, ttl=None)
+        if content == primary_readme:
+            # Save as primary readme
+            repo_cache_retrieval.save_primary_readme(
+                username=username,
+                repo=repo_name,
+                content=content,
+                ttl=None,
+            )
+        else:
+            # Save as path-indexed readme
+            repo_cache_retrieval.save_readme_file(
+                username=username,
+                repo=repo_name,
+                path=filename,
+                content=content,
+                ttl=None,
+            )
         cached_count += 1
     
-    # Cache config files
+    # Cache config files using centralized key generation
     for filename, content in config_files.items():
-        file_key = cache_manager.generate_cache_key(
-            kind="file",
+        repo_cache_retrieval.save_config_file(
             username=username,
             repo=repo_name,
-            file_type="config",
-            filename=filename,
+            path=filename,
+            content=content,
+            ttl=None,
         )
-        logger.info("Caching config file: repo=%s file=%s key=%s", repo_name, filename, file_key)
-        cache_manager.save(file_key, content, ttl=None)
         cached_count += 1
     
     logger.info(
@@ -166,6 +173,16 @@ def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] 
         repo_name,
         cached_count,
     )
+    
+    # Persist discovered paths to table storage for later retrieval
+    if job_id:
+        _persist_discovered_paths(
+            job_id=job_id,
+            username=username,
+            repo_name=repo_name,
+            config_files=config_files,
+            readme_files=readme_files,
+        )
     
     # Record API usage if job_id provided
     if job_id and api_usage:
@@ -175,6 +192,46 @@ def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] 
         "cached_count": cached_count,
         "api_usage": api_usage,
     }
+
+
+def _persist_discovered_paths(
+    job_id: str,
+    username: str,
+    repo_name: str,
+    config_files: Dict[str, str],
+    readme_files: Dict[str, str],
+) -> None:
+    """Persist discovered file paths to table storage for later retrieval.
+    
+    Separates discovered paths into readme_paths and config_paths for
+    easy categorization by get_repo_files() in api_gateway.
+    """
+    from datetime import datetime, timezone
+    
+    # Extract paths
+    readme_paths = list(readme_files.keys())
+    config_paths = list(config_files.keys())
+    all_paths = readme_paths + config_paths
+    
+    now = datetime.now(timezone.utc).isoformat()
+    safe_timestamp = now.replace(":", "-").replace("+", "_")
+    
+    row = RepoDiscoveredPathsRow(
+        job_id=job_id,
+        repo_name=repo_name,
+        username=username,
+        discovered_paths=all_paths,
+        readme_paths=readme_paths,
+        config_paths=config_paths,
+        created_at=safe_timestamp,
+        updated_at=safe_timestamp,
+    )
+    
+    table_manager.upsert_repo_discovered_paths(row)
+    logger.info(
+        "[PERSIST_DISCOVERED_PATHS] job=%s repo=%s total=%d readme=%d config=%d",
+        job_id, repo_name, len(all_paths), len(readme_paths), len(config_paths)
+    )
 
 
 def _record_api_usage_for_file_cache(

@@ -26,6 +26,7 @@ __all__ = [
     "RepoLanguagesRow",
     "RepoGitHubMetadataRow",
     "RepoSyncStatusRow",
+    "RepoDiscoveredPathsRow",
     "RepoAPIUsageRow",
     "UserProfileRow",
     "table_manager",
@@ -44,6 +45,7 @@ class TableNames:
     repo_languages: str = "RepoLanguages"
     repo_github_metadata: str = "RepoGitHubMetadata"
     repo_sync_status: str = "RepoSyncStatus"
+    repo_discovered_paths: str = "RepoDiscoveredPaths"
     repo_api_usage: str = "RepoAPIUsage"
     user_profile: str = "UserProfile"
 
@@ -153,6 +155,28 @@ class RepoSyncStatusRow:
     error: Optional[str] = None
     synced_at: Optional[str] = None  # When metadata sync completed
     cached_at: Optional[str] = None  # When file caching completed
+    updated_at: Optional[str] = None
+
+
+@dataclass
+class RepoDiscoveredPathsRow:
+    """Discovered file paths for a repository during cache phase.
+    
+    Stores discovered file paths (readme and config files) so they can be
+    retrieved by api_gateway._get_repo_files_for_summary() and passed to
+    repo_cache_retrieval.get_repo_files() for proper file categorization.
+    
+    PartitionKey: job_id (groups all repos for a job)
+    RowKey: repo_name (unique repo within job)
+    """
+
+    job_id: str  # PartitionKey
+    repo_name: str  # RowKey
+    username: str
+    discovered_paths: List[str] = field(default_factory=list)  # All discovered file paths
+    readme_paths: List[str] = field(default_factory=list)  # Subset: readme files
+    config_paths: List[str] = field(default_factory=list)  # Subset: config files
+    created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
 
@@ -339,6 +363,7 @@ class TableManager:
             self.table_names.repo_languages,
             self.table_names.repo_github_metadata,
             self.table_names.repo_sync_status,
+            self.table_names.repo_discovered_paths,
             self.table_names.repo_api_usage,
             self.table_names.user_profile,
         ):
@@ -826,6 +851,86 @@ class TableManager:
         payload["synced_at"] = _restore_iso_timestamp(payload.get("synced_at"))
         payload["cached_at"] = _restore_iso_timestamp(payload.get("cached_at"))
         payload["error"] = payload.get("error") or None
+        payload["updated_at"] = _restore_iso_timestamp(payload.get("updated_at"))
+        return payload
+
+    # ------------------------------------------------------------------
+    # Repo discovered paths
+    # ------------------------------------------------------------------
+    def upsert_repo_discovered_paths(self, row: RepoDiscoveredPathsRow) -> None:
+        """Persist discovered file paths for a repository.
+        
+        Args:
+            row: RepoDiscoveredPathsRow with job_id, repo_name, username, discovered_paths
+        """
+        table = self._get_table_client(self.table_names.repo_discovered_paths)
+        if not table:
+            logger.warning("Table client unavailable for repo discovered paths")
+            return
+        
+        now = _azure_safe_timestamp()
+        entity = {
+            "PartitionKey": row.job_id,
+            "RowKey": row.repo_name,
+            "username": row.username,
+            "discovered_paths": _safe_json_dump(row.discovered_paths),
+            "readme_paths": _safe_json_dump(row.readme_paths),
+            "config_paths": _safe_json_dump(row.config_paths),
+            "created_at": row.created_at or now,
+            "updated_at": now,
+        }
+        table.upsert_entity(entity, mode=UpdateMode.MERGE)
+        logger.info(
+            "[TABLE_UPSERT_DISCOVERED_PATHS] job=%s repo=%s path_count=%d",
+            row.job_id, row.repo_name, len(row.discovered_paths)
+        )
+
+    def get_repo_discovered_paths(self, job_id: str, repo_name: str) -> Optional[Dict[str, Any]]:
+        """Retrieve discovered file paths for a repository.
+        
+        Args:
+            job_id: Job ID
+            repo_name: Repository name
+            
+        Returns:
+            Dict with discovered_paths, readme_paths, config_paths or None if not found
+        """
+        table = self._get_table_client(self.table_names.repo_discovered_paths)
+        if not table:
+            return None
+        
+        try:
+            entity = table.get_entity(job_id, repo_name)
+            return self._deserialize_repo_discovered_paths(entity)
+        except ResourceNotFoundError:
+            return None
+
+    def _deserialize_repo_discovered_paths(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(entity)
+        for meta_key in _AZURE_META_FIELDS:
+            payload.pop(meta_key, None)
+        
+        payload["job_id"] = payload.get("PartitionKey", None)
+        payload["repo_name"] = payload.get("RowKey", None)
+        payload["username"] = payload.get("username") or None
+        
+        # Parse JSON arrays
+        try:
+            payload["discovered_paths"] = json.loads(payload.get("discovered_paths", "[]") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            payload["discovered_paths"] = []
+        
+        try:
+            payload["readme_paths"] = json.loads(payload.get("readme_paths", "[]") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            payload["readme_paths"] = []
+        
+        try:
+            payload["config_paths"] = json.loads(payload.get("config_paths", "[]") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            payload["config_paths"] = []
+        
+        payload["created_at"] = _restore_iso_timestamp(payload.get("created_at"))
         payload["updated_at"] = _restore_iso_timestamp(payload.get("updated_at"))
         return payload
 
