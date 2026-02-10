@@ -28,7 +28,6 @@ from cloudfolio_shared import (
 from cloudfolio_shared.cache.repo_cache_retrieval import repo_cache_retrieval
 from cloudfolio_shared.ai.summary_manager import SummaryManager
 from cloudfolio_shared.github.api_usage import ApiUsageTracker
-from cloudfolio_shared.ai.data_filter import get_standard_config_file_candidates
 
 from cloudfolio_shared.table import JobMetadataRow, RepoSyncStatusRow, RepoAPIUsageRow, UserProfileRow
 
@@ -519,7 +518,7 @@ def _select_repos_for_context(
         logger.warning("Unknown selection strategy '%s', defaulting to 'recent'", strategy)
         return _select_repos_for_context(repo_rows, "recent", max_repos)
 
-def _get_repo_files_for_summary(
+def _get_repo_files(
     username: str,
     repo_name: str,
     max_files: int = 10,
@@ -543,7 +542,7 @@ def _get_repo_files_for_summary(
         Dict with repo_name, readme_content, readme_files, config_files
     """
     try:
-        if path_retrieve:
+        if not path_retrieve:
             # Primary readme only (no discovery needed)
             logger.info(
                 "Path-based retrieval for %s/%s (primary readme only)",
@@ -603,58 +602,7 @@ def _get_repo_files_for_summary(
             "readme_files": {},
             "config_files": [],
         }
-
-
-def _get_repo_file_content(
-    username: str,
-    repo: str,
-    *,
-    file_type: str = "readme",
-) -> Dict[str, Any]:
-    """Helper: retrieve cached file contents for a repo.
     
-    Retrieves individual cached files (kind="file") by type.
-    Raises ValueError if cache is not available.
-    """
-    if file_type not in ("readme", "config", "all"):
-        raise ValueError("Invalid file type. Use: readme, config, or all")
-
-    response_payload = {
-        "username": username,
-        "repo": repo,
-    }
-
-    # Retrieve readme files
-    if file_type in ("readme", "all"):
-        readme_files = {}
-        primary_readme = ""
-        
-        # Retrieve primary readme
-        primary_key = cache_manager.generate_cache_key(
-            kind="file",
-            username=username,
-            repo=repo,
-            file_type="readme",
-            filename="PRIMARY",
-        )
-        primary_result = cache_manager.get(primary_key)
-        logger.info("Retrieved primary readme cache for user=%s repo=%s status=%s primary_key=%s", username, repo, primary_result.get("status"), primary_key)
-        if primary_result.get("status") == "valid":
-            primary_readme = primary_result.get("data", "")
-            logger.debug("Retrieved primary readme for user=%s repo=%s", username, repo)
-        
-        response_payload["primary_readme"] = primary_readme
-        response_payload["readme_files"] = readme_files
-
-    # Retrieve config files
-    if file_type in ("config", "all"):
-        config_files = {}
-        response_payload["config_files"] = config_files
-
-    logger.info("Retrieved file content for user=%s repo=%s file_type=%s", username, repo, file_type)
-
-    return response_payload
-
 
 def _query_repo_rows(
     username: str,
@@ -1439,15 +1387,46 @@ def get_candidate_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     # Select repos early to minimize file fetching
     selected_repos = _select_repos_for_context(repo_rows, strategy="recent", max_repos=15)
     
-    # Build repo files dict only for selected repos
+    # Build repo files dict only for selected repos with category limits
+    # Primary readme always included, additional files limited by category
     repo_files = {}
+    max_additional_readmes = 3  # Limit additional readme files per repo
+    max_config_files = 3        # Limit config files per repo
+    
     for repo in selected_repos:
         repo_name = repo.get("repo_name")
         if repo_name:
-            files = _get_repo_files_for_summary(username, repo_name, max_files=2, job_id=ctx.job_id)
-            repo_files[repo_name] = files
-            logger.info("Included files for summary context user=%s repo=%s readme=%s config_files=%d", username, repo_name, bool(files.get("readme_content")), len(files.get("config_files", [])))
-
+            files = _get_repo_files(username, repo_name, max_files=10, job_id=ctx.job_id)
+            
+            # Always include primary readme
+            readme_content = files.get("readme_content")
+            
+            # Limit additional readme files
+            readme_files_dict = files.get("readme_files", {})
+            if len(readme_files_dict) > max_additional_readmes:
+                readme_files_dict = dict(list(readme_files_dict.items())[:max_additional_readmes])
+            
+            # Limit config files
+            config_files_list = files.get("config_files", [])
+            if len(config_files_list) > max_config_files:
+                config_files_list = config_files_list[:max_config_files]
+            
+            repo_files[repo_name] = {
+                "readme_content": readme_content,
+                "readme_files": readme_files_dict,
+                "config_files": config_files_list
+            }
+    
+    # Log file counts only (not content)
+    repo_files_summary = {}
+    for repo_name, file_data in repo_files.items():
+        repo_files_summary[repo_name] = {
+            "readme_content": "yes" if file_data.get("readme_content") else "no",
+            "readme_files_count": len(file_data.get("readme_files", {})),
+            "config_files_count": len(file_data.get("config_files", []))
+        }
+    logger.info("repo files for summary generation (limited): %s", repo_files_summary)
+                
     # New path: Use SummaryManager with caching
     manager = SummaryManager(username=username)
 
@@ -1480,7 +1459,7 @@ def get_repo_readme_summary(req: func.HttpRequest) -> func.HttpResponse:
     ctx = _prepare_candidate_context(req, username)
 
     # Get cached file contents (readme + config files)
-    files = _get_repo_files_for_summary(username, repo, max_files=5, job_id=ctx.job_id)
+    files = _get_repo_files(username, repo, max_files=5, job_id=ctx.job_id)
     readme_content = files.get("readme_content", "")
 
     # Convert config_files list to dict mapping {filename: content}
@@ -1541,19 +1520,39 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
     # Select repos early to minimize file fetching
     selected_repos = _select_repos_for_context(repo_rows, strategy="recent", max_repos=5)
     
-    # New path: Use SummaryManager with bundle-level context and caching
-    manager = SummaryManager(username=username)
-    
-    # Build repo_files dict only for selected repos
+    # Build repo_files dict only for selected repos with category limits
+    # Primary readme always included, additional files limited by category
     repo_files = {}
+    max_additional_readmes = 2  # Limit additional readme files per repo for query context
+    max_config_files = 2        # Limit config files per repo for query context
+    
     for repo_row in selected_repos:
         repo_name = repo_row.get("repo_name")
         if repo_name:
-            files = _get_repo_files_for_summary(username, repo_name, max_files=5, job_id=ctx.job_id)
-            repo_files[repo_name] = files
+            files = _get_repo_files(username, repo_name, max_files=10, job_id=ctx.job_id)
+            
+            # Always include primary readme
+            readme_content = files.get("readme_content")
+            
+            # Limit additional readme files for query context
+            readme_files_dict = files.get("readme_files", {})
+            if len(readme_files_dict) > max_additional_readmes:
+                readme_files_dict = dict(list(readme_files_dict.items())[:max_additional_readmes])
+            
+            # Limit config files for query context
+            config_files_list = files.get("config_files", [])
+            if len(config_files_list) > max_config_files:
+                config_files_list = config_files_list[:max_config_files]
+            
+            repo_files[repo_name] = {
+                "readme_content": readme_content,
+                "readme_files": readme_files_dict,
+                "config_files": config_files_list
+            }
     
     # Use SummaryManager to build bundle context and generate response
     # Pass selected_repos instead of repo_rows to avoid redundant selection in SummaryManager
+    manager = SummaryManager(username=username)
     response = manager.get_or_generate_query_response(
         job_id=ctx.job_id or "default",
         query=query,

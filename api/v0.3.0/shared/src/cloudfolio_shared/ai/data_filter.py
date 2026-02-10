@@ -238,9 +238,9 @@ STANDARD_CONFIG_FILE_CANDIDATES: Sequence[str] = (
 )
 
 
-def get_standard_config_file_candidates() -> List[str]:
+def get_standard_config_file_candidates(*, limit: int = 40) -> List[str]:
     """Return a deterministic, bounded list of config file paths to try-fetch."""
-    bounded = list(STANDARD_CONFIG_FILE_CANDIDATES)
+    bounded = list(STANDARD_CONFIG_FILE_CANDIDATES)[: max(0, int(limit))]
     # De-dupe while preserving order
     seen = set()
     result: List[str] = []
