@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import azure.functions as func
 
-from cloudfolio_shared import (
+from foliohive_shared import (
     cache_manager,
     FingerprintManager,
     GitHubAPI,
@@ -25,11 +25,11 @@ from cloudfolio_shared import (
     queue_manager,
     table_manager,
 )
-from cloudfolio_shared.cache.repo_cache_retrieval import repo_cache_retrieval
-from cloudfolio_shared.ai.summary_manager import SummaryManager
-from cloudfolio_shared.github.api_usage import ApiUsageTracker
+from foliohive_shared.cache.repo_cache_retrieval import repo_cache_retrieval
+from foliohive_shared.ai.summary_manager import SummaryManager
+from foliohive_shared.github.api_usage import ApiUsageTracker
 
-from cloudfolio_shared.table import JobMetadataRow, RepoSyncStatusRow, RepoAPIUsageRow, UserProfileRow
+from foliohive_shared.table import JobMetadataRow, RepoSyncStatusRow, RepoAPIUsageRow, UserProfileRow
 
 try:  # Azure SDK may be unavailable in local dev; ignore import failures gracefully
     from azure.core.exceptions import ResourceNotFoundError
@@ -1372,7 +1372,7 @@ def get_candidate_profile(req: func.HttpRequest) -> func.HttpResponse:
 
 
 @bp.route(route="candidate/{username}/summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_candidate_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
+def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     """Generate an AI summary for a candidate profile (HTML output)."""
     username = req.route_params.get("username")
     if not username:
@@ -1449,7 +1449,7 @@ def get_candidate_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
 
 
 @bp.route(route="candidate/{username}/{repo}/readme-summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_repo_readme_summary(req: func.HttpRequest) -> func.HttpResponse:
+def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
     """Generate an AI summary for a repository README (HTML output)."""
     username = req.route_params.get("username")
     repo = req.route_params.get("repo")

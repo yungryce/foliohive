@@ -8,7 +8,7 @@ from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
 from azure.identity import DefaultAzureCredential
 from azure.storage.queue import QueueClient, QueueServiceClient
 
-from cloudfolio_shared.cache.cache_manager import cache_manager
+from foliohive_shared.cache.cache_manager import cache_manager
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

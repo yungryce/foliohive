@@ -17,7 +17,7 @@ def retrieval():
 @pytest.fixture
 def mock_cache_manager():
     """Mock cache_manager for testing."""
-    with patch("cloudfolio_shared.cache.repo_cache_retrieval.cache_manager") as mock:
+    with patch("foliohive_shared.cache.repo_cache_retrieval.cache_manager") as mock:
         yield mock
 
 

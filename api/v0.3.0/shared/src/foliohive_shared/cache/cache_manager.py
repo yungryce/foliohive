@@ -1,7 +1,7 @@
 """Lightweight blob-backed cache utilities.
 
 This module purposefully keeps the cache story simple: hot metadata now lives in
-Azure Table Storage (via ``cloudfolio_shared.table``), while this helper
+Azure Table Storage (via ``foliohive_shared.table``), while this helper
 manages the remaining blob-based payloads such as repo bundles or large
 intermediate artifacts. The public surface area stays compatible with the
 existing callers (simple ``get``/``save`` helpers plus the decorator used by the

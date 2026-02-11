@@ -9,7 +9,7 @@ Tests fingerprint generation for:
 import pytest
 import json
 import hashlib
-from cloudfolio_shared.cache.fingerprint_manager import FingerprintManager
+from foliohive_shared.cache.fingerprint_manager import FingerprintManager
 
 
 class TestFingerprintManager:

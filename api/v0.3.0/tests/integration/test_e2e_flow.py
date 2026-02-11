@@ -537,7 +537,7 @@ class TestErrorHandlingIntegration:
         """Verify missing username is handled gracefully."""
         # Attempting to generate cache key without username should raise
         with pytest.raises(Exception):
-            from cloudfolio_shared.cache.cache_manager import CacheManager
+            from foliohive_shared.cache.cache_manager import CacheManager
             CacheManager.generate_cache_key(kind='bundle')  # No username
 
     def test_missing_repo_in_cache_during_merge(self, mock_cache_manager):

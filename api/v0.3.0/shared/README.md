@@ -2,7 +2,7 @@
 
 Shared Python utilities for Cloudfolio services.
 
-The package lives under `api/v0.3.0/shared/` and is imported by Function Apps and other backend components as `cloudfolio_shared`.
+The package lives under `api/v0.3.0/shared/` and is imported by Function Apps and other backend components as `foliohive_shared`.
 
 ## Local development
 
@@ -25,7 +25,7 @@ pip install -e .
 ## Usage
 
 ```python
-from cloudfolio_shared.github.github_api import GitHubAPI
+from foliohive_shared.github.github_api import GitHubAPI
 
 api = GitHubAPI(token="...", username="yungryce")
 repos = api.get_user_repos()
@@ -37,7 +37,7 @@ repos = api.get_user_repos()
 api/v0.3.0/shared/
 ├── pyproject.toml
 ├── src/
-│   └── cloudfolio_shared/
+│   └── foliohive_shared/
 └── README.md
 ```
 

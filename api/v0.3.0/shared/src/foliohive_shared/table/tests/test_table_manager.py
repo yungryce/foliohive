@@ -10,7 +10,7 @@ import pytest
 
 from azure.core.exceptions import ResourceNotFoundError
 
-from cloudfolio_shared.table.table_manager import (
+from foliohive_shared.table.table_manager import (
     JobMetadataRow,
     RepoAPIUsageRow,
     RepoGitHubMetadataRow,

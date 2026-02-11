@@ -4,8 +4,8 @@ The v0.3.0 backend is a single Azure Functions app with multiple blueprints.
 This package contains the reusable logic those blueprints depend on.
 
 Usage:
-    from cloudfolio_shared import cache_manager, GitHubAPI, queue_manager
-    from cloudfolio_shared import AIAssistant
+    from foliohive_shared import cache_manager, GitHubAPI, queue_manager
+    from foliohive_shared import AIAssistant
 """
 
 __version__ = "1.0.0"
@@ -30,40 +30,40 @@ def __getattr__(name: str):
 
     # Cache utilities
     if name == "cache_manager":
-        from cloudfolio_shared.cache.cache_manager import cache_manager
+        from foliohive_shared.cache.cache_manager import cache_manager
         return cache_manager
     if name == "CacheManager":
-        from cloudfolio_shared.cache.cache_manager import CacheManager
+        from foliohive_shared.cache.cache_manager import CacheManager
         return CacheManager
     if name == "FingerprintManager":
-        from cloudfolio_shared.cache.fingerprint_manager import FingerprintManager
+        from foliohive_shared.cache.fingerprint_manager import FingerprintManager
         return FingerprintManager
     
     # GitHub utilities
     if name == "GitHubAPI":
-        from cloudfolio_shared.github.github_api import GitHubAPI
+        from foliohive_shared.github.github_api import GitHubAPI
         return GitHubAPI
     if name == "GitHubRepoManager":
-        from cloudfolio_shared.github.github_repo_manager import GitHubRepoManager
+        from foliohive_shared.github.github_repo_manager import GitHubRepoManager
         return GitHubRepoManager
     
     # Queue utilities
     if name == "queue_manager":
-        from cloudfolio_shared.queue.queue_manager import queue_manager
+        from foliohive_shared.queue.queue_manager import queue_manager
         return queue_manager
     if name == "QueueManager":
-        from cloudfolio_shared.queue.queue_manager import QueueManager
+        from foliohive_shared.queue.queue_manager import QueueManager
         return QueueManager
     if name == "table_manager":
-        from cloudfolio_shared.table import table_manager
+        from foliohive_shared.table import table_manager
         return table_manager
     if name == "TableManager":
-        from cloudfolio_shared.table import TableManager
+        from foliohive_shared.table import TableManager
         return TableManager
     
     # AI utilities
     if name == "AIAssistant":
-        from cloudfolio_shared.ai.ai_assistant import AIAssistant
+        from foliohive_shared.ai.ai_assistant import AIAssistant
         return AIAssistant
     
-    raise AttributeError(f"module 'cloudfolio_shared' has no attribute '{name}'")
+    raise AttributeError(f"module 'foliohive_shared' has no attribute '{name}'")

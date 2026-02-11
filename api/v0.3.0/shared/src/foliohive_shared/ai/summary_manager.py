@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from cloudfolio_shared.ai import AIAssistant
+from foliohive_shared.ai import AIAssistant
 
 logger = logging.getLogger(__name__)
 

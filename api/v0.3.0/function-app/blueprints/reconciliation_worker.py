@@ -12,8 +12,8 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import azure.functions as func
 
-from cloudfolio_shared import cache_manager, queue_manager, table_manager
-from cloudfolio_shared.github.github_repo_manager import get_non_bundle_cache_prefixes
+from foliohive_shared import cache_manager, queue_manager, table_manager
+from foliohive_shared.github.github_repo_manager import get_non_bundle_cache_prefixes
 
 logger = logging.getLogger("cloudfolio.reconciler")
 logger.setLevel(logging.INFO)

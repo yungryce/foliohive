@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 try:
-    from cloudfolio_shared import table_manager
-    from cloudfolio_shared.table import ModelMetadataRow
+    from foliohive_shared import table_manager
+    from foliohive_shared.table import ModelMetadataRow
 except ImportError:  # pragma: no cover - graceful degradation for local dev without shared package
     table_manager = None
     ModelMetadataRow = None

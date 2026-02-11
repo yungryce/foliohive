@@ -161,7 +161,7 @@ trigger:
 - Install Python 3.12
 - Create virtual environment
 - Install dependencies: `pip install -r requirements.txt`
-- Install cloudfolio_shared: `pip install -e ../shared`
+- Install foliohive_shared: `pip install -e ../shared`
 - Lint code: `ruff check`
 - Run security scan: `bandit -r .`
 

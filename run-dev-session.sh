@@ -154,7 +154,7 @@ activate_venv() {
 
 validate_env() {
     if ! python - <<'PY' >/dev/null 2>&1
-import cloudfolio_shared
+import foliohive_shared
 PY
     then
         log_error "cloudfolio-shared not importable from venv. Run ./setup-dev.sh (without skipping)."

@@ -3,7 +3,7 @@ from datetime import datetime
 
 import pytest  # type: ignore
 
-from cloudfolio_shared.queue.queue_manager import (
+from foliohive_shared.queue.queue_manager import (
     CACHE_QUEUE,
     JOB_STATUS_QUEUE,
     SYNC_QUEUE,

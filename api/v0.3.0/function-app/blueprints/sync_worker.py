@@ -15,15 +15,15 @@ from typing import Any, Dict, Optional
 
 import azure.functions as func
 
-from cloudfolio_shared import (
+from foliohive_shared import (
     FingerprintManager,
     GitHubAPI,
     GitHubRepoManager,
     queue_manager,
     table_manager,
 )
-from cloudfolio_shared.github.api_usage import ApiUsageTracker
-from cloudfolio_shared.table import RepoLanguagesRow, RepoGitHubMetadataRow, RepoAPIUsageRow
+from foliohive_shared.github.api_usage import ApiUsageTracker
+from foliohive_shared.table import RepoLanguagesRow, RepoGitHubMetadataRow, RepoAPIUsageRow
 
 logger = logging.getLogger("cloudfolio.sync_worker")
 logger.setLevel(logging.INFO)

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from cloudfolio_shared.cache.cache_manager import CacheManager
+from foliohive_shared.cache.cache_manager import CacheManager
 
 
 @pytest.fixture()
@@ -40,8 +40,8 @@ class TestCacheManagerInitialization:
         assert cache.default_ttl == 900
         assert cache.use_cache is False
 
-    @patch("cloudfolio_shared.cache.cache_manager.BlobServiceClient")
-    @patch("cloudfolio_shared.cache.cache_manager.DefaultAzureCredential")
+    @patch("foliohive_shared.cache.cache_manager.BlobServiceClient")
+    @patch("foliohive_shared.cache.cache_manager.DefaultAzureCredential")
     def test_ensure_initialized_uses_managed_identity(self, mock_credential, mock_blob_client, mock_env_vars):
         service_client = MagicMock()
         mock_blob_client.return_value = service_client
@@ -57,8 +57,8 @@ class TestCacheManagerInitialization:
         service_client.create_container.assert_called_once_with("github-cache")
         assert cache._initialized is True
 
-    @patch("cloudfolio_shared.cache.cache_manager.BlobServiceClient")
-    @patch("cloudfolio_shared.cache.cache_manager.DefaultAzureCredential", side_effect=Exception("MI unavailable"))
+    @patch("foliohive_shared.cache.cache_manager.BlobServiceClient")
+    @patch("foliohive_shared.cache.cache_manager.DefaultAzureCredential", side_effect=Exception("MI unavailable"))
     def test_ensure_initialized_falls_back_to_connection_string(
         self,
         _mock_credential,

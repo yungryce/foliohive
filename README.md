@@ -70,7 +70,7 @@ Access the application:
 - **Cache Worker**: Queue-triggered; fetches file contents (README, configs)
 - **Reconciliation Worker**: Timer-triggered; cleanup and retry logic (3-min interval)
 
-**Shared Modules** (`cloudfolio_shared/`)
+**Shared Modules** (`foliohive_shared/`)
 - **ai/**: OpenAI integration, context orchestration, token management
 - **cache/**: Fingerprint-based caching, blob storage management
 - **github/**: REST + GraphQL unified interface
@@ -141,8 +141,8 @@ foliohive/
 │   ├── function-app/          # Azure Functions entry point
 │   │   ├── function_app.py    # Main app registration
 │   │   └── blueprints/        # Worker implementations
-│   ├── shared/                # cloudfolio_shared package
-│   │   └── src/cloudfolio_shared/
+│   ├── shared/                # foliohive_shared package
+│   │   └── src/foliohive_shared/
 │   │       ├── ai/            # AI integration
 │   │       ├── cache/         # Caching logic
 │   │       ├── github/        # GitHub API client

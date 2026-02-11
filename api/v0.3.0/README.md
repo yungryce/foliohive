@@ -40,7 +40,7 @@ The FolioHive API is a modular monolith Azure Functions application using the Bl
    └───────────────────────────────────────────────────────┘
                           │
    ┌──────────────────────┴────────────────────────────────┐
-   │              cloudfolio_shared Package                │
+   │              foliohive_shared Package                │
    │  ┌────────┬─────────┬────────┬─────────┬─────────┐   │
    │  │   ai/  │ cache/  │github/ │ queue/  │ table/  │   │
    │  └────────┴─────────┴────────┴─────────┴─────────┘   │
@@ -220,9 +220,9 @@ def process_sync_job(msg: func.QueueMessage) -> None:
 
 ## 📦 Shared Modules
 
-### cloudfolio_shared Package
+### foliohive_shared Package
 
-Located in `shared/src/cloudfolio_shared/`, this package provides reusable logic:
+Located in `shared/src/foliohive_shared/`, this package provides reusable logic:
 
 #### 1. `ai/` - AI Integration
 - **ai_assistant.py**: OpenAI API wrapper
@@ -433,7 +433,7 @@ cd api/v0.3.0
 
 This script:
 - Creates Python virtual environment
-- Installs `cloudfolio_shared` package in editable mode
+- Installs `foliohive_shared` package in editable mode
 - Installs function app dependencies
 - Sets up test environment
 
@@ -546,7 +546,7 @@ pytest integration/ -v
 pytest integration/test_e2e_flow.py::test_full_candidate_sync -v
 
 # With coverage
-pytest --cov=cloudfolio_shared --cov-report=html
+pytest --cov=foliohive_shared --cov-report=html
 ```
 
 ### E2E Tests with Curl

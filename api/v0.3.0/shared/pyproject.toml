@@ -54,13 +54,13 @@ Repository = "https://github.com/yungryce/cloudfolio"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["cloudfolio_shared*"]
+include = ["foliohive_shared*"]
 
 [tool.setuptools.package-data]
-"cloudfolio_shared.linguist" = ["languages.yml"]
+"foliohive_shared.linguist" = ["languages.yml"]
 
 [tool.pytest.ini_options]
-testpaths = ["src/cloudfolio_shared"]
+testpaths = ["src/foliohive_shared"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

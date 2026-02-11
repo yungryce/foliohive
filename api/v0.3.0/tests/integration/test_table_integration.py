@@ -18,8 +18,8 @@ import pytest
 
 from azure.core.exceptions import ResourceNotFoundError
 
-from cloudfolio_shared import FingerprintManager
-from cloudfolio_shared.table import (
+from foliohive_shared import FingerprintManager
+from foliohive_shared.table import (
     JobMetadataRow,
     RepoGitHubMetadataRow,
     RepoSyncStatusRow,
@@ -262,7 +262,7 @@ class TestTableFirstArchitecture:
 
     def test_sync_worker_persists_repo_metadata_to_table(self, mock_table_manager):
         """Verify sync worker creates RepoGitHubMetadata rows with fingerprint."""
-        from cloudfolio_shared.table import RepoGitHubMetadataRow
+        from foliohive_shared.table import RepoGitHubMetadataRow
         
         username = 'testuser'
         repo_name = 'test-repo'
@@ -285,7 +285,7 @@ class TestTableFirstArchitecture:
 
     def test_merge_worker_queries_table_first_before_cache(self, mock_table_manager):
         """Verify merge worker queries GitHub metadata table for all repos."""
-        from cloudfolio_shared.table import RepoGitHubMetadataRow
+        from foliohive_shared.table import RepoGitHubMetadataRow
         
         username = 'testuser'
         
@@ -308,7 +308,7 @@ class TestTableFirstArchitecture:
 
     def test_api_gateway_reads_bundle_from_table(self, mock_table_manager):
         """Verify API gateway serves bundle data from JobMetadata + RepoGitHubMetadata tables."""
-        from cloudfolio_shared.table import JobMetadataRow, RepoGitHubMetadataRow
+        from foliohive_shared.table import JobMetadataRow, RepoGitHubMetadataRow
         
         username = 'testuser'
         job_id = str(uuid.uuid4())
@@ -354,7 +354,7 @@ class TestJobProgressTracking:
 
     def test_sync_worker_updates_progress_incrementally(self, mock_table_manager):
         """Verify sync worker updates job status as repos complete (via RepoSyncStatus table)."""
-        from cloudfolio_shared.table import JobMetadataRow, RepoSyncStatusRow
+        from foliohive_shared.table import JobMetadataRow, RepoSyncStatusRow
         
         username = 'testuser'
         job_id = str(uuid.uuid4())
@@ -392,7 +392,7 @@ class TestJobProgressTracking:
 
     def test_merge_worker_marks_job_completed(self, mock_table_manager):
         """Verify merge worker sets status=completed and bundle_fingerprint."""
-        from cloudfolio_shared.table import JobMetadataRow
+        from foliohive_shared.table import JobMetadataRow
         
         username = 'testuser'
         job_id = str(uuid.uuid4())
@@ -427,7 +427,7 @@ class TestModelMetadataPersistence:
 
     def test_training_completion_updates_job_metadata(self, mock_table_manager):
         """Verify that JobMetadata can be updated with bundle_fingerprint."""
-        from cloudfolio_shared.table import JobMetadataRow
+        from foliohive_shared.table import JobMetadataRow
         
         username = 'testuser'
         job_id = str(uuid.uuid4())
@@ -472,7 +472,7 @@ class TestEdgeCases:
 
     def test_missing_job_id_returns_latest_session(self, mock_table_manager):
         """Verify API gateway returns latest session when job_id not specified."""
-        from cloudfolio_shared.table import JobMetadataRow
+        from foliohive_shared.table import JobMetadataRow
         
         username = 'testuser'
         
@@ -500,7 +500,7 @@ class TestEdgeCases:
 
     def test_partial_repo_sync_tracked_correctly(self, mock_table_manager):
         """Verify progress tracking when only some repos complete (via RepoSyncStatus table)."""
-        from cloudfolio_shared.table import JobMetadataRow
+        from foliohive_shared.table import JobMetadataRow
         
         username = 'testuser'
         job_id = str(uuid.uuid4())
@@ -536,7 +536,7 @@ class TestEdgeCases:
 
     def test_fingerprint_mismatch_triggers_resync(self, mock_table_manager):
         """Verify stale fingerprints in GitHub metadata detected."""
-        from cloudfolio_shared.table import RepoGitHubMetadataRow
+        from foliohive_shared.table import RepoGitHubMetadataRow
         
         username = 'testuser'
         
@@ -590,7 +590,7 @@ class TestRepoSyncStatusLifecycle:
 
     def test_repo_status_pending_to_synced_to_cached(self, mock_table_manager):
         """Verify status transitions through pipeline stages."""
-        from cloudfolio_shared.table import RepoSyncStatusRow
+        from foliohive_shared.table import RepoSyncStatusRow
         
         username = 'testuser'
         job_id = str(uuid.uuid4())
@@ -669,7 +669,7 @@ class TestRepoSyncStatusLifecycle:
 
     def test_repo_status_failure_tracking(self, mock_table_manager):
         """Verify failed repos tracked with error messages."""
-        from cloudfolio_shared.table import RepoSyncStatusRow
+        from foliohive_shared.table import RepoSyncStatusRow
         
         job_id = str(uuid.uuid4())
         repo_name = 'broken-repo'
@@ -714,7 +714,7 @@ class TestMultiTableQueries:
 
     def test_complete_repo_profile_query(self, mock_table_manager):
         """Verify querying complete repo profile across RepoGitHubMetadata + RepoLanguages tables."""
-        from cloudfolio_shared.table import (
+        from foliohive_shared.table import (
             RepoLanguagesRow,
             RepoGitHubMetadataRow,
         )
@@ -829,7 +829,7 @@ class TestBatchOperationsAndErrorHandling:
 
     def test_large_batch_chunking(self, mock_table_manager):
         """Verify large batches are chunked properly (Azure Tables limit: 100 operations/batch)."""
-        from cloudfolio_shared.table import RepoLanguagesRow
+        from foliohive_shared.table import RepoLanguagesRow
         
         batches_written = []
         
@@ -865,7 +865,7 @@ class TestBatchOperationsAndErrorHandling:
 
     def test_query_with_no_matches(self, mock_table_manager):
         """Verify queries with no matches return empty list."""
-        from cloudfolio_shared.table import JobMetadataRow
+        from foliohive_shared.table import JobMetadataRow
         
         # Add one job
         row = JobMetadataRow(
@@ -881,7 +881,7 @@ class TestBatchOperationsAndErrorHandling:
 
     def test_concurrent_updates_last_write_wins(self, mock_table_manager):
         """Verify concurrent updates follow last-write-wins semantics."""
-        from cloudfolio_shared.table import JobMetadataRow
+        from foliohive_shared.table import JobMetadataRow
         
         username = 'testuser'
         job_id = str(uuid.uuid4())
@@ -911,7 +911,7 @@ class TestBatchOperationsAndErrorHandling:
 
     def test_special_characters_in_keys(self, mock_table_manager):
         """Verify special characters in partition/row keys are handled."""
-        from cloudfolio_shared.table import RepoGitHubMetadataRow
+        from foliohive_shared.table import RepoGitHubMetadataRow
         
         # Repo name with special characters
         username = 'test-user'
@@ -931,7 +931,7 @@ class TestBatchOperationsAndErrorHandling:
 
     def test_null_optional_fields(self, mock_table_manager):
         """Verify null/None values in optional fields are handled correctly."""
-        from cloudfolio_shared.table import RepoGitHubMetadataRow
+        from foliohive_shared.table import RepoGitHubMetadataRow
         
         row = RepoGitHubMetadataRow(
             username='testuser',
@@ -952,7 +952,7 @@ class TestBatchOperationsAndErrorHandling:
 
 class TestWorkerBlueprintTableIntegration:
     def test_sync_worker_updates_status_and_job(self, monkeypatch, real_table_manager: TableManager) -> None:
-        from cloudfolio_shared.table import JobMetadataRow, RepoSyncStatusRow
+        from foliohive_shared.table import JobMetadataRow, RepoSyncStatusRow
         from blueprints import sync_worker
 
         monkeypatch.setattr(sync_worker, "table_manager", real_table_manager)
@@ -984,7 +984,7 @@ class TestWorkerBlueprintTableIntegration:
         monkeypatch,
         real_table_manager: TableManager,
     ) -> None:
-        from cloudfolio_shared.table import JobMetadataRow, RepoGitHubMetadataRow, RepoSyncStatusRow
+        from foliohive_shared.table import JobMetadataRow, RepoGitHubMetadataRow, RepoSyncStatusRow
         from blueprints import cache_worker
 
         monkeypatch.setattr(cache_worker, "table_manager", real_table_manager)

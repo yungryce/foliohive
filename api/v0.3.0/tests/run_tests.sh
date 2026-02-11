@@ -42,7 +42,7 @@ Arguments:
 
 Examples:
   ./tests/run_tests.sh                                    # Run entire suite
-  ./tests/run_tests.sh shared/src/cloudfolio_shared/cache # Run cache tests
+  ./tests/run_tests.sh shared/src/foliohive_shared/cache # Run cache tests
   ./tests/run_tests.sh -m unit                            # Fast unit tests only
   ./tests/run_tests.sh -c -v                              # Verbose with coverage
 EOF
@@ -96,7 +96,7 @@ done
 pushd "$APPS_DIR" > /dev/null
 
 # Ensure shared package is available (installed by setup-dev.sh)
-if ! python -c "import cloudfolio_shared" >/dev/null 2>&1; then
+if ! python -c "import foliohive_shared" >/dev/null 2>&1; then
     echo -e "${RED}❌ cloudfolio-shared not found in active environment.${NC}"
     echo -e "${YELLOW}Make sure the consolidated venv is activated:${NC}"
     echo -e "${YELLOW}  source .venv/bin/activate${NC}"
@@ -123,7 +123,7 @@ PYTEST_ARGS=("-c" "tests/pytest.ini")
 [[ -n "$TEST_PATH" ]] && PYTEST_ARGS+=("$TEST_PATH")
 
 if [[ "$COVERAGE_FLAG" == "true" ]]; then
-    PYTEST_ARGS+=("--cov=cloudfolio_shared" "--cov-report=term-missing" "--cov-report=html")
+    PYTEST_ARGS+=("--cov=foliohive_shared" "--cov-report=term-missing" "--cov-report=html")
 fi
 
 echo -e "${GREEN}Running tests with: python -m pytest ${PYTEST_ARGS[*]}${NC}"

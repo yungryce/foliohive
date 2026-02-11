@@ -17,15 +17,15 @@ from typing import Any, Dict, Optional
 
 import azure.functions as func
 
-from cloudfolio_shared import (
+from foliohive_shared import (
     cache_manager,
     FingerprintManager,
     GitHubAPI,
     GitHubRepoManager,
     table_manager,
 )
-from cloudfolio_shared.cache.repo_cache_retrieval import repo_cache_retrieval
-from cloudfolio_shared.table import RepoAPIUsageRow, RepoDiscoveredPathsRow
+from foliohive_shared.cache.repo_cache_retrieval import repo_cache_retrieval
+from foliohive_shared.table import RepoAPIUsageRow, RepoDiscoveredPathsRow
 
 logger = logging.getLogger("cloudfolio.cache_worker")
 logger.setLevel(logging.INFO)

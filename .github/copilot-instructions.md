@@ -3,10 +3,10 @@
 - codebase root: `/home/juk/DEV/cloudfolio/`
 - api root: `/api/v0.3.0/function-app/function_app.py`
 - api gateway: `/api/v0.3.0/api_gateway/api_gateway.py`
-- shared modules: `/api/v0.3.0/shared/src/cloudfolio_shared/`
-- Table Schema: `/api/v0.3.0/shared/src/cloudfolio_shared/table/table_schema.py`
-- AI Assistant: `/api/v0.3.0/shared/src/cloudfolio_shared/ai/ai_assistant.py`
-- Summary Manager: `/api/v0.3.0/shared/src/cloudfolio_shared/ai/summary_manager.py`
+- shared modules: `/api/v0.3.0/shared/src/foliohive_shared/`
+- Table Schema: `/api/v0.3.0/shared/src/foliohive_shared/table/table_schema.py`
+- AI Assistant: `/api/v0.3.0/shared/src/foliohive_shared/ai/ai_assistant.py`
+- Summary Manager: `/api/v0.3.0/shared/src/foliohive_shared/ai/summary_manager.py`
 - ui root: `/ui/src/app/`
 - ui services: `/ui/src/app/services/`
 

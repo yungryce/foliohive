@@ -4,7 +4,7 @@ import pytest
 import hashlib
 import json
 from unittest.mock import Mock, patch, MagicMock
-from cloudfolio_shared.ai.summary_manager import SummaryManager, TOKEN_BUDGETS, REPO_SELECTION_STRATEGIES
+from foliohive_shared.ai.summary_manager import SummaryManager, TOKEN_BUDGETS, REPO_SELECTION_STRATEGIES
 
 
 class TestTokenEstimation:
@@ -443,7 +443,7 @@ class TestCacheManagement:
         """Test cache hit returns cached summary."""
         manager = SummaryManager("test_user")
         
-        with patch('cloudfolio_shared.ai.summary_manager.cache_manager.get') as mock_get:
+        with patch('foliohive_shared.ai.summary_manager.cache_manager.get') as mock_get:
             cached_data = {
                 "summary_html": "<h2>Cached</h2>",
                 "metadata": {
@@ -462,7 +462,7 @@ class TestCacheManagement:
         """Test cache miss returns None."""
         manager = SummaryManager("test_user")
         
-        with patch('cloudfolio_shared.ai.summary_manager.cache_manager.get') as mock_get:
+        with patch('foliohive_shared.ai.summary_manager.cache_manager.get') as mock_get:
             mock_get.return_value = {"status": "missing"}
             
             result = manager.get_cached_summary("cache_key", "abc123")
@@ -473,7 +473,7 @@ class TestCacheManagement:
         """Test fingerprint mismatch invalidates cache."""
         manager = SummaryManager("test_user")
         
-        with patch('cloudfolio_shared.ai.summary_manager.cache_manager.get') as mock_get:
+        with patch('foliohive_shared.ai.summary_manager.cache_manager.get') as mock_get:
             cached_data = {
                 "summary_html": "<h2>Cached</h2>",
                 "metadata": {"fingerprint": "old_fingerprint"}
@@ -488,7 +488,7 @@ class TestCacheManagement:
         """Test caching summary."""
         manager = SummaryManager("test_user", cache_ttl=3600)
         
-        with patch('cloudfolio_shared.ai.summary_manager.cache_manager.save') as mock_save:
+        with patch('foliohive_shared.ai.summary_manager.cache_manager.save') as mock_save:
             metadata = {"fingerprint": "abc123", "tokens": 1000}
             manager.cache_summary("cache_key", "<h2>Summary</h2>", metadata)
             
@@ -578,7 +578,7 @@ class TestCacheKeyBuilding:
 class TestHighLevelAPIMethods:
     """Test high-level summary generation methods."""
 
-    @patch('cloudfolio_shared.ai.summary_manager.AIAssistant')
+    @patch('foliohive_shared.ai.summary_manager.AIAssistant')
     def test_get_or_generate_profile_summary(self, mock_assistant_class):
         """Test profile summary generation."""
         mock_assistant = MagicMock()
@@ -591,7 +591,7 @@ class TestHighLevelAPIMethods:
         statistics = {"repo_count": 1}
 
         with patch.object(SummaryManager, "get_cached_summary", return_value=None), \
-             patch('cloudfolio_shared.ai.summary_manager.cache_manager.save') as mock_save:
+             patch('foliohive_shared.ai.summary_manager.cache_manager.save') as mock_save:
             manager = SummaryManager("test_user")
 
             result = manager.get_or_generate_profile_summary(
@@ -628,7 +628,7 @@ class TestHighLevelAPIMethods:
             assert result["summary_html"] == "<h2>Cached README</h2>"
             assert result["metadata"]["cache_hit"] is True
 
-    @patch('cloudfolio_shared.ai.summary_manager.AIAssistant')
+    @patch('foliohive_shared.ai.summary_manager.AIAssistant')
     def test_get_or_generate_query_response(self, mock_assistant_class):
         """Test query response generation."""
         mock_assistant = MagicMock()
@@ -644,7 +644,7 @@ class TestHighLevelAPIMethods:
         repo_files = {"repo1": {"readme_content": "# README", "config_files": []}}
 
         with patch.object(SummaryManager, "get_cached_summary", return_value=None), \
-             patch('cloudfolio_shared.ai.summary_manager.cache_manager.save') as mock_save:
+             patch('foliohive_shared.ai.summary_manager.cache_manager.save') as mock_save:
             manager = SummaryManager("test_user")
 
             result = manager.get_or_generate_query_response(

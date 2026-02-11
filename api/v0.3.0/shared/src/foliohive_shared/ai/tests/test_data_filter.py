@@ -1,7 +1,7 @@
 """Unit tests for data_filter.py."""
 
 import pytest
-from cloudfolio_shared.ai.data_filter import (
+from foliohive_shared.ai.data_filter import (
     extract_language_terms,
     get_standard_config_file_candidates,
     technical_terms_structured,

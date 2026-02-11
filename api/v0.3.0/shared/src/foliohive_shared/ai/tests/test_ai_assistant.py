@@ -1,7 +1,7 @@
 """Unit tests for AIAssistant."""
 
 from unittest.mock import patch, MagicMock
-from cloudfolio_shared.ai.ai_assistant import AIAssistant
+from foliohive_shared.ai.ai_assistant import AIAssistant
 
 
 class TestAIAssistantInitialization:
@@ -64,7 +64,7 @@ class TestProcessQueryWithBundle:
         assert result["repositories_used"][0]["name"] == "repo1"
 
     @patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'})
-    @patch('cloudfolio_shared.ai.ai_assistant.OpenAI')
+    @patch('foliohive_shared.ai.ai_assistant.OpenAI')
     def test_successful_bundle_processing(self, mock_openai_class):
         """Test successful query processing with bundle."""
         # Mock OpenAI client
@@ -191,7 +191,7 @@ class TestSummarizeReadmeHTML:
         assert "No README content" in result or result == ""
 
     @patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'})
-    @patch('cloudfolio_shared.ai.ai_assistant.OpenAI')
+    @patch('foliohive_shared.ai.ai_assistant.OpenAI')
     def test_calls_openai_api_with_readme_content(self, mock_openai_class):
         """Test README summarization calls OpenAI API."""
         mock_client = MagicMock()
@@ -228,7 +228,7 @@ class TestSummarizeProfileHTML:
         assert "No profile data" in result or result == ""
 
     @patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'})
-    @patch('cloudfolio_shared.ai.ai_assistant.OpenAI')
+    @patch('foliohive_shared.ai.ai_assistant.OpenAI')
     def test_calls_openai_api_with_profile_data(self, mock_openai_class):
         """Test profile summarization calls OpenAI API."""
         mock_client = MagicMock()
@@ -258,7 +258,7 @@ class TestCallAIAPI:
         assert "not configured" in result or "OPENAI_API_KEY" in result
 
     @patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'})
-    @patch('cloudfolio_shared.ai.ai_assistant.OpenAI')
+    @patch('foliohive_shared.ai.ai_assistant.OpenAI')
     def test_successful_api_call(self, mock_openai_class):
         """Test successful OpenAI API call with default model."""
         mock_client = MagicMock()
@@ -278,7 +278,7 @@ class TestCallAIAPI:
         assert len(call_args[1]["messages"]) == 2
 
     @patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'})
-    @patch('cloudfolio_shared.ai.ai_assistant.OpenAI')
+    @patch('foliohive_shared.ai.ai_assistant.OpenAI')
     def test_handles_api_error(self, mock_openai_class):
         """Test error handling in API call."""
         mock_client = MagicMock()
@@ -353,7 +353,7 @@ class TestModelTierSelection:
         assert model_name == "gpt-5-nano"
 
     @patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'})
-    @patch('cloudfolio_shared.ai.ai_assistant.OpenAI')
+    @patch('foliohive_shared.ai.ai_assistant.OpenAI')
     def test_call_ai_api_uses_specified_tier(self, mock_openai_class):
         """Test call_ai_api uses correct model for specified tier."""
         mock_client = MagicMock()
@@ -369,7 +369,7 @@ class TestModelTierSelection:
         assert call_args[1]["model"] == "gpt-4o-mini"
 
     @patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'})
-    @patch('cloudfolio_shared.ai.ai_assistant.OpenAI')
+    @patch('foliohive_shared.ai.ai_assistant.OpenAI')
     def test_summarize_readme_html_accepts_model_tier(self, mock_openai_class):
         """Test summarize_readme_html accepts and uses model_tier parameter."""
         mock_client = MagicMock()
@@ -386,7 +386,7 @@ class TestModelTierSelection:
         assert call_args[1]["model"] == "gpt-4o-mini"
 
     @patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'})
-    @patch('cloudfolio_shared.ai.ai_assistant.OpenAI')
+    @patch('foliohive_shared.ai.ai_assistant.OpenAI')
     def test_summarize_query_html_accepts_model_tier(self, mock_openai_class):
         """Test summarize_query_html accepts and uses model_tier parameter."""
         mock_client = MagicMock()
@@ -413,7 +413,7 @@ class TestOpenAISpecificBehavior:
     @patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'})
     def test_openai_client_initialization_with_correct_base_url(self):
         """Test OpenAI client is initialized with correct base URL."""
-        with patch('cloudfolio_shared.ai.ai_assistant.OpenAI') as mock_openai_class:
+        with patch('foliohive_shared.ai.ai_assistant.OpenAI') as mock_openai_class:
             assistant = AIAssistant(username="test_user")
             
             mock_openai_class.assert_called_once_with(
@@ -422,7 +422,7 @@ class TestOpenAISpecificBehavior:
             )
 
     @patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'})
-    @patch('cloudfolio_shared.ai.ai_assistant.OpenAI')
+    @patch('foliohive_shared.ai.ai_assistant.OpenAI')
     def test_api_call_includes_proper_message_structure(self, mock_openai_class):
         """Test API calls use proper OpenAI message structure."""
         mock_client = MagicMock()
@@ -444,7 +444,7 @@ class TestOpenAISpecificBehavior:
         assert messages[1]["content"] == "user query"
 
     @patch.dict('os.environ', {'OPENAI_API_KEY': 'test_key'})
-    @patch('cloudfolio_shared.ai.ai_assistant.OpenAI')
+    @patch('foliohive_shared.ai.ai_assistant.OpenAI')
     def test_handles_openai_initialization_error(self, mock_openai_class):
         """Test graceful handling of OpenAI initialization errors."""
         mock_openai_class.side_effect = Exception("Authentication failed")
