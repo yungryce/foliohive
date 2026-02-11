@@ -24,12 +24,15 @@ from foliohive_shared import (
     GitHubRepoManager,
     queue_manager,
     table_manager,
+    repo_cache_retrieval,
+    SummaryManager,
+    get_file_budget,
+    ApiUsageTracker,
+    JobMetadataRow,
+    RepoSyncStatusRow,
+    RepoAPIUsageRow,
+    UserProfileRow,
 )
-from foliohive_shared.cache.repo_cache_retrieval import repo_cache_retrieval
-from foliohive_shared.ai.summary_manager import SummaryManager, get_file_budget
-from foliohive_shared.github.api_usage import ApiUsageTracker
-
-from foliohive_shared.table import JobMetadataRow, RepoSyncStatusRow, RepoAPIUsageRow, UserProfileRow
 
 try:  # Azure SDK may be unavailable in local dev; ignore import failures gracefully
     from azure.core.exceptions import ResourceNotFoundError
@@ -518,25 +521,28 @@ def _select_repos_for_context(
         logger.warning("Unknown selection strategy '%s', defaulting to 'recent'", strategy)
         return _select_repos_for_context(repo_rows, "recent", max_repos)
 
-def _build_repo_files_dict(
+def _get_repo_files(
     username: str,
     selected_repos: List[Dict[str, Any]],
     job_id: Optional[str] = None,
     max_additional_readmes: int = 3,
     max_config_files: int = 3,
+    include_readme: bool = True,
 ) -> Dict[str, Dict[str, Any]]:
-    """Build repo files dict from selected repos with configurable limits.
+    """Get cached file contents for selected repos with configurable limits.
     
-    Centralizes the pattern of fetching and limiting cached file contents
-    across multiple endpoints. Always includes primary readme, limits additional
-    readme files and config files per repo.
+    Consolidates fetching and limiting of cached file contents across repos.
+    Retrieves discovered paths from table storage and uses RepoCacheRetrieval
+    for pre-cached file categorization. Discovery and caching happens 
+    asynchronously in cache_worker.py.
     
     Args:
         username: GitHub username
         selected_repos: List of repo metadata dicts (already filtered by strategy)
-        job_id: Optional job ID for retrieving discovered paths
+        job_id: Optional job ID to retrieve discovered paths from table storage
         max_additional_readmes: Max additional readme files per repo (default: 3)
         max_config_files: Max config files per repo (default: 3)
+        include_readme: Whether to include primary readme content (default: True)
     
     Returns:
         Dict mapping repo_name -> {readme_content, readme_files, config_files}
@@ -548,106 +554,62 @@ def _build_repo_files_dict(
         if not repo_name:
             continue
         
-        files = _get_repo_files(
-            username, 
-            repo_name, 
-            max_readme_files=max_additional_readmes,
-            max_config_files=max_config_files, 
-            job_id=job_id
-        )
+        try:
+            # Retrieve discovered paths from table storage if job_id provided
+            discovered_paths = None
+            if job_id:
+                try:
+                    paths_row = table_manager.get_repo_discovered_paths(job_id, repo_name)
+                    if paths_row:
+                        discovered_paths = paths_row.get("discovered_paths")
+                        logger.info(
+                            "Retrieved discovered paths for %s/%s job=%s: %d paths",
+                            username, repo_name, job_id, len(discovered_paths or [])
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to retrieve discovered paths for %s/%s job=%s: %s",
+                        username, repo_name, job_id, exc
+                    )
+            
+            # Retrieve all cached files with limits
+            files = repo_cache_retrieval.get_repo_files(
+                username=username,
+                repo=repo_name,
+                discovered_paths=discovered_paths,
+                readme_candidates=["README.md", "README.rst", "README.txt", "readme.md"],
+                max_readme_files=max_additional_readmes,
+                max_config_files=max_config_files,
+                include_readme=include_readme,
+            )
+            
+            logger.info(
+                "Retrieved cached files for %s/%s: readme=%s, readme_files=%d, config_count=%d",
+                username,
+                repo_name,
+                "yes" if files.get("readme_content") else "no",
+                len(files.get("readme_files", {})),
+                len(files.get("config_files", {})),
+            )
+            
+            repo_files[repo_name] = {
+                "readme_content": files.get("readme_content"),
+                "readme_files": files.get("readme_files", {}),
+                "config_files": files.get("config_files", {})
+            }
         
-        readme_content = files.get("readme_content")
-        
-        # readme_files and config_files are already limited by _get_repo_files
-        readme_files_dict = files.get("readme_files", {})
-        config_files_list = files.get("config_files", [])
-        
-        repo_files[repo_name] = {
-            "readme_content": readme_content,
-            "readme_files": readme_files_dict,
-            "config_files": config_files_list
-        }
+        except Exception as exc:
+            logger.warning(
+                "Failed to retrieve cached files for %s/%s: %s",
+                username, repo_name, exc
+            )
+            repo_files[repo_name] = {
+                "readme_content": None,
+                "readme_files": {},
+                "config_files": {}
+            }
     
     return repo_files
-
-
-def _get_repo_files(
-    username: str,
-    repo_name: str,
-    max_readme_files: int = 3,
-    max_config_files: int = 10,
-    job_id: Optional[str] = None,
-    include_readme: bool = True,
-) -> Dict[str, Any]:
-    """Get cached file contents for a repo (readme + config files).
-    
-    Retrieves discovered paths from table storage, then uses RepoCacheRetrieval
-    to get pre-cached files with proper categorization.
-    Discovery and caching happens asynchronously in cache_worker.py.
-    
-    Args:
-        username: GitHub username
-        repo_name: Repository name
-        max_readme_files: Maximum additional readme files to retrieve
-        max_config_files: Maximum config files to retrieve
-        job_id: Optional job ID to retrieve discovered paths from table storage
-        include_readme: Whether to retrieve primary readme content (default: True)
-        
-    Returns:
-        Dict with repo_name, readme_content, readme_files, config_files
-    """
-    try:
-        
-        # Retrieve discovered paths from table storage if job_id provided
-        discovered_paths = None
-        if job_id:
-            try:
-                paths_row = table_manager.get_repo_discovered_paths(job_id, repo_name)
-                if paths_row:
-                    discovered_paths = paths_row.get("discovered_paths")
-                    logger.info(
-                        "Retrieved discovered paths for %s/%s job=%s: %d paths",
-                        username, repo_name, job_id, len(discovered_paths or [])
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to retrieve discovered paths for %s/%s job=%s: %s",
-                    username, repo_name, job_id, exc
-                )
-        
-        # Retrieve all cached files with limits
-        result = repo_cache_retrieval.get_repo_files(
-            username=username,
-            repo=repo_name,
-            discovered_paths=discovered_paths,
-            readme_candidates=["README.md", "README.rst", "README.txt", "readme.md"],
-            max_readme_files=max_readme_files,
-            max_config_files=max_config_files,
-            include_readme=include_readme,
-        )
-        
-        logger.info(
-            "Retrieved cached files for %s/%s: readme=%s, readme_files=%d, config_count=%d",
-            username,
-            repo_name,
-            "yes" if result.get("readme_content") else "no",
-            len(result.get("readme_files", {})),
-            len(result.get("config_files", [])),
-        )
-        
-        return result
-    
-    except Exception as exc:
-        logger.warning(
-            "Failed to retrieve cached files for %s/%s: %s",
-            username, repo_name, exc
-        )
-        return {
-            "repo_name": repo_name,
-            "readme_content": None,
-            "readme_files": {},
-            "config_files": [],
-        }
     
 
 def _query_repo_rows(
@@ -1441,12 +1403,13 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     )
     
     # Build repo files dict with budget-aware limits
-    repo_files = _build_repo_files_dict(
+    repo_files = _get_repo_files(
         username,
         selected_repos,
         job_id=ctx.job_id,
         max_additional_readmes=file_budget["max_readme_files"],
         max_config_files=file_budget["max_config_files"],
+        include_readme=False
     )
     
     # Log file counts only (not content)
@@ -1490,28 +1453,22 @@ def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
 
     ctx = _prepare_candidate_context(req, username)
 
-    # Get budget-aware limits for readme summary type
-    file_budget = get_file_budget("readme")
-
-    # Get cached file contents (readme + config files) with budget-aware limits
-    files = _get_repo_files(
-        username, 
-        repo, 
-        max_readme_files=file_budget["max_readme_files"],
-        max_config_files=file_budget["max_config_files"],
-        job_id=ctx.job_id
-    )
-    readme_content = files.get("readme_content", "")
-
-    # Convert config_files list to dict mapping {filename: content}
-    config_files_dict = None
-    config_files_list = files.get("config_files", [])
-    if config_files_list:
-        config_files_dict = {cf["filename"]: cf["content"] for cf in config_files_list}
-
     # Get repo metadata for context
     detail = _build_repo_detail_entry(repo, ctx=ctx)
     repo_entry = detail.get("repo_entry", {})
+
+    # Get budget-aware limits for readme summary type
+    file_budget = get_file_budget("readme")
+
+    # Build repo files dict with budget-aware limits and include primary readme
+    repo_files = _get_repo_files(
+        username,
+        [{"repo_name": repo}],
+        job_id=ctx.job_id,
+        max_additional_readmes=file_budget["max_readme_files"],
+        max_config_files=file_budget["max_config_files"],
+        include_readme=True,  # Always include primary readme for repo summary
+    )
 
     # New path: Use SummaryManager with caching
     manager = SummaryManager(username=username)
@@ -1519,9 +1476,8 @@ def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
     result = manager.get_or_generate_readme_summary(
         job_id=ctx.job_id or "default",
         repo_name=repo,
-        readme_content=readme_content,
         repo_metadata=repo_entry,
-        config_files=config_files_dict,
+        repo_files=repo_files.get(repo, {}),
     )
 
     payload = {
@@ -1569,7 +1525,7 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
     )
     
     # Build repo files dict with budget-aware limits
-    repo_files = _build_repo_files_dict(
+    repo_files = _get_repo_files(
         username,
         selected_repos,
         job_id=ctx.job_id,

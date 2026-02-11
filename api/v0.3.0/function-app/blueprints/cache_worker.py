@@ -23,9 +23,9 @@ from foliohive_shared import (
     GitHubAPI,
     GitHubRepoManager,
     table_manager,
+    RepoAPIUsageRow,
+    RepoDiscoveredPathsRow,
 )
-from foliohive_shared.cache.repo_cache_retrieval import repo_cache_retrieval
-from foliohive_shared.table import RepoAPIUsageRow, RepoDiscoveredPathsRow
 
 logger = logging.getLogger("cloudfolio.cache_worker")
 logger.setLevel(logging.INFO)
@@ -141,33 +141,33 @@ def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] 
     
     # Cache readme files using centralized key generation
     for filename, content in readme_files.items():
-        if content == primary_readme:
-            # Save as primary readme
-            repo_cache_retrieval.save_primary_readme(
-                username=username,
-                repo=repo_name,
-                content=content,
-                ttl=None,
-            )
-        else:
-            # Save as path-indexed readme
-            repo_cache_retrieval.save_readme_file(
-                username=username,
-                repo=repo_name,
-                path=filename,
-                content=content,
-                ttl=None,
-            )
+        # Determine if this is the primary readme or a secondary one
+        file_identifier = "PRIMARY" if content == primary_readme else filename
+        key = cache_manager.generate_cache_key(
+            username=username,
+            repo=repo_name,
+            file_type="readme",
+            filename=file_identifier,
+        )
+        cache_manager.save(key, content)
+        logger.debug(
+            "Cached readme file: repo=%s file_identifier=%s key=%s",
+            repo_name, file_identifier, key
+        )
         cached_count += 1
     
     # Cache config files using centralized key generation
     for filename, content in config_files.items():
-        repo_cache_retrieval.save_config_file(
+        key = cache_manager.generate_cache_key(
             username=username,
             repo=repo_name,
-            path=filename,
-            content=content,
-            ttl=None,
+            file_type="config",
+            filename=filename,
+        )
+        cache_manager.save(key, content)
+        logger.debug(
+            "Cached config file: repo=%s filename=%s key=%s",
+            repo_name, filename, key
         )
         cached_count += 1
     

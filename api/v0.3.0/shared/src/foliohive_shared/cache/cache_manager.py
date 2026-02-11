@@ -138,29 +138,36 @@ class CacheManager:
     # Key helpers
     # ------------------------------------------------------------------
     @staticmethod
-    def generate_cache_key(*args, **kwargs):
-        kind = kwargs.get("kind") or kwargs.get("scope") or "bundle"
+    def generate_cache_key(**kwargs):
+        """Generate cache key for file storage.
+        
+        Args:
+            username: GitHub username (required for file keys)
+            repo: Repository name (required for file keys)
+            file_type: File type (e.g., 'readme', 'config') (required for file keys)
+            filename: Filename or path (required for file keys)
+        
+        Returns:
+            Cache key string
+        
+        Raises:
+            ValueError: If required parameters are missing
+        """
+        
         username = kwargs.get("username")
         repo = kwargs.get("repo")
-        fingerprint = kwargs.get("fingerprint")
         file_type = kwargs.get("file_type")
         filename = kwargs.get("filename")
+        
+        if not username:
+            raise ValueError("username is required for file cache keys")
+        if not repo or not file_type or not filename:
+            raise ValueError("repo, file_type, and filename are required for file cache keys")
+        
+        safe_repo = str(repo).replace("/", "_").replace(" ", "_")
+        safe_filename = str(filename).replace("/", "_").replace(" ", "_")
+        return f"file_{username}_{safe_repo}_{file_type}_{safe_filename}"
 
-        if kind != "model" and not username:
-            raise ValueError("Username is required to generate cache key")
-
-        if kind == "file":
-            if not repo or not file_type or not filename:
-                raise ValueError("repo, file_type, and filename are required for kind='file'")
-            safe_repo = str(repo).replace("/", "_").replace(" ", "_")
-            safe_filename = str(filename).replace("/", "_").replace(" ", "_")
-            return f"file_{username}_{safe_repo}_{file_type}_{safe_filename}"
-        if kind == "repo" and repo:
-            safe_repo = str(repo).replace("/", "_").replace(" ", "_")
-            return f"repo_level_bundle_{username}_{safe_repo}"
-        if kind == "model":
-            return f"model_{fingerprint}" if fingerprint else "fine_tuned_model_metadata"
-        return f"repos_bundle_context_{username}"
 
     # ------------------------------------------------------------------
     # Core operations

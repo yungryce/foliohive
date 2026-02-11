@@ -30,65 +30,7 @@ class RepoCacheRetrieval:
     
     def __init__(self):
         self.cache_manager = cache_manager
-    
-    @staticmethod
-    def generate_primary_readme_key(username: str, repo: str) -> str:
-        """Generate cache key for primary README file at repo root.
-        
-        Args:
-            username: GitHub username
-            repo: Repository name
-            
-        Returns:
-            Cache key for primary readme
-        """
-        return cache_manager.generate_cache_key(
-            kind="file",
-            username=username,
-            repo=repo,
-            file_type="readme",
-            filename="PRIMARY",
-        )
-    
-    @staticmethod
-    def generate_readme_key(username: str, repo: str, path: str) -> str:
-        """Generate cache key for readme file in subdirectory.
-        
-        Args:
-            username: GitHub username
-            repo: Repository name
-            path: Full path to readme file (e.g., "docs/README.md")
-            
-        Returns:
-            Cache key for readme at specified path
-        """
-        return cache_manager.generate_cache_key(
-            kind="file",
-            username=username,
-            repo=repo,
-            file_type="readme",
-            filename=path,
-        )
-    
-    @staticmethod
-    def generate_config_key(username: str, repo: str, path: str) -> str:
-        """Generate cache key for config file.
-        
-        Args:
-            username: GitHub username
-            repo: Repository name
-            path: Full path to config file (e.g., "package.json", "src/Dockerfile")
-            
-        Returns:
-            Cache key for config file at specified path
-        """
-        return cache_manager.generate_cache_key(
-            kind="file",
-            username=username,
-            repo=repo,
-            file_type="config",
-            filename=path,
-        )
+
     
     def get_primary_readme(
         self,
@@ -104,7 +46,12 @@ class RepoCacheRetrieval:
         Returns:
             README content if cached, None otherwise
         """
-        key = self.generate_primary_readme_key(username, repo)
+        key = cache_manager.generate_cache_key(
+            username=username,
+            repo=repo,
+            file_type="readme",
+            filename="PRIMARY",
+        )
         result = self.cache_manager.get(key)
         
         if result.get("status") == "valid":
@@ -131,7 +78,12 @@ class RepoCacheRetrieval:
         results = {}
         
         for path in paths:
-            key = self.generate_readme_key(username, repo, path)
+            key = cache_manager.generate_cache_key(
+                username=username,
+                repo=repo,
+                file_type="readme",
+                filename=path,
+            )
             result = self.cache_manager.get(key)
             
             if result.get("status") == "valid":
@@ -146,33 +98,33 @@ class RepoCacheRetrieval:
         username: str,
         repo: str,
         paths: List[str],
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, str]:
         """Retrieve multiple config files from cache.
         
         Args:
             username: GitHub username
             repo: Repository name
             paths: List of full paths to config files
-            max_files: Optional limit on number of files to retrieve
             
         Returns:
-            List of dicts with 'filename', 'path', and 'content' keys
+            Dict mapping filename to content for successfully retrieved files
         """
-        results = []
+        results = {}
         
         for path in paths:
-            key = self.generate_config_key(username, repo, path)
+            key = cache_manager.generate_cache_key(
+                username=username,
+                repo=repo,
+                file_type="config",
+                filename=path,
+            )
             result = self.cache_manager.get(key)
             
             if result.get("status") == "valid":
                 content = result.get("data")
                 if content:
                     display_name = path.split("/")[-1]
-                    results.append({
-                        "filename": display_name,
-                        "path": path,
-                        "content": content,
-                    })
+                    results[display_name] = content
                     logger.debug(
                         "Retrieved config from cache: repo=%s path=%s",
                         repo, path
@@ -211,13 +163,13 @@ class RepoCacheRetrieval:
             - repo_name: Repository name
             - readme_content: Primary readme content (or None) if include_readme=True
             - readme_files: Dict mapping paths to content for additional readmes
-            - config_files: List of config file dicts
+            - config_files: Dict mapping filenames to content for config files
         """
         result = {
             "repo_name": repo,
             "readme_content": None,
             "readme_files": {},
-            "config_files": [],
+            "config_files": {},
         }
         
         # Retrieve primary readme only if requested
@@ -296,79 +248,6 @@ class RepoCacheRetrieval:
             )
         
         return results
-    
-    def save_primary_readme(
-        self,
-        username: str,
-        repo: str,
-        content: str,
-        *,
-        ttl: Optional[int] = None,
-    ) -> bool:
-        """Save primary README to cache.
-        
-        Args:
-            username: GitHub username
-            repo: Repository name
-            content: README content
-            ttl: Time to live in seconds (None for no expiration)
-            
-        Returns:
-            True if saved successfully
-        """
-        key = self.generate_primary_readme_key(username, repo)
-        logger.info("Caching primary readme: repo=%s key=%s", repo, key)
-        return self.cache_manager.save(key, content, ttl=ttl)
-    
-    def save_readme_file(
-        self,
-        username: str,
-        repo: str,
-        path: str,
-        content: str,
-        *,
-        ttl: Optional[int] = None,
-    ) -> bool:
-        """Save readme file to cache.
-        
-        Args:
-            username: GitHub username
-            repo: Repository name
-            path: Full path to readme file
-            content: README content
-            ttl: Time to live in seconds
-            
-        Returns:
-            True if saved successfully
-        """
-        key = self.generate_readme_key(username, repo, path)
-        logger.info("Caching readme file: repo=%s path=%s key=%s", repo, path, key)
-        return self.cache_manager.save(key, content, ttl=ttl)
-    
-    def save_config_file(
-        self,
-        username: str,
-        repo: str,
-        path: str,
-        content: str,
-        *,
-        ttl: Optional[int] = None,
-    ) -> bool:
-        """Save config file to cache.
-        
-        Args:
-            username: GitHub username
-            repo: Repository name
-            path: Full path to config file
-            content: File content
-            ttl: Time to live in seconds
-            
-        Returns:
-            True if saved successfully
-        """
-        key = self.generate_config_key(username, repo, path)
-        logger.info("Caching config file: repo=%s path=%s key=%s", repo, path, key)
-        return self.cache_manager.save(key, content, ttl=ttl)
 
 
 # Global singleton instance for convenience

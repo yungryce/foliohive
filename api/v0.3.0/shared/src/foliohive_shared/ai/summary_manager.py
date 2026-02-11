@@ -96,9 +96,9 @@ TOKEN_BUDGETS = {
 #   - Easy to tune independently per use case
 FILE_BUDGETS = {
     "profile": {
-        "max_repos": 8,              # 8 repos for profile context
-        "max_readme_files": 0,       # Only primary readme per repo
-        "max_config_files": 2,       # 2 key config files per repo
+        "max_repos": 20,              # 8 repos for profile context
+        "max_readme_files": 0,       # Testing with only config files for profile summaries
+        "max_config_files": 20,       # 2 key config files per repo
     },
     "readme": {
         "max_repos": 1,              # Single repo focus
@@ -228,24 +228,26 @@ class SummaryManager:
         *,
         job_id: str,
         repo_name: str,
-        readme_content: str,
         repo_metadata: Dict[str, Any],
-        config_files: Optional[Dict[str, str]] = None
+        repo_files: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Get cached or generate new README summary.
         
         Args:
             job_id: Job ID for cache invalidation
             repo_name: Repository name
-            readme_content: Full README content
             repo_metadata: Repository metadata dict
-            config_files: Optional dict of {filename: content}
+            repo_files: Dict with {readme_content, readme_files, config_files}
             
         Returns:
             Dict with summary_html, metadata (cache_hit, tokens, etc.)
         """
         start_time = time.time()
         summary_type = "readme"
+        
+        # Extract file contents from repo_files dict
+        readme_content = repo_files.get("readme_content")
+        config_files = repo_files.get("config_files", {})
         
         # Build context
         token_budget = TOKEN_BUDGETS.get(summary_type, {})
@@ -264,14 +266,13 @@ class SummaryManager:
             model_tier=model_tier
         )
         
-        # Build metadata
         metadata = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "job_id": job_id,
             "summary_type": summary_type,
             "repo_name": repo_name,
             "tokens_estimated": context.get("tokens_estimated", 0),
-            "files_included": len(config_files or {}) + 1,  # +1 for README
+            "files_included": len(config_files) + 1,  # +1 for README
             "generation_time_ms": int((time.time() - start_time) * 1000),
         }
         
@@ -634,12 +635,10 @@ class SummaryManager:
             # Add chunked configs
             if configs and config_budget_per_repo > 0:
                 config_chunks = []
-                configs_list = configs if isinstance(configs, list) else []
-                budget_per_file = config_budget_per_repo // max(len(configs_list), 1)
+                # configs is now a dict {filename: content}
+                budget_per_file = config_budget_per_repo // max(len(configs), 1)
                 
-                for config_file in configs_list:
-                    filename = config_file.get("filename", "")
-                    content = config_file.get("content", "")
+                for filename, content in configs.items():
                     if filename and content:
                         chunked = self.chunk_config_file(filename, content, budget_per_file)
                         config_chunks.append({
@@ -718,12 +717,11 @@ class SummaryManager:
             # Add chunked configs if available
             if configs and config_budget_per_repo > 0:
                 config_summaries = []
-                configs_list = configs if isinstance(configs, list) else []
+                # configs is now a dict {filename: content}
+                configs_list = list(configs.items())[:2]  # Max 2 config files per repo for query
                 budget_per_file = config_budget_per_repo // max(len(configs_list), 1)
                 
-                for config_file in configs_list[:2]:  # Max 2 config files per repo for query
-                    filename = config_file.get("filename", "")
-                    content = config_file.get("content", "")
+                for filename, content in configs_list:
                     if filename and content:
                         chunked = self.chunk_config_file(filename, content, budget_per_file)
                         config_summaries.append({

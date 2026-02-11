@@ -5,7 +5,7 @@ This package contains the reusable logic those blueprints depend on.
 
 Usage:
     from foliohive_shared import cache_manager, GitHubAPI, queue_manager
-    from foliohive_shared import AIAssistant
+    from foliohive_shared import AIAssistant, SummaryManager, repo_cache_retrieval
 """
 
 __version__ = "1.0.0"
@@ -38,6 +38,9 @@ def __getattr__(name: str):
     if name == "FingerprintManager":
         from foliohive_shared.cache.fingerprint_manager import FingerprintManager
         return FingerprintManager
+    if name == "repo_cache_retrieval":
+        from foliohive_shared.cache.repo_cache_retrieval import repo_cache_retrieval
+        return repo_cache_retrieval
     
     # GitHub utilities
     if name == "GitHubAPI":
@@ -46,6 +49,9 @@ def __getattr__(name: str):
     if name == "GitHubRepoManager":
         from foliohive_shared.github.github_repo_manager import GitHubRepoManager
         return GitHubRepoManager
+    if name == "ApiUsageTracker":
+        from foliohive_shared.github.api_usage import ApiUsageTracker
+        return ApiUsageTracker
     
     # Queue utilities
     if name == "queue_manager":
@@ -54,16 +60,36 @@ def __getattr__(name: str):
     if name == "QueueManager":
         from foliohive_shared.queue.queue_manager import QueueManager
         return QueueManager
+    
+    # Table utilities
     if name == "table_manager":
         from foliohive_shared.table import table_manager
         return table_manager
     if name == "TableManager":
         from foliohive_shared.table import TableManager
         return TableManager
+    if name == "JobMetadataRow":
+        from foliohive_shared.table import JobMetadataRow
+        return JobMetadataRow
+    if name == "RepoSyncStatusRow":
+        from foliohive_shared.table import RepoSyncStatusRow
+        return RepoSyncStatusRow
+    if name == "RepoAPIUsageRow":
+        from foliohive_shared.table import RepoAPIUsageRow
+        return RepoAPIUsageRow
+    if name == "UserProfileRow":
+        from foliohive_shared.table import UserProfileRow
+        return UserProfileRow
     
     # AI utilities
     if name == "AIAssistant":
         from foliohive_shared.ai.ai_assistant import AIAssistant
         return AIAssistant
+    if name == "SummaryManager":
+        from foliohive_shared.ai.summary_manager import SummaryManager
+        return SummaryManager
+    if name == "get_file_budget":
+        from foliohive_shared.ai.summary_manager import get_file_budget
+        return get_file_budget
     
     raise AttributeError(f"module 'foliohive_shared' has no attribute '{name}'")

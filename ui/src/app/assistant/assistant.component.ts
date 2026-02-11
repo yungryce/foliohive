@@ -18,7 +18,7 @@ export class AssistantComponent implements OnInit {
   private ai = inject(AIAssistantService);
   private sanitizer = inject(DomSanitizer);
 
-  username = 'yungryce';
+  username = '';
   query = '';
   loading = false;
   error = '';
