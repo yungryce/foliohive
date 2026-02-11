@@ -80,12 +80,61 @@ TOKEN_BUDGETS = {
     },
 }
 
+# File retrieval budget configuration per summary type
+# Aligns with TOKEN_BUDGETS to optimize cache retrieval and minimize over-fetching
+#
+# Workflow:
+#   1. Endpoint calls get_file_budget(summary_type) to get limits
+#   2. Passes limits to _get_repo_files(max_readme_files, max_config_files)
+#   3. RepoCacheRetrieval.get_repo_files() enforces limits at retrieval
+#   4. SummaryManager receives right-sized content (minimal chunking needed)
+#
+# Benefits:
+#   - Single source of truth for limits per summary type
+#   - No over-fetching from cache storage
+#   - Minimal redundant chunking in AI layer
+#   - Easy to tune independently per use case
+FILE_BUDGETS = {
+    "profile": {
+        "max_repos": 8,              # 8 repos for profile context
+        "max_readme_files": 0,       # Only primary readme per repo
+        "max_config_files": 2,       # 2 key config files per repo
+    },
+    "readme": {
+        "max_repos": 1,              # Single repo focus
+        "max_readme_files": 2,       # Primary + 2 additional readmes
+        "max_config_files": 3,       # 3 config files for detailed analysis
+    },
+    "query": {
+        "max_repos": 8,              # Up to 8 repos for query context
+        "max_readme_files": 0,       # Only primary readme per repo
+        "max_config_files": 2,       # 2 config files per repo
+    },
+    "initial_summary": {
+        "max_repos": 10,             # More repos but lighter content
+        "max_readme_files": 0,       # Only primary readme
+        "max_config_files": 1,       # Minimal config context
+    },
+}
+
 # Repo selection strategies for query context
 REPO_SELECTION_STRATEGIES = {
     "recent": "last_updated",      # Most recently updated repos (default)
     "random": "random_sample",     # Random selection for diversity
     "top_starred": "stars_desc",   # Most starred repos
 }
+
+
+def get_file_budget(summary_type: str) -> Dict[str, int]:
+    """Get file retrieval budget for a summary type.
+    
+    Args:
+        summary_type: Type of summary (profile, readme, query, initial_summary)
+    
+    Returns:
+        Dict with max_repos, max_readme_files, max_config_files
+    """
+    return FILE_BUDGETS.get(summary_type, FILE_BUDGETS["profile"])
 
 
 class SummaryManager:
@@ -315,6 +364,9 @@ class SummaryManager:
     # ---------------------------------------------------------------------------
     # Token Estimation & Chunking Utilities
     # ---------------------------------------------------------------------------
+    # NOTE: Chunking is now minimal as FILE_BUDGETS control retrieval limits.
+    # Content received is already sized appropriately per summary type.
+    # These methods primarily handle edge cases and final token estimation.
 
     def estimate_tokens(self, text: str) -> int:
         """Estimate token count using char-based approximation.

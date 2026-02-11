@@ -26,7 +26,7 @@ from foliohive_shared import (
     table_manager,
 )
 from foliohive_shared.cache.repo_cache_retrieval import repo_cache_retrieval
-from foliohive_shared.ai.summary_manager import SummaryManager
+from foliohive_shared.ai.summary_manager import SummaryManager, get_file_budget
 from foliohive_shared.github.api_usage import ApiUsageTracker
 
 from foliohive_shared.table import JobMetadataRow, RepoSyncStatusRow, RepoAPIUsageRow, UserProfileRow
@@ -518,12 +518,66 @@ def _select_repos_for_context(
         logger.warning("Unknown selection strategy '%s', defaulting to 'recent'", strategy)
         return _select_repos_for_context(repo_rows, "recent", max_repos)
 
+def _build_repo_files_dict(
+    username: str,
+    selected_repos: List[Dict[str, Any]],
+    job_id: Optional[str] = None,
+    max_additional_readmes: int = 3,
+    max_config_files: int = 3,
+) -> Dict[str, Dict[str, Any]]:
+    """Build repo files dict from selected repos with configurable limits.
+    
+    Centralizes the pattern of fetching and limiting cached file contents
+    across multiple endpoints. Always includes primary readme, limits additional
+    readme files and config files per repo.
+    
+    Args:
+        username: GitHub username
+        selected_repos: List of repo metadata dicts (already filtered by strategy)
+        job_id: Optional job ID for retrieving discovered paths
+        max_additional_readmes: Max additional readme files per repo (default: 3)
+        max_config_files: Max config files per repo (default: 3)
+    
+    Returns:
+        Dict mapping repo_name -> {readme_content, readme_files, config_files}
+    """
+    repo_files = {}
+    
+    for repo in selected_repos:
+        repo_name = repo.get("repo_name")
+        if not repo_name:
+            continue
+        
+        files = _get_repo_files(
+            username, 
+            repo_name, 
+            max_readme_files=max_additional_readmes,
+            max_config_files=max_config_files, 
+            job_id=job_id
+        )
+        
+        readme_content = files.get("readme_content")
+        
+        # readme_files and config_files are already limited by _get_repo_files
+        readme_files_dict = files.get("readme_files", {})
+        config_files_list = files.get("config_files", [])
+        
+        repo_files[repo_name] = {
+            "readme_content": readme_content,
+            "readme_files": readme_files_dict,
+            "config_files": config_files_list
+        }
+    
+    return repo_files
+
+
 def _get_repo_files(
     username: str,
     repo_name: str,
-    max_files: int = 10,
-    path_retrieve: bool = False,
+    max_readme_files: int = 3,
+    max_config_files: int = 10,
     job_id: Optional[str] = None,
+    include_readme: bool = True,
 ) -> Dict[str, Any]:
     """Get cached file contents for a repo (readme + config files).
     
@@ -534,26 +588,15 @@ def _get_repo_files(
     Args:
         username: GitHub username
         repo_name: Repository name
-        max_files: Maximum config files to retrieve (readme files not limited)
-        path_retrieve: If True, only retrieve primary readme; if False, get all cached files
+        max_readme_files: Maximum additional readme files to retrieve
+        max_config_files: Maximum config files to retrieve
         job_id: Optional job ID to retrieve discovered paths from table storage
+        include_readme: Whether to retrieve primary readme content (default: True)
         
     Returns:
         Dict with repo_name, readme_content, readme_files, config_files
     """
     try:
-        if not path_retrieve:
-            # Primary readme only (no discovery needed)
-            logger.info(
-                "Path-based retrieval for %s/%s (primary readme only)",
-                username, repo_name
-            )
-            return repo_cache_retrieval.get_repo_files(
-                username=username,
-                repo=repo_name,
-                discovered_paths=None,
-                max_config_files=0,
-            )
         
         # Retrieve discovered paths from table storage if job_id provided
         discovered_paths = None
@@ -578,14 +621,17 @@ def _get_repo_files(
             repo=repo_name,
             discovered_paths=discovered_paths,
             readme_candidates=["README.md", "README.rst", "README.txt", "readme.md"],
-            max_config_files=max_files,
+            max_readme_files=max_readme_files,
+            max_config_files=max_config_files,
+            include_readme=include_readme,
         )
         
         logger.info(
-            "Retrieved cached files for %s/%s: readme=%s, config_count=%d",
+            "Retrieved cached files for %s/%s: readme=%s, readme_files=%d, config_count=%d",
             username,
             repo_name,
             "yes" if result.get("readme_content") else "no",
+            len(result.get("readme_files", {})),
             len(result.get("config_files", [])),
         )
         
@@ -1344,7 +1390,7 @@ def get_candidate_repos_metadata(req: func.HttpRequest) -> func.HttpResponse:
 
 
 @bp.route(route="candidate/{username}/profile", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_candidate_profile(req: func.HttpRequest) -> func.HttpResponse:
+def get_profile(req: func.HttpRequest) -> func.HttpResponse:
     """Retrieve aggregated candidate profile data.
 
     Combines GitHub user profile (cached in tables), latest job metadata,
@@ -1384,38 +1430,24 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     languages_by_repo = table_manager.query_repo_languages(ctx.job_id) if ctx.job_id else {}
     statistics = _build_profile_statistics(repo_rows, languages_by_repo)
 
+    # Get budget-aware limits for profile summary type
+    file_budget = get_file_budget("profile")
+    
     # Select repos early to minimize file fetching
-    selected_repos = _select_repos_for_context(repo_rows, strategy="recent", max_repos=15)
+    selected_repos = _select_repos_for_context(
+        repo_rows, 
+        strategy="recent", 
+        max_repos=file_budget["max_repos"]
+    )
     
-    # Build repo files dict only for selected repos with category limits
-    # Primary readme always included, additional files limited by category
-    repo_files = {}
-    max_additional_readmes = 3  # Limit additional readme files per repo
-    max_config_files = 3        # Limit config files per repo
-    
-    for repo in selected_repos:
-        repo_name = repo.get("repo_name")
-        if repo_name:
-            files = _get_repo_files(username, repo_name, max_files=10, job_id=ctx.job_id)
-            
-            # Always include primary readme
-            readme_content = files.get("readme_content")
-            
-            # Limit additional readme files
-            readme_files_dict = files.get("readme_files", {})
-            if len(readme_files_dict) > max_additional_readmes:
-                readme_files_dict = dict(list(readme_files_dict.items())[:max_additional_readmes])
-            
-            # Limit config files
-            config_files_list = files.get("config_files", [])
-            if len(config_files_list) > max_config_files:
-                config_files_list = config_files_list[:max_config_files]
-            
-            repo_files[repo_name] = {
-                "readme_content": readme_content,
-                "readme_files": readme_files_dict,
-                "config_files": config_files_list
-            }
+    # Build repo files dict with budget-aware limits
+    repo_files = _build_repo_files_dict(
+        username,
+        selected_repos,
+        job_id=ctx.job_id,
+        max_additional_readmes=file_budget["max_readme_files"],
+        max_config_files=file_budget["max_config_files"],
+    )
     
     # Log file counts only (not content)
     repo_files_summary = {}
@@ -1458,8 +1490,17 @@ def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
 
     ctx = _prepare_candidate_context(req, username)
 
-    # Get cached file contents (readme + config files)
-    files = _get_repo_files(username, repo, max_files=5, job_id=ctx.job_id)
+    # Get budget-aware limits for readme summary type
+    file_budget = get_file_budget("readme")
+
+    # Get cached file contents (readme + config files) with budget-aware limits
+    files = _get_repo_files(
+        username, 
+        repo, 
+        max_readme_files=file_budget["max_readme_files"],
+        max_config_files=file_budget["max_config_files"],
+        job_id=ctx.job_id
+    )
     readme_content = files.get("readme_content", "")
 
     # Convert config_files list to dict mapping {filename: content}
@@ -1517,38 +1558,24 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
     if not ctx or not repo_rows:
         return _create_error_response("No repository data available. Trigger refresh first.", 400)
     
+    # Get budget-aware limits for query summary type
+    file_budget = get_file_budget("query")
+    
     # Select repos early to minimize file fetching
-    selected_repos = _select_repos_for_context(repo_rows, strategy="recent", max_repos=5)
+    selected_repos = _select_repos_for_context(
+        repo_rows, 
+        strategy="recent", 
+        max_repos=file_budget["max_repos"]
+    )
     
-    # Build repo_files dict only for selected repos with category limits
-    # Primary readme always included, additional files limited by category
-    repo_files = {}
-    max_additional_readmes = 2  # Limit additional readme files per repo for query context
-    max_config_files = 2        # Limit config files per repo for query context
-    
-    for repo_row in selected_repos:
-        repo_name = repo_row.get("repo_name")
-        if repo_name:
-            files = _get_repo_files(username, repo_name, max_files=10, job_id=ctx.job_id)
-            
-            # Always include primary readme
-            readme_content = files.get("readme_content")
-            
-            # Limit additional readme files for query context
-            readme_files_dict = files.get("readme_files", {})
-            if len(readme_files_dict) > max_additional_readmes:
-                readme_files_dict = dict(list(readme_files_dict.items())[:max_additional_readmes])
-            
-            # Limit config files for query context
-            config_files_list = files.get("config_files", [])
-            if len(config_files_list) > max_config_files:
-                config_files_list = config_files_list[:max_config_files]
-            
-            repo_files[repo_name] = {
-                "readme_content": readme_content,
-                "readme_files": readme_files_dict,
-                "config_files": config_files_list
-            }
+    # Build repo files dict with budget-aware limits
+    repo_files = _build_repo_files_dict(
+        username,
+        selected_repos,
+        job_id=ctx.job_id,
+        max_additional_readmes=file_budget["max_readme_files"],
+        max_config_files=file_budget["max_config_files"],
+    )
     
     # Use SummaryManager to build bundle context and generate response
     # Pass selected_repos instead of repo_rows to avoid redundant selection in SummaryManager

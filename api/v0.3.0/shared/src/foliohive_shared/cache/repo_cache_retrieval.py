@@ -146,8 +146,6 @@ class RepoCacheRetrieval:
         username: str,
         repo: str,
         paths: List[str],
-        *,
-        max_files: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Retrieve multiple config files from cache.
         
@@ -161,9 +159,8 @@ class RepoCacheRetrieval:
             List of dicts with 'filename', 'path', and 'content' keys
         """
         results = []
-        paths_to_fetch = paths[:max_files] if max_files else paths
         
-        for path in paths_to_fetch:
+        for path in paths:
             key = self.generate_config_key(username, repo, path)
             result = self.cache_manager.get(key)
             
@@ -190,7 +187,9 @@ class RepoCacheRetrieval:
         *,
         discovered_paths: Optional[List[str]] = None,
         readme_candidates: Optional[List[str]] = None,
+        max_readme_files: int = 3,
         max_config_files: int = 5,
+        include_readme: bool = True,
     ) -> Dict[str, Any]:
         """Retrieve all cached files for a repository.
         
@@ -203,12 +202,14 @@ class RepoCacheRetrieval:
             discovered_paths: List of file paths discovered via path index.
                              If None, only primary readme is retrieved.
             readme_candidates: List of readme filenames to identify (e.g., ["README.md"])
+            max_readme_files: Maximum number of additional readme files to retrieve
             max_config_files: Maximum number of config files to retrieve
+            include_readme: Whether to retrieve primary readme content (default: True)
             
         Returns:
             Dict with keys:
             - repo_name: Repository name
-            - readme_content: Primary readme content (or None)
+            - readme_content: Primary readme content (or None) if include_readme=True
             - readme_files: Dict mapping paths to content for additional readmes
             - config_files: List of config file dicts
         """
@@ -219,8 +220,9 @@ class RepoCacheRetrieval:
             "config_files": [],
         }
         
-        # Retrieve primary readme
-        result["readme_content"] = self.get_primary_readme(username, repo)
+        # Retrieve primary readme only if requested
+        if include_readme:
+            result["readme_content"] = self.get_primary_readme(username, repo)
         
         # If no discovered paths provided, return with just primary readme
         if not discovered_paths:
@@ -241,16 +243,18 @@ class RepoCacheRetrieval:
             else:
                 config_paths.append(path)
         
-        # Retrieve readme files (excluding primary)
+        # Retrieve readme files (excluding primary) with limit
         if readme_paths:
+            limited_readme_paths = readme_paths[:max_readme_files]
             result["readme_files"] = self.get_readme_files(
-                username, repo, readme_paths
+                username, repo, limited_readme_paths
             )
         
-        # Retrieve config files
+        # Retrieve config files with limit
         if config_paths:
+            limited_config_paths = config_paths[:max_config_files]
             result["config_files"] = self.get_config_files(
-                username, repo, config_paths, max_files=max_config_files
+                username, repo, limited_config_paths
             )
         
         return result
@@ -261,7 +265,9 @@ class RepoCacheRetrieval:
         repo_discovery_map: Dict[str, List[str]],
         *,
         readme_candidates: Optional[List[str]] = None,
+        max_readme_files: int = 3,
         max_config_files: int = 5,
+        include_readme: bool = True,
     ) -> Dict[str, Dict[str, Any]]:
         """Retrieve cached files for multiple repositories.
         
@@ -269,7 +275,9 @@ class RepoCacheRetrieval:
             username: GitHub username
             repo_discovery_map: Dict mapping repo name to list of discovered paths
             readme_candidates: List of readme filenames to identify
+            max_readme_files: Maximum additional readme files per repo
             max_config_files: Maximum config files per repo
+            include_readme: Whether to retrieve primary readme content (default: True)
             
         Returns:
             Dict mapping repo name to file retrieval results
@@ -282,7 +290,9 @@ class RepoCacheRetrieval:
                 repo=repo,
                 discovered_paths=paths,
                 readme_candidates=readme_candidates,
+                max_readme_files=max_readme_files,
                 max_config_files=max_config_files,
+                include_readme=include_readme,
             )
         
         return results

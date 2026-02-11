@@ -96,16 +96,19 @@ def _calculate_bundle_fingerprint(username: str, job_id: str) -> str:
 
 
 def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] = None) -> Dict[str, Any]:
-    """Fetch and cache file contents (readme + config) - stored in cache_manager.
+    """Fetch and cache file contents with generous persistence limits.
+
+    Persistence Strategy:
+    - Max 20 config files × 4KB each = 80KB per repo
+    - Handles all summary types without re-caching
+    - Retrieval layer (FILE_BUDGETS) determines what's used
+
+    Example:
+    - profile summary: Uses 2 configs × 4KB = 8KB
+    - readme summary: Uses 3 configs × 4KB = 12KB
+    - query summary: Uses 2 configs × 4KB = 8KB
     
-    Fetches:
-    - README file contents
-    - Config file contents (package.json, Dockerfile, etc.)
-    
-    Individual files cached separately (kind="file") for selective retrieval.
-    Discovered file paths are persisted to table storage for later retrieval.
-    This operation is expensive and runs asynchronously from metadata sync.
-    
+    This design avoids re-caching when use cases change.
     Returns:
         Dict with 'cached_count' and 'api_usage' keys
     """
