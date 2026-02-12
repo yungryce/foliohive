@@ -5,7 +5,7 @@ This package contains the reusable logic those blueprints depend on.
 
 Usage:
     from foliohive_shared import cache_manager, GitHubAPI, queue_manager
-    from foliohive_shared import AIAssistant, SummaryManager, repo_cache_retrieval
+    from foliohive_shared import AIAssistant, SummaryManager
 """
 
 __version__ = "1.0.0"
@@ -38,9 +38,6 @@ def __getattr__(name: str):
     if name == "FingerprintManager":
         from foliohive_shared.cache.fingerprint_manager import FingerprintManager
         return FingerprintManager
-    if name == "repo_cache_retrieval":
-        from foliohive_shared.cache.repo_cache_retrieval import repo_cache_retrieval
-        return repo_cache_retrieval
     
     # GitHub utilities
     if name == "GitHubAPI":
@@ -80,6 +77,9 @@ def __getattr__(name: str):
     if name == "UserProfileRow":
         from foliohive_shared.table import UserProfileRow
         return UserProfileRow
+    if name == "RepoDiscoveredPathsRow":
+        from foliohive_shared.table import RepoDiscoveredPathsRow
+        return RepoDiscoveredPathsRow
     
     # AI utilities
     if name == "AIAssistant":

@@ -13,6 +13,7 @@ FolioHive is a cloud-native SaaS platform that automatically analyzes candidate 
 - Node.js 18+ and npm
 - Azure Functions Core Tools v4
 - Azurite (Azure Storage Emulator)
+- GitHub Personal Access Token (rate limit: 5000 requests/hour)
 - OpenAI API key
 
 ### Local Development
@@ -74,11 +75,11 @@ Access the application:
 - **ai/**: OpenAI integration, context orchestration, token management
 - **cache/**: Fingerprint-based caching, blob storage management
 - **github/**: REST + GraphQL unified interface
-- **table/**: 7-table normalized schema with TableManager
+- **table/**: 8-table normalized schema with TableManager
 - **queue/**: Message serialization and queue clients
 
 **Data Storage**
-- **Table Storage**: 7 normalized tables (JobMetadata, RepoGitHubMetadata, RepoLanguages, etc.)
+- **Table Storage**: 8 normalized tables (JobMetadata, RepoGitHubMetadata, RepoLanguages, etc.)
 - **Blob Storage**: Cached README and config files (content-addressable by fingerprint)
 - **Queue Storage**: Async job processing (sync-jobs, cache-jobs)
 

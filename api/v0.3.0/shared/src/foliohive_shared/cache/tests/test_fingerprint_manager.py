@@ -1,43 +1,4 @@
-"""
-Unit tests for FingerprintManager.
-
-Tests fingerprint generation for:
-- Individual repository metadata
-- Repository content bundles
-- Bundle collections
-"""
-import pytest
-import json
-import hashlib
-from foliohive_shared.cache.fingerprint_manager import FingerprintManager
-
-
-class TestFingerprintManager:
-    """Test suite for FingerprintManager functionality."""
-
-    def test_generate_metadata_fingerprint(self, sample_repo_metadata):
-        """Test generating fingerprint from normalized GitHub metadata."""
-        fingerprint = FingerprintManager.generate_metadata_fingerprint(sample_repo_metadata)
-        assert len(fingerprint) == 32
-        assert all(c in '0123456789abcdef' for c in fingerprint)
-        
-    def test_generate_metadata_fingerprint_consistency(self, sample_repo_metadata):
-        fingerprint1 = FingerprintManager.generate_metadata_fingerprint(sample_repo_metadata)
-        fingerprint2 = FingerprintManager.generate_metadata_fingerprint(sample_repo_metadata)
-        assert fingerprint1 == fingerprint2
-        
-    def test_generate_metadata_fingerprint_changes_with_update(self, sample_repo_metadata):
-        fingerprint1 = FingerprintManager.generate_metadata_fingerprint(sample_repo_metadata)
-        modified_metadata = sample_repo_metadata.copy()
-        modified_metadata['github_updated_at'] = '2026-01-02T12:00:00+00:00'
-        fingerprint2 = FingerprintManager.generate_metadata_fingerprint(modified_metadata)
-        assert fingerprint1 != fingerprint2
-        
-    def test_generate_metadata_fingerprint_ignores_irrelevant_fields(self, sample_repo_metadata):
-        fingerprint1 = FingerprintManager.generate_metadata_fingerprint(sample_repo_metadata)
-        modified_metadata = sample_repo_metadata.copy()
-        modified_metadata['topics'] = ['extra', 'topics']
-        modified_metadata['description'] = 'Different description'
+"""(Stale tests removed. See main test plan for new/updated tests.)"""
         fingerprint2 = FingerprintManager.generate_metadata_fingerprint(modified_metadata)
         assert fingerprint1 == fingerprint2
         

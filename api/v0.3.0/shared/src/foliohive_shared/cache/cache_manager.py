@@ -16,7 +16,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
 from azure.identity import DefaultAzureCredential
@@ -27,9 +27,6 @@ from .hot_cache import create_default_hot_cache
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CONTAINER = "github-cache"
-_BUNDLE_CACHE_PREFIX = "repos_bundle_context_"
-_REPO_BUNDLE_PREFIX = "repo_level_bundle_"
-
 _HOT_CACHE = create_default_hot_cache()
 
 
@@ -50,10 +47,6 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
     except ValueError:
         logger.debug("cache-manager: unable to parse iso timestamp %s", value)
         return None
-
-
-def _is_bundle_blob(name: str) -> bool:
-    return name.startswith(_BUNDLE_CACHE_PREFIX) or name.startswith(_REPO_BUNDLE_PREFIX)
 
 
 class CacheManager:
@@ -292,13 +285,13 @@ class CacheManager:
             logger.warning("cache-manager: error deleting key %s: %s", cache_key, exc)
             return False
 
-    def cleanup_stale_non_bundle_blobs(
+    def clean_stale_blobs(
         self,
         prefixes: Iterable[str],
         *,
         max_age_hours: Optional[int] = None,
     ) -> int:
-        """Delete expired or stale non-bundle blobs under the provided prefixes."""
+        """Delete expired or stale blobs under the provided prefixes."""
         self._ensure_initialized()
         if not self.use_cache or not self._blob_service_client:
             return 0
@@ -316,9 +309,10 @@ class CacheManager:
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("cache-manager: unable to list blobs for prefix %s: %s", prefix, exc)
                 continue
+
             for blob in blobs:
                 name = getattr(blob, "name", "") or ""
-                if not name or _is_bundle_blob(name):
+                if not name:
                     continue
 
                 metadata = getattr(blob, "metadata", None) or {}
@@ -341,6 +335,188 @@ class CacheManager:
                         except Exception as exc:  # pragma: no cover
                             logger.warning("cache-manager: failed to delete stale blob %s: %s", name, exc)
         return deleted
+
+    # ------------------------------------------------------------------
+    # Repository file retrieval
+    # ------------------------------------------------------------------
+    def get_primary_readme(
+        self,
+        username: str,
+        repo: str,
+    ) -> Optional[str]:
+        """Retrieve primary README content from cache.
+        
+        Args:
+            username: GitHub username
+            repo: Repository name
+            
+        Returns:
+            README content if cached, None otherwise
+        """
+        key = self.generate_cache_key(
+            username=username,
+            repo=repo,
+            file_type="readme",
+            filename="PRIMARY",
+        )
+        result = self.get(key)
+        
+        if result.get("status") == "valid":
+            return result.get("data")
+        
+        return None
+    
+    def get_readme_files(
+        self,
+        username: str,
+        repo: str,
+        paths: list[str],
+    ) -> dict[str, str]:
+        """Retrieve multiple readme files from cache.
+        
+        Args:
+            username: GitHub username
+            repo: Repository name
+            paths: List of full paths to readme files
+            
+        Returns:
+            Dict mapping path to content for successfully retrieved files
+        """
+        results = {}
+        
+        for path in paths:
+            key = self.generate_cache_key(
+                username=username,
+                repo=repo,
+                file_type="readme",
+                filename=path,
+            )
+            result = self.get(key)
+            
+            if result.get("status") == "valid":
+                content = result.get("data")
+                if content:
+                    results[path] = content
+        
+        return results
+    
+    def get_config_files(
+        self,
+        username: str,
+        repo: str,
+        paths: list[str],
+    ) -> dict[str, str]:
+        """Retrieve multiple config files from cache.
+        
+        Args:
+            username: GitHub username
+            repo: Repository name
+            paths: List of full paths to config files
+            
+        Returns:
+            Dict mapping filename to content for successfully retrieved files
+        """
+        results = {}
+        
+        for path in paths:
+            key = self.generate_cache_key(
+                username=username,
+                repo=repo,
+                file_type="config",
+                filename=path,
+            )
+            result = self.get(key)
+            
+            if result.get("status") == "valid":
+                content = result.get("data")
+                if content:
+                    display_name = path.split("/")[-1]
+                    results[display_name] = content
+                    logger.debug(
+                        "Retrieved config from cache: repo=%s path=%s",
+                        repo, path
+                    )
+        
+        return results
+    
+    def get_repo_files(
+        self,
+        username: str,
+        repo: str,
+        *,
+        discovered_paths: Optional[list[str]] = None,
+        readme_candidates: Optional[list[str]] = None,
+        max_readme_files: int = 3,
+        max_config_files: int = 5,
+        include_readme: bool = True,
+    ) -> Dict[str, Any]:
+        """Retrieve all cached files for a repository.
+        
+        This is the main retrieval method that combines primary readme,
+        additional readme files, and config files.
+        
+        Args:
+            username: GitHub username
+            repo: Repository name
+            discovered_paths: List of file paths discovered via path index.
+                             If None, only primary readme is retrieved.
+            readme_candidates: List of readme filenames to identify (e.g., ["README.md"])
+            max_readme_files: Maximum number of additional readme files to retrieve
+            max_config_files: Maximum number of config files to retrieve
+            include_readme: Whether to retrieve primary readme content (default: True)
+            
+        Returns:
+            Dict with keys:
+            - repo_name: Repository name
+            - readme_content: Primary readme content (or None) if include_readme=True
+            - readme_files: Dict mapping paths to content for additional readmes
+            - config_files: Dict mapping filenames to content for config files
+        """
+        result = {
+            "repo_name": repo,
+            "readme_content": None,
+            "readme_files": {},
+            "config_files": {},
+        }
+        
+        # Retrieve primary readme only if requested
+        if include_readme:
+            result["readme_content"] = self.get_primary_readme(username, repo)
+        
+        # If no discovered paths provided, return with just primary readme
+        if not discovered_paths:
+            return result
+        
+        # Separate paths into readme vs config
+        readme_set = set()
+        if readme_candidates:
+            readme_set = {name.lower() for name in readme_candidates}
+        
+        readme_paths = []
+        config_paths = []
+        
+        for path in discovered_paths:
+            filename = os.path.basename(path).lower()
+            if filename in readme_set:
+                readme_paths.append(path)
+            else:
+                config_paths.append(path)
+        
+        # Retrieve rest of readme files with limit
+        if readme_paths:
+            limited_readme_paths = readme_paths[:max_readme_files]
+            result["readme_files"] = self.get_readme_files(
+                username, repo, limited_readme_paths
+            )
+        
+        # Retrieve config files with limit
+        if config_paths:
+            limited_config_paths = config_paths[:max_config_files]
+            result["config_files"] = self.get_config_files(
+                username, repo, limited_config_paths
+            )
+        
+        return result
 
     # ------------------------------------------------------------------
     # Decorator helper used by GitHub client

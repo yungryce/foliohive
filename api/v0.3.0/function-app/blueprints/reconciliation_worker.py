@@ -217,7 +217,7 @@ def cleanup_non_bundle_cache(timer: func.TimerRequest) -> None:
     if os.getenv("CF_CACHE_CLEANUP_ENABLED", "true").lower() == "true":
         max_age_hours = _env_int("CF_CACHE_CLEANUP_MAX_AGE_HOURS", 24)
         prefixes = get_non_bundle_cache_prefixes()
-        deleted = cache_manager.cleanup_stale_non_bundle_blobs(prefixes, max_age_hours=max_age_hours)
+        deleted = cache_manager.clean_stale_blobs(prefixes, max_age_hours=max_age_hours)
         if deleted:
             logger.info("[CACHE_CLEANUP] deleted_blobs=%d", deleted)
 
