@@ -14,7 +14,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import azure.functions as func
 
@@ -61,7 +61,6 @@ bp = func.Blueprint()
 
 USERNAME_REQUIRED_MESSAGE = "Username required"
 PROFILE_TTL_SECONDS = int(os.getenv("CF_PROFILE_TTL_SECONDS", "21600"))
-PROFILE_TOP_LANGUAGES_LIMIT = 10
 
 def _get_trace_context(req: func.HttpRequest) -> Dict[str, str]:
     """Build a small correlation context for logs.
@@ -201,45 +200,6 @@ def _is_profile_fresh(profile: Dict[str, Any], ttl_seconds: int) -> bool:
     if cached_dt == datetime.min.replace(tzinfo=timezone.utc):
         return False
     return (datetime.now(timezone.utc) - cached_dt).total_seconds() < ttl_seconds
-
-
-def _build_profile_statistics(
-    repo_rows: List[Dict[str, Any]],
-    languages_by_repo: Dict[str, List[Dict[str, Any]]],
-) -> Dict[str, Any]:
-    repo_count = len(repo_rows)
-    stars_total = sum(int(row.get("stars_count") or 0) for row in repo_rows)
-    forks_total = sum(int(row.get("forks_count") or 0) for row in repo_rows)
-
-    language_totals: Dict[str, int] = defaultdict(int)
-    for repo_languages in languages_by_repo.values():
-        for lang in repo_languages or []:
-            name = lang.get("language")
-            if not name:
-                continue
-            language_totals[name] += int(lang.get("bytes_count") or 0)
-
-    top_languages = [
-        {"language": name, "bytes": bytes_count}
-        for name, bytes_count in sorted(language_totals.items(), key=lambda item: item[1], reverse=True)
-    ][:PROFILE_TOP_LANGUAGES_LIMIT]
-
-    topics: List[str] = []
-    for row in repo_rows:
-        row_topics = row.get("topics") or []
-        if isinstance(row_topics, list):
-            topics.extend([topic for topic in row_topics if isinstance(topic, str) and topic])
-    unique_topics = sorted(set(topics))
-
-    return {
-        "repo_names": [row.get("repo_name") for row in repo_rows if row.get("repo_name")],
-        "repo_count": repo_count,
-        "stars_total": stars_total,
-        "forks_total": forks_total,
-        "top_languages": top_languages,
-        "topics": unique_topics,
-    }
-
 
 def _refresh_user_profile(username: str, cached_profile: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     repo_manager = _get_repo_manager(username)
@@ -630,38 +590,63 @@ def _query_repo_rows(
 
 
 def _build_repo_detail_entry(
-    repo_name: str,
+    repo_names: Union[str, List[str]],
     *,
     ctx: CandidateContext,
 ) -> Dict[str, Any]:
-    """Helper: build a single repo bundle entry using normalized tables.
+    """Build one or many repo detail entries using normalized tables.
     
+    Consolidates metadata and language lookups to avoid redundant queries when
+    multiple repos are requested. Callers needing a single repo can pass a
+    string; batch callers can pass a list of repo names.
+
     Args:
-        repo_name: Repository name
+        repo_names: Repository name or list of names
         ctx: Candidate context with resolved job_id and username
     
     Returns:
-        Dict with job_id and repo_entry
+        Dict with job_id, repo_entry (first), and entries (all repos processed)
     """
-    repo_rows = _query_repo_rows(ctx.username, job_id=ctx.job_id, repo_names=[repo_name])
-    github_metadata = repo_rows[0] if repo_rows else None
+    # Normalize input to a list while preserving order
+    target_names: List[str] = []
+    if isinstance(repo_names, str) and repo_names:
+        target_names = [repo_names]
+    elif isinstance(repo_names, list):
+        target_names = [name for name in repo_names if name]
 
-    languages = None
-    if ctx.job_id:
-        all_languages = table_manager.query_repo_languages(ctx.job_id)
-        languages = all_languages.get(repo_name)
+    repo_rows: List[Dict[str, Any]] = []
+    if target_names:
+        repo_rows = _query_repo_rows(ctx.username, job_id=ctx.job_id, repo_names=target_names)
+    elif ctx.job_id:
+        repo_rows = _query_repo_rows(ctx.username, job_id=ctx.job_id)
+        target_names = [row.get("repo_name") for row in repo_rows if row.get("repo_name")]
 
-    entry = _repo_row_to_bundle_entry(languages=languages, github_metadata=github_metadata)
-    if not entry.get("name"):
-        entry["name"] = repo_name
+    if not target_names:
+        return {"job_id": ctx.job_id, "repo_entry": {}, "entries": []}
+
+    # Single query for metadata and languages (if job-scoped)
+    languages_by_repo = table_manager.query_repo_languages(ctx.job_id) if ctx.job_id else {}
+
+    entries: List[Dict[str, Any]] = []
+    for name in target_names:
+        github_metadata = next((row for row in repo_rows if row.get("repo_name") == name), None)
+        languages = languages_by_repo.get(name)
+
+        entry = _build_repo_statistics(languages=languages, github_metadata=github_metadata)
+        if not entry.get("name"):
+            entry["name"] = name
+        entries.append(entry)
+
+    primary_entry = entries[0] if entries else {}
 
     return {
         "job_id": ctx.job_id,
-        "repo_entry": entry,
+        "repo_entry": primary_entry,
+        "entries": entries,
     }
 
 
-def _repo_row_to_bundle_entry(
+def _build_repo_statistics(
     languages: Optional[List[Dict[str, Any]]] = None,
     github_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -671,7 +656,6 @@ def _repo_row_to_bundle_entry(
     entry: Dict[str, Any] = {}
 
     if languages:
-        # Transform list to dict format expected by frontend: {language: bytes_count}
         entry["languages"] = {lang["language"]: lang["bytes_count"] for lang in languages if lang.get("language")}
         total_bytes = sum(lang.get("bytes_count", 0) for lang in languages if isinstance(lang.get("bytes_count"), (int, float)))
         sorted_langs = sorted(
@@ -724,61 +708,175 @@ def _repo_row_to_bundle_entry(
     return entry
 
 
-def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Build bundle from table data - uses single-pass status counting.
+def _aggregate_portfolio_statistics(
+    repo_rows: List[Dict[str, Any]],
+    languages_by_repo: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Aggregate statistics across all repositories.
+    
+    Computes portfolio-wide metrics by aggregating data from multiple repositories.
+    This is distinct from _build_repo_statistics which handles single-repo transformations.
     
     Args:
-        repo_rows: GitHub metadata dicts (from RepoGitHubMetadata table)
+        repo_rows: List of GitHub metadata dicts from RepoGitHubMetadata table
+        languages_by_repo: Dict mapping repo_name to list of language dicts
+    
+    Returns:
+        Dict with aggregated statistics: repo_count, stars_total, forks_total, 
+        top_languages, topics, repo_names
     """
-    job_id = job.get("job_id") or None
-    entries: List[Dict[str, Any]] = []
+    repo_count = len(repo_rows)
+    stars_total = sum(int(row.get("stars_count") or 0) for row in repo_rows)
+    forks_total = sum(int(row.get("forks_count") or 0) for row in repo_rows)
 
-    # Single-pass count of repo statuses (normalized schema: pending → synced → cached)
+    language_totals: Dict[str, int] = defaultdict(int)
+    for repo_languages in languages_by_repo.values():
+        for lang in repo_languages or []:
+            name = lang.get("language")
+            if not name:
+                continue
+            language_totals[name] += int(lang.get("bytes_count") or 0)
+
+    # Calculate total bytes across all languages for percentage calculation
+    total_all_bytes = sum(language_totals.values())
+    
+    top_languages = [
+        {
+            "language": name, 
+            "bytes": bytes_count,
+            "percentage": round((bytes_count / total_all_bytes * 100), 2) if total_all_bytes > 0 else 0.0
+        }
+        for name, bytes_count in sorted(language_totals.items(), key=lambda item: item[1], reverse=True)
+    ]
+
+    topics: List[str] = []
+    for row in repo_rows:
+        row_topics = row.get("topics") or []
+        if isinstance(row_topics, list):
+            topics.extend([topic for topic in row_topics if isinstance(topic, str) and topic])
+    unique_topics = sorted(set(topics))
+
+    return {
+        "repo_names": [row.get("repo_name") for row in repo_rows if row.get("repo_name")],
+        "repo_count": repo_count,
+        "stars_total": stars_total,
+        "forks_total": forks_total,
+        "top_languages": top_languages,
+        "topics": unique_topics,
+    }
+
+
+def _get_portfolio_bundle(
+    username: str,
+    job_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Unified portfolio data fetcher - single source of truth for portfolio queries.
+    
+    Consolidates the common pattern of querying repo metadata, languages, and 
+    computing aggregated statistics. Used by get_profile, get_profile_summary, 
+    and portfolio_query to eliminate redundant database queries.
+    
+    Args:
+        username: GitHub username
+        job_id: Optional job ID to query specific job data
+    
+    Returns:
+        Dict containing:
+            - repo_rows: List of GitHub metadata dicts
+            - languages_by_repo: Dict mapping repo_name to language data
+            - statistics: Aggregated portfolio statistics
+    """
+    repo_rows = _query_repo_rows(username, job_id=job_id)
+    languages_by_repo = table_manager.query_repo_languages(job_id) if job_id else {}
+    statistics = _aggregate_portfolio_statistics(repo_rows, languages_by_repo)
+    
+    return {
+        "repo_rows": repo_rows,
+        "languages_by_repo": languages_by_repo,
+        "statistics": statistics,
+    }
+
+
+def _compute_repo_status_summary(job_id: str) -> Dict[str, Any]:
+    """Compute repository status summary for a job.
+    
+    Consolidates duplicate status counting logic previously in get_job_status
+    and _get_candidate_metadata. Single-pass computation of status counts and
+    repo lists by status.
+    
+    Args:
+        job_id: Job ID to compute status for
+    
+    Returns:
+        Dict containing:
+            - total: Total number of repos in job
+            - counts: Dict mapping status names to counts
+            - lists: Dict mapping status names to repo name lists
+            - completed: Number of repos in terminal states (cached + failed)
+            - percentage: Completion percentage (0-100)
+    """
+    statuses = table_manager.list_repo_statuses(job_id)
+    total = len(statuses)
+    
     status_counts = defaultdict(int)
     status_lists = defaultdict(list)
+    
+    for row in statuses:
+        status = row.get("status")
+        repo_name = row.get("repo_name")
+        if status in ("pending", "synced", "cached", "failed") and repo_name:
+            status_counts[status] += 1
+            status_lists[status].append(repo_name)
+    
+    # Completed = cached files + failed (terminal states)
+    completed = status_counts["cached"] + status_counts["failed"]
+    percentage = int((completed / total * 100) if total else 0)
+    
+    return {
+        "total": total,
+        "counts": dict(status_counts),
+        "lists": dict(status_lists),
+        "completed": completed,
+        "percentage": percentage,
+    }
 
+
+def _get_candidate_metadata(ctx: CandidateContext, job: Dict[str, Any]) -> Dict[str, Any]:
+    """Build bundle from table data with status summary.
+    
+    Args:
+        ctx: Candidate context with username and job_id
+        job: Job metadata dict
+    
+    Returns:
+        Dict with username, job_id, data array, and status_summary for progress tracking
+    """
+    job = job or {}
+    job_id = job.get("job_id") or ctx.job_id or None
+    username = ctx.username
+
+    # Compute status summary using shared function
+    status_summary = None
     if job_id:
-        status_rows = table_manager.list_repo_statuses(job_id)
-        for row in status_rows:
-            status = row.get("status")
-            repo_name = row.get("repo_name")
-            if status in ("pending", "synced", "cached", "failed") and repo_name:
-                status_counts[status] += 1
-                status_lists[status].append(repo_name)
-
-        pending = status_lists["pending"]
-        synced = status_lists["synced"]
-        cached = status_lists["cached"]
-        failed = status_lists["failed"]
-
-        if failed or pending or synced:
+        status_summary = _compute_repo_status_summary(job_id)
+        counts = status_summary["counts"]
+        
+        # Log progress if any repos are not completed
+        if counts.get("failed", 0) or counts.get("pending", 0) or counts.get("synced", 0):
             logger.info(
                 "[CANDIDATE_PROGRESS] job=%s user=%s cached=%d synced=%d pending=%d failed=%d",
                 job_id,
                 username,
-                len(cached),
-                len(synced),
-                len(pending),
-                len(failed),
+                counts.get("cached", 0),
+                counts.get("synced", 0),
+                counts.get("pending", 0),
+                counts.get("failed", 0),
             )
 
-    # Build entries from GitHub metadata (repo_rows now contains RepoGitHubMetadata)
-    # Query all languages once and group by repo_name (more efficient than N queries)
-    all_languages_by_repo = table_manager.query_repo_languages(job_id) if job_id else {}
+    # Reuse consolidated detail builder to avoid duplicate queries
+    detail_bundle = _build_repo_detail_entry([], ctx=ctx)
+    entries = detail_bundle.get("entries", [])
 
-    for github_meta in repo_rows:
-        repo_name = github_meta.get("repo_name")
-        if not repo_name:
-            continue
-        
-        languages = all_languages_by_repo.get(repo_name, [])
-        
-        entries.append(
-            _repo_row_to_bundle_entry(
-                languages=languages,
-                github_metadata=github_meta,
-            )
-        )
     result = {
         "username": username,
         "job_id": job_id,
@@ -787,6 +885,18 @@ def _get_candidate_metadata(username: str, job: Dict[str, Any], repo_rows: List[
         "status": job.get("status"),
         "data": entries,
     }
+    
+    # Include status summary if available (for progress tracking without separate polling)
+    if status_summary:
+        result["status_summary"] = {
+            "total": status_summary["total"],
+            "completed": status_summary["completed"],
+            "percentage": status_summary["percentage"],
+            "pending": status_summary["counts"].get("pending", 0),
+            "synced": status_summary["counts"].get("synced", 0),
+            "cached": status_summary["counts"].get("cached", 0),
+            "failed": status_summary["counts"].get("failed", 0),
+        }
 
     return result
 
@@ -1177,28 +1287,10 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
 
     job_status = job.get("status", "unknown")
 
-    # Compute detailed progress from RepoSyncStatus (for UI progress bars)
-    statuses = table_manager.list_repo_statuses(job_id)
-    total = len(statuses)
-
-    # Single pass to collect repo names by status
-    status_counts = defaultdict(int)
-    status_lists = defaultdict(list)
-
-    for row in statuses:
-        status = row.get("status")
-        repo_name = row.get("repo_name")
-        if status in ("pending", "synced", "cached", "failed") and repo_name:
-            status_counts[status] += 1
-            status_lists[status].append(repo_name)
-
-    pending = status_lists["pending"]
-    synced = status_lists["synced"]
-    cached = status_lists["cached"]
-    failed = status_lists["failed"]
-
-    # Completed = cached files + failed (terminal states)
-    completed = len(cached) + len(failed)
+    # Compute detailed progress from RepoSyncStatus using shared function
+    status_summary = _compute_repo_status_summary(job_id)
+    counts = status_summary["counts"]
+    lists = status_summary["lists"]
 
     payload = {
         "job_id": job_id,
@@ -1207,20 +1299,20 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
         "metadata_ready": job_status in ("metadata_ready", "completed"),
         "files_ready": job_status == "completed",
         "progress": {
-            "total": total,
-            "completed": completed,
-            "percentage": int((completed / total * 100) if total else 0),
-            "pending": len(pending),
-            "synced": len(synced),  # Metadata synced, files pending
-            "cached": len(cached),  # Files cached (ready)
-            "failed": len(failed),
+            "total": status_summary["total"],
+            "completed": status_summary["completed"],
+            "percentage": status_summary["percentage"],
+            "pending": counts.get("pending", 0),
+            "synced": counts.get("synced", 0),  # Metadata synced, files pending
+            "cached": counts.get("cached", 0),  # Files cached (ready)
+            "failed": counts.get("failed", 0),
         },
         "created_at": job.get("created_at"),
         "repo_details": {
-            "pending": pending[:10],  # First 10 for UI
-            "synced": synced[:10],
-            "cached": cached[:10],
-            "failed": failed[:10],
+            "pending": lists.get("pending", [])[:10],  # First 10 for UI
+            "synced": lists.get("synced", [])[:10],
+            "cached": lists.get("cached", [])[:10],
+            "failed": lists.get("failed", [])[:10],
         },
     }
 
@@ -1283,9 +1375,8 @@ def get_candidate_repos_metadata(req: func.HttpRequest) -> func.HttpResponse:
 
     # Try table storage first (most recent data)
     if ctx.job_id:
-        repo_rows = _query_repo_rows(username, job_id=ctx.job_id)
-        if repo_rows:
-            payload = _get_candidate_metadata(username, ctx.job, repo_rows)
+        payload = _get_candidate_metadata(ctx, ctx.job or {})
+        if payload.get("data"):
             return _create_success_response(payload, request_id=ctx.trace.get("request_id"))
 
         # Job exists but no repo data yet
@@ -1318,17 +1409,15 @@ def get_profile(req: func.HttpRequest) -> func.HttpResponse:
 
     ctx = _prepare_candidate_context(req, username)
 
-    repo_rows = _query_repo_rows(username, job_id=ctx.job_id)
-    languages_by_repo = table_manager.query_repo_languages(ctx.job_id) if ctx.job_id else {}
-
+    # Use unified portfolio data fetcher
+    bundle = _get_portfolio_bundle(username, job_id=ctx.job_id)
     profile = _get_or_refresh_user_profile(username)
-    statistics = _build_profile_statistics(repo_rows, languages_by_repo)
 
     payload = {
         "username": username,
         "github_profile": profile,
         "job_metadata": ctx.job,
-        "statistics": statistics,
+        "statistics": bundle["statistics"],
     }
     return _create_success_response(payload, cache_control="no-cache", request_id=ctx.trace.get("request_id"))
 
@@ -1346,17 +1435,20 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     ctx = _prepare_candidate_context(req, username)
-    repo_rows = _query_repo_rows(username, job_id=ctx.job_id)
-    if not repo_rows:
+    
+    # Use unified portfolio data fetcher
+    bundle = _get_portfolio_bundle(username, job_id=ctx.job_id)
+    logger.info("Fetched portfolio bundle for summary generation: repos=%d, languages=%d, stats=%s",
+                len(bundle["repo_rows"]), len(bundle["languages_by_repo"]), bundle["statistics"])
+    
+    if not bundle["repo_rows"]:
         return _create_error_response(
             f"No repository data available for '{username}'. Trigger refresh first.",
             404,
             error_code="NOT_READY",
             request_id=ctx.trace.get("request_id"),
         )
-
-    languages_by_repo = table_manager.query_repo_languages(ctx.job_id) if ctx.job_id else {}
-    statistics = _build_profile_statistics(repo_rows, languages_by_repo)
+    
     profile = _get_or_refresh_user_profile(username)
 
     # Get budget-aware limits for profile summary type
@@ -1364,7 +1456,7 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     
     # Select repos early to minimize file fetching
     selected_repos = _select_repos_for_context(
-        repo_rows, 
+        bundle["repo_rows"], 
         strategy="recent", 
         max_repos=file_budget["max_repos"]
     )
@@ -1388,7 +1480,7 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
             "config_files_count": len(file_data.get("config_files", []))
         }
     logger.info("repo files for summary generation (limited): %s", repo_files_summary)
-    logger.info("Generated statistics for profile summary: %s", statistics)
+    logger.info("Generated statistics for profile summary: %s", bundle["statistics"])
                 
     # New path: Use SummaryManager with caching
     manager = SummaryManager(username=username)
@@ -1396,8 +1488,8 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     result = manager.get_or_generate_profile_summary(
         job_id=ctx.job_id or "default",
         profile=profile or {},
-        repo_rows=repo_rows,
-        statistics=statistics,
+        repo_rows=bundle["repo_rows"],
+        statistics=bundle["statistics"],
         repo_files=repo_files,
     )
 
@@ -1444,7 +1536,7 @@ def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
     )
 
     logger.info("repo files for summary generation (limited): %s", repo_files.get(repo, {}))
-    logger.info("Generated statistics for profile summary: %s", repo.entry)
+    logger.info("Generated repo metadata for repo summary: %s", repo_entry)
 
     # New path: Use SummaryManager with caching
     manager = SummaryManager(username=username)
@@ -1491,26 +1583,24 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
     # Fetch candidate session and repo data
     profile = _get_or_refresh_user_profile(username)
     ctx = _prepare_candidate_context(req, username)
-    repo_rows = _query_repo_rows(username, job_id=ctx.job_id) if ctx else []
     
-    if not ctx or not repo_rows:
+    # Use unified portfolio data fetcher
+    bundle = _get_portfolio_bundle(username, job_id=ctx.job_id) if ctx else None
+    
+    if not ctx or not bundle or not bundle["repo_rows"]:
         return _create_error_response(
             f"No candidate data available for '{username}'. Trigger refresh first.",
             404,
             error_code="NOT_READY",
             request_id=ctx.trace.get("request_id") if ctx else None,
         )
-
-    
-    languages_by_repo = table_manager.query_repo_languages(ctx.job_id) if ctx.job_id else {}
-    statistics = _build_profile_statistics(repo_rows, languages_by_repo)
     
     # Get budget-aware limits for query summary type
     file_budget = get_file_budget("query")
     
     # Select repos early to minimize file fetching
     selected_repos = _select_repos_for_context(
-        repo_rows, 
+        bundle["repo_rows"], 
         strategy="recent", 
         max_repos=file_budget["max_repos"]
     )
@@ -1525,7 +1615,7 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
     )
 
     logger.info("repo files for summary generation (limited): %s", repo_files)
-    logger.info("Generated statistics for profile summary: %s", repo.entry)
+    logger.info("Generated statistics for portfolio query: %s", bundle["statistics"])
     
     # Use SummaryManager to build bundle context and generate response
     # Pass selected_repos instead of repo_rows to avoid redundant selection in SummaryManager
