@@ -45,5 +45,3 @@
   - `ai.component.ts` in `ui/src/app/ai/` passes user queries to `ai_assistant.py` via `portfolio_query()` in `api_gateway.py`. Queries are matched against candidates data and cached blob data to provide contextually relevant AI-generated responses useful to a recruiter (user).
   
  
-
-Consolidate's required get_profile database schema with existing table fields in `table_manager.py` to support candidate summary page data retrieval.

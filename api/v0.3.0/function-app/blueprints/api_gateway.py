@@ -192,6 +192,65 @@ def _parse_iso(timestamp: Optional[str]) -> datetime:
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
+def _select_repos_for_context(
+    repo_rows: List[Dict[str, Any]],
+    strategy: str = "recent",
+    max_repos: int = 8,
+) -> List[Dict[str, Any]]:
+    """Select repos based on strategy for early context building.
+    
+    Centralizes repo selection to avoid redundant file fetching and duplication.
+    Used in endpoints to select which repos to fetch file contents for.
+    
+    Args:
+        repo_rows: List of repository metadata rows
+        strategy: Selection strategy (recent, random, top_starred)
+        max_repos: Maximum number of repos to select
+    
+    Returns:
+        Selected repo rows (filtered and sorted per strategy)
+    """
+    
+    if not repo_rows:
+        return []
+    
+    if strategy == "recent":
+        # Sort by last updated (most recent first)
+        def get_update_time(repo: Dict[str, Any]) -> datetime:
+            updated = repo.get("github_updated_at") or repo.get("updated_at", "")
+            if not updated:
+                return datetime.min
+            try:
+                # Handle ISO format with +00:00 or Z
+                updated = updated.replace("+00:00", "").replace("Z", "")
+                return datetime.fromisoformat(updated)
+            except Exception:
+                return datetime.min
+        
+        sorted_repos = sorted(repo_rows, key=get_update_time, reverse=True)
+        return sorted_repos[:max_repos]
+    
+    elif strategy == "random":
+        # Random sample for diversity
+        if len(repo_rows) <= max_repos:
+            return repo_rows
+        return random.sample(repo_rows, max_repos)
+    
+    elif strategy == "top_starred":
+        # Sort by stars (most starred first)
+        sorted_repos = sorted(
+            repo_rows,
+            key=lambda r: r.get("stars_count", 0),
+            reverse=True
+        )
+        return sorted_repos[:max_repos]
+    
+    else:
+        # Default to recent
+        logger.warning("Unknown selection strategy '%s', defaulting to 'recent'", strategy)
+        return _select_repos_for_context(repo_rows, "recent", max_repos)
+    
+
 def _is_profile_fresh(profile: Dict[str, Any], ttl_seconds: int) -> bool:
     cached_at = profile.get("cached_at")
     if not cached_at:
@@ -397,64 +456,6 @@ def _check_repo_cache_status(
     return result
 
 
-def _select_repos_for_context(
-    repo_rows: List[Dict[str, Any]],
-    strategy: str = "recent",
-    max_repos: int = 8,
-) -> List[Dict[str, Any]]:
-    """Select repos based on strategy for early context building.
-    
-    Centralizes repo selection to avoid redundant file fetching and duplication.
-    Used in endpoints to select which repos to fetch file contents for.
-    
-    Args:
-        repo_rows: List of repository metadata rows
-        strategy: Selection strategy (recent, random, top_starred)
-        max_repos: Maximum number of repos to select
-    
-    Returns:
-        Selected repo rows (filtered and sorted per strategy)
-    """
-    
-    if not repo_rows:
-        return []
-    
-    if strategy == "recent":
-        # Sort by last updated (most recent first)
-        def get_update_time(repo: Dict[str, Any]) -> datetime:
-            updated = repo.get("github_updated_at") or repo.get("updated_at", "")
-            if not updated:
-                return datetime.min
-            try:
-                # Handle ISO format with +00:00 or Z
-                updated = updated.replace("+00:00", "").replace("Z", "")
-                return datetime.fromisoformat(updated)
-            except Exception:
-                return datetime.min
-        
-        sorted_repos = sorted(repo_rows, key=get_update_time, reverse=True)
-        return sorted_repos[:max_repos]
-    
-    elif strategy == "random":
-        # Random sample for diversity
-        if len(repo_rows) <= max_repos:
-            return repo_rows
-        return random.sample(repo_rows, max_repos)
-    
-    elif strategy == "top_starred":
-        # Sort by stars (most starred first)
-        sorted_repos = sorted(
-            repo_rows,
-            key=lambda r: r.get("stars_count", 0),
-            reverse=True
-        )
-        return sorted_repos[:max_repos]
-    
-    else:
-        # Default to recent
-        logger.warning("Unknown selection strategy '%s', defaulting to 'recent'", strategy)
-        return _select_repos_for_context(repo_rows, "recent", max_repos)
-
 def _get_repo_files(
     username: str,
     selected_repos: List[Dict[str, Any]],
@@ -589,63 +590,6 @@ def _query_repo_rows(
         return []
 
 
-def _build_repo_detail_entry(
-    repo_names: Union[str, List[str]],
-    *,
-    ctx: CandidateContext,
-) -> Dict[str, Any]:
-    """Build one or many repo detail entries using normalized tables.
-    
-    Consolidates metadata and language lookups to avoid redundant queries when
-    multiple repos are requested. Callers needing a single repo can pass a
-    string; batch callers can pass a list of repo names.
-
-    Args:
-        repo_names: Repository name or list of names
-        ctx: Candidate context with resolved job_id and username
-    
-    Returns:
-        Dict with job_id, repo_entry (first), and entries (all repos processed)
-    """
-    # Normalize input to a list while preserving order
-    target_names: List[str] = []
-    if isinstance(repo_names, str) and repo_names:
-        target_names = [repo_names]
-    elif isinstance(repo_names, list):
-        target_names = [name for name in repo_names if name]
-
-    repo_rows: List[Dict[str, Any]] = []
-    if target_names:
-        repo_rows = _query_repo_rows(ctx.username, job_id=ctx.job_id, repo_names=target_names)
-    elif ctx.job_id:
-        repo_rows = _query_repo_rows(ctx.username, job_id=ctx.job_id)
-        target_names = [row.get("repo_name") for row in repo_rows if row.get("repo_name")]
-
-    if not target_names:
-        return {"job_id": ctx.job_id, "repo_entry": {}, "entries": []}
-
-    # Single query for metadata and languages (if job-scoped)
-    languages_by_repo = table_manager.query_repo_languages(ctx.job_id) if ctx.job_id else {}
-
-    entries: List[Dict[str, Any]] = []
-    for name in target_names:
-        github_metadata = next((row for row in repo_rows if row.get("repo_name") == name), None)
-        languages = languages_by_repo.get(name)
-
-        entry = _build_repo_statistics(languages=languages, github_metadata=github_metadata)
-        if not entry.get("name"):
-            entry["name"] = name
-        entries.append(entry)
-
-    primary_entry = entries[0] if entries else {}
-
-    return {
-        "job_id": ctx.job_id,
-        "repo_entry": primary_entry,
-        "entries": entries,
-    }
-
-
 def _build_repo_statistics(
     languages: Optional[List[Dict[str, Any]]] = None,
     github_metadata: Optional[Dict[str, Any]] = None,
@@ -706,6 +650,63 @@ def _build_repo_statistics(
         }
         
     return entry
+
+
+def _build_repo_detail_entry(
+    repo_names: Union[str, List[str]],
+    *,
+    ctx: CandidateContext,
+) -> Dict[str, Any]:
+    """Build one or many repo detail entries using normalized tables.
+    
+    Consolidates metadata and language lookups to avoid redundant queries when
+    multiple repos are requested. Callers needing a single repo can pass a
+    string; batch callers can pass a list of repo names.
+
+    Args:
+        repo_names: Repository name or list of names
+        ctx: Candidate context with resolved job_id and username
+    
+    Returns:
+        Dict with job_id, repo_entry (first), and entries (all repos processed)
+    """
+    # Normalize input to a list while preserving order
+    target_names: List[str] = []
+    if isinstance(repo_names, str) and repo_names:
+        target_names = [repo_names]
+    elif isinstance(repo_names, list):
+        target_names = [name for name in repo_names if name]
+
+    repo_rows: List[Dict[str, Any]] = []
+    if target_names:
+        repo_rows = _query_repo_rows(ctx.username, job_id=ctx.job_id, repo_names=target_names)
+    elif ctx.job_id:
+        repo_rows = _query_repo_rows(ctx.username, job_id=ctx.job_id)
+        target_names = [row.get("repo_name") for row in repo_rows if row.get("repo_name")]
+
+    if not target_names:
+        return {"job_id": ctx.job_id, "repo_entry": {}, "entries": []}
+
+    # Single query for metadata and languages (if job-scoped)
+    languages_by_repo = table_manager.query_repo_languages(ctx.job_id) if ctx.job_id else {}
+
+    entries: List[Dict[str, Any]] = []
+    for name in target_names:
+        github_metadata = next((row for row in repo_rows if row.get("repo_name") == name), None)
+        languages = languages_by_repo.get(name)
+
+        entry = _build_repo_statistics(languages=languages, github_metadata=github_metadata)
+        if not entry.get("name"):
+            entry["name"] = name
+        entries.append(entry)
+
+    primary_entry = entries[0] if entries else {}
+
+    return {
+        "job_id": ctx.job_id,
+        "repo_entry": primary_entry,
+        "entries": entries,
+    }
 
 
 def _aggregate_portfolio_statistics(
