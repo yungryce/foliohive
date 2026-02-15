@@ -20,6 +20,11 @@
 - When my query has a question mark, answer the question first before providing any additional information
 - plans created as files into `.github/plans/`
 
+**Architectural Overview**
+The recruiting analysis tool is designed to analyze a candidate's Github activity and provide insights into their coding skills and style. The system is built using a microservices architecture, with separate components responsible for data retrieval, processing, caching, and UI rendering.
+This is an event based system. The main event is `trigger_candidate_refresh` which starts the process. `process_sync_job` fetches metadata and tracks progress. `process_cache_job` caches additional blob data. The UI retrieves data via API calls to display candidate profiles, projects, and AI-generated summaries.
+`table_manager.py` defines the table schemas used for storing candidate data, including `SessionCandidates`, `JobMetadata`, `RepoLanguages`, `RepoGitHubMetadata`, and `RepoSyncStatus`. These tables are used throughout the data processing and retrieval workflow to manage candidate information and job statuses.
+
 ## Workflow
 **Phase 1: Candidate's Github Data Generation and Processing**
 - User (recruiter) inputs a candidate's Github username to `landing.components.ts` in `ui/src/app/landing/` to start a new sync job.
@@ -35,11 +40,12 @@ Client has 4 views that retrives and displays data from the server. These views 
 - `ui/src/app/projects`: This expects 1 data response
     - Metadata-`api/v0.3.0/shared/src/foliohive_shared/table/table_manager.py`: candidate per repo metadata used to display repo cards `api_gateway.get_candidate_repos_metadata()`.
 - `ui/src/app/projects/project`: This expects 2 data responses
-    - Metadata-`api/v0.3.0/shared/src/foliohive_shared/table/table_manager.py`: candidate per repo metadata used to display repo details `api_gateway.get_candidate_repo_metadata()`. This is a missing gap that has not been implemented
+    - Metadata-`api/v0.3.0/shared/src/foliohive_shared/table/table_manager.py`: candidate per repo metadata already available from `ui/src/app/projects` and `api_gateway.get_candidate_repo_metadata()`. 
     - Summary-`api/v0.3.0/shared/src/foliohive_shared/ai/summary_manager.py`: ai summary of repo details via `api_gateway.get_repo_summary()`
 - `ui/src/app/ai`: This expects 1 data response
     - Summary-`api/v0.3.0/shared/src/foliohive_shared/ai/summary_manager.py`: ai summary provided based on user query. All of candidate's data is used as context for query via `api_gateway.portfolio_query()`
 
-**Helper functions:**
-- `getJobStatus`: Works alongside `api_gateway.get_job_status()`to return job `pending`, `synced`, `cached` and `failed`. This is used to return repo metadata produced by trigger `api_gateway.trigger_candidate_refresh()`using table `RepoSyncStatusRow`
-- `getCacheStatus`: Works alongside `api_gateway.get_repo_cache_status` This function checks the blob cache status for a given candidate's repo using `RepoSyncStatusRow` (quetionable redundancy with get_job_status). 
+**Phase 3: Job Status**
+- Job status is tracked and updated in `table_manager.py` tables `JobMetadata` and `RepoSyncStatus`. Status are updated during `sync_worker._update_job_progress()`, `cache_worker._update_cache_progress()` and `reconciliation_worker._reconcile_session()`. This allows event tracking of jobs and their progress
+
+ the UI to update components provide real-time feedback to the user on the progress of their candidate data sync and processing. The UI can query job status via `api_gateway.get_job_status()` which retrieves data from these tables to inform the user of the current state of their candidate's data processing.

@@ -1,11 +1,12 @@
 - `ui`: refactor opportunities in `ui/src/app` for clear seperation of concerns and implementation precision and synchronization with `api/v0.3.0/function-app/blueprints/api_gateway.py` data responses. Each service in `foliohive/ui/src/app/services` should serve its component. shared services should be in a shared location
-- `api`: refactor opportunities in `api/v0.3.0/function-app/blueprints/api_gateway.py` for clear seperation of concerns, optimized data retrieval for client views, reduced code duplication, and improved maintainability.
 
 
-Is a api-gateway optimized for these data retrieval or there are room for improvments?
-Is polling a good design pattern for job and cache status use case? is status functions optimized?
-Are there redundant operations in api-gateway that should be optimized.?
-are there repeating operations across several functions that can be abstracted into a single function to reduce code duplication and improve maintainability?
+ Critical Path Optimization
+Rule: Never block critical content behind non-critical operations.
 
-Design goals:
-- No repeated operations across functions 
+Data Type	Speed	Critical?	Load Strategy
+Repository metadata	Fast (50-200ms)	✅ Critical	Load immediately
+Profile metadata	Fast (50-200ms)	✅ Critical	Load immediately
+Repository list	Fast (100-300ms)	✅ Critical	Load immediately
+AI summaries	Slow (2-10s)	❌ Enhancement	Load progressively
+File cache	Async (varies)	❌ Background	Poll/wait as needed

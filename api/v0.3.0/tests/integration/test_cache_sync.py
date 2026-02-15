@@ -30,7 +30,7 @@ class InMemoryCacheStore:
         key: str,
         data: Any,
         ttl: Optional[int] = None,
-        fingerprint: Optional[str] = None,
+        fingerprint: str,
     ) -> bool:
         expires_at = None
         if ttl:

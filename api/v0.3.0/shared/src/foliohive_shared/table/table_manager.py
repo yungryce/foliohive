@@ -40,8 +40,8 @@ logger.propagate = True
 class TableNames:
     """Configured table names used by Cloudfolio."""
 
-    job_metadata: str = "JobMetadata"
     session_candidates: str = "SessionCandidates"
+    job_metadata: str = "JobMetadata"
     repo_languages: str = "RepoLanguages"
     repo_github_metadata: str = "RepoGitHubMetadata"
     repo_sync_status: str = "RepoSyncStatus"
@@ -76,7 +76,7 @@ class JobMetadataRow:
     username: str  # PartitionKey
     job_id: str  # RowKey
     status: str = "queued" # "queued" | "syncing" | "metadata_ready" | "completed" | "failed"
-    bundle_fingerprint: Optional[str] = None
+    bundle_fingerprint: str
     force_refresh: bool = False
     last_requeue_at: Optional[str] = None
     trace_id: Optional[str] = None
@@ -115,7 +115,7 @@ class RepoGitHubMetadataRow:
 
     username: str  # PartitionKey
     repo_name: str  # RowKey
-    fingerprint: Optional[str] = None  # Content fingerprint for versioning
+    fingerprint: str  # Content fingerprint for versioning
     description: Optional[str] = None
     topics: Optional[List[str]] = None
     html_url: Optional[str] = None
@@ -141,7 +141,7 @@ class RepoSyncStatusRow:
     
     Tracks progress through: sync (metadata) → cache (files) → merge (bundle).
     Status transitions: pending → synced → cached → merged (or failed at any stage).
-    
+
     PartitionKey: job_id (groups all repos for a job)
     RowKey: repo_name (unique repo within job)
     """
@@ -162,17 +162,21 @@ class RepoSyncStatusRow:
 class RepoDiscoveredPathsRow:
     """Discovered file paths for a repository during cache phase.
     
-    Stores discovered file paths (readme and config files) so they can be
-    retrieved by api_gateway._get_repo_files_for_summary() and passed to
-    repo_cache_retrieval.get_repo_files() for proper file categorization.
+    Stores discovered file paths (readme and config files) with fingerprint snapshot
+    for cache invalidation. Avoids re-fetching blob contents when repo hasn't changed.
     
-    PartitionKey: job_id (groups all repos for a job)
-    RowKey: repo_name (unique repo within job)
+    fingerprint is a SNAPSHOT COPY of RepoGitHubMetadataRow.fingerprint taken at cache time,
+    tracking which version of the repo these cached blobs represent. When RepoGitHubMetadataRow
+    fingerprint changes (via github_pushed_at, github_updated_at), cleanup detects the mismatch
+    and invalidates stale blobs.
+    
+    PartitionKey: username (groups all repos for a user)
+    RowKey: repo_name (unique repo for user)
     """
 
-    job_id: str  # PartitionKey
+    username: str  # PartitionKey
     repo_name: str  # RowKey
-    username: str
+    fingerprint: str  # Snapshot of RepoGitHubMetadataRow.fingerprint at cache time
     discovered_paths: List[str] = field(default_factory=list)  # All discovered file paths
     readme_paths: List[str] = field(default_factory=list)  # Subset: readme files
     config_paths: List[str] = field(default_factory=list)  # Subset: config files
@@ -230,7 +234,7 @@ class UserProfileRow:
     following: int = 0
     github_created_at: Optional[str] = None
     github_updated_at: Optional[str] = None
-    fingerprint: Optional[str] = None
+    fingerprint: str
     cached_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -588,31 +592,6 @@ class TableManager:
 
         return jobs
 
-    def list_jobs_metadata_by_status(
-        self,
-        statuses: Iterable[str],
-        *,
-        updated_before: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """List jobs across all users filtered by status and optionally by updated_at.
-        
-        Warning: Table scan operation - no PartitionKey filtering
-        Returns: List of deserialized job dicts matching criteria
-        """
-        table = self._get_table_client(self.table_names.job_metadata)
-        if not table:
-            return []
-        status_list = [status for status in (statuses or []) if status]
-        if not status_list:
-            return []
-        status_filters = [f"status eq '{status}'" for status in status_list]
-        filters = [f"({' or '.join(status_filters)})"]
-        if updated_before:
-            filters.append(f"updated_at lt '{_azure_safe_timestamp(updated_before)}'")
-        filter_str = " and ".join(filters)
-        query = list(table.list_entities(filter=filter_str))
-        return [self._deserialize_job_metadata(e) for e in query]
-
     def _deserialize_job_metadata(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
@@ -858,10 +837,10 @@ class TableManager:
     # Repo discovered paths
     # ------------------------------------------------------------------
     def upsert_repo_discovered_paths(self, row: RepoDiscoveredPathsRow) -> None:
-        """Persist discovered file paths for a repository.
+        """Persist discovered file paths for a repository with fingerprint.
         
         Args:
-            row: RepoDiscoveredPathsRow with job_id, repo_name, username, discovered_paths
+            row: RepoDiscoveredPathsRow with username, repo_name, fingerprint, paths
         """
         table = self._get_table_client(self.table_names.repo_discovered_paths)
         if not table:
@@ -870,9 +849,9 @@ class TableManager:
         
         now = _azure_safe_timestamp()
         entity = {
-            "PartitionKey": row.job_id,
+            "PartitionKey": row.username,
             "RowKey": row.repo_name,
-            "username": row.username,
+            "fingerprint": row.fingerprint,
             "discovered_paths": _safe_json_dump(row.discovered_paths),
             "readme_paths": _safe_json_dump(row.readme_paths),
             "config_paths": _safe_json_dump(row.config_paths),
@@ -881,26 +860,26 @@ class TableManager:
         }
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
         logger.info(
-            "[TABLE_UPSERT_DISCOVERED_PATHS] job=%s repo=%s path_count=%d",
-            row.job_id, row.repo_name, len(row.discovered_paths)
+            "[TABLE_UPSERT_DISCOVERED_PATHS] user=%s repo=%s fingerprint=%s path_count=%d",
+            row.username, row.repo_name, row.fingerprint or "<none>", len(row.discovered_paths)
         )
 
-    def get_repo_discovered_paths(self, job_id: str, repo_name: str) -> Optional[Dict[str, Any]]:
+    def get_repo_discovered_paths(self, username: str, repo_name: str) -> Optional[Dict[str, Any]]:
         """Retrieve discovered file paths for a repository.
         
         Args:
-            job_id: Job ID
+            username: GitHub username
             repo_name: Repository name
             
         Returns:
-            Dict with discovered_paths, readme_paths, config_paths or None if not found
+            Dict with username, repo_name, fingerprint, discovered_paths, readme_paths, config_paths or None if not found
         """
         table = self._get_table_client(self.table_names.repo_discovered_paths)
         if not table:
             return None
         
         try:
-            entity = table.get_entity(job_id, repo_name)
+            entity = table.get_entity(username, repo_name)
             return self._deserialize_repo_discovered_paths(entity)
         except ResourceNotFoundError:
             return None
@@ -910,9 +889,9 @@ class TableManager:
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
         
-        payload["job_id"] = payload.get("PartitionKey", None)
+        payload["username"] = payload.get("PartitionKey", None)
         payload["repo_name"] = payload.get("RowKey", None)
-        payload["username"] = payload.get("username") or None
+        payload["fingerprint"] = payload.get("fingerprint") or None
         
         # Parse JSON arrays
         try:
@@ -987,7 +966,7 @@ class TableManager:
         
         logger.info("[TABLE_UPSERT_LANGUAGES] total=%d succeeded=%d", len(rows), success_count)
 
-    def delete_repo_languages(self, job_id: str, repo_name: str) -> None:
+    def discover_repo_file(self, job_id: str, repo_name: str) -> None:
         """Delete language entries for a repository within a specific job.
         
         Filters by PartitionKey (job_id) and repo_name field.
@@ -1059,6 +1038,208 @@ class TableManager:
         except Exception as exc:
             logger.error("Failed to cleanup old repo languages: %s", exc)
             
+        return count
+
+    def cleanup_old_jobs(self, older_than_iso: str) -> int:
+        """Cleanup old jobs and cascade delete related job-scoped tables.
+        
+        Job-based cleanup pattern: Removes completed/failed job artifacts after retention period.
+        Cascade deletes from:
+        - RepoLanguages (PartitionKey = job_id)
+        - RepoSyncStatus (PartitionKey = job_id)
+        - JobMetadata (PartitionKey = username, RowKey = job_id)
+        
+        Args:
+            older_than_iso: ISO timestamp cutoff (jobs older than this are deleted)
+            
+        Returns:
+            Total rows deleted across all tables
+        """
+        job_table = self._get_table_client(self.table_names.job_metadata)
+        if not job_table:
+            return 0
+        
+        safe_ts = _azure_safe_timestamp(older_than_iso)
+        filter_str = f"created_at lt '{safe_ts}'"
+        
+        total_deleted = 0
+        
+        try:
+            # Scan JobMetadata for old jobs
+            old_jobs = list(job_table.list_entities(
+                filter=filter_str,
+                select=["PartitionKey", "RowKey", "job_id"]
+            ))
+            
+            logger.info("[CLEANUP_OLD_JOBS] Found %d old jobs to delete", len(old_jobs))
+            
+            for job_entity in old_jobs:
+                username = job_entity.get("PartitionKey")
+                job_id = job_entity.get("RowKey") or job_entity.get("job_id")
+                
+                if not job_id:
+                    continue
+                
+                # 1. Delete RepoLanguages for this job (partition-scoped delete)
+                lang_table = self._get_table_client(self.table_names.repo_languages)
+                if lang_table:
+                    try:
+                        lang_entities = list(lang_table.query_entities(
+                            f"PartitionKey eq '{job_id}'",
+                            select=["PartitionKey", "RowKey"]
+                        ))
+                        for lang_e in lang_entities:
+                            try:
+                                lang_table.delete_entity(lang_e["PartitionKey"], lang_e["RowKey"])
+                                total_deleted += 1
+                            except Exception:
+                                pass
+                    except Exception as exc:
+                        logger.warning("[CLEANUP_LANGUAGES] job=%s error=%s", job_id, exc)
+                
+                # 2. Delete RepoSyncStatus for this job (partition-scoped delete)
+                status_table = self._get_table_client(self.table_names.repo_sync_status)
+                if status_table:
+                    try:
+                        status_entities = list(status_table.query_entities(
+                            f"PartitionKey eq '{job_id}'",
+                            select=["PartitionKey", "RowKey"]
+                        ))
+                        for status_e in status_entities:
+                            try:
+                                status_table.delete_entity(status_e["PartitionKey"], status_e["RowKey"])
+                                total_deleted += 1
+                            except Exception:
+                                pass
+                    except Exception as exc:
+                        logger.warning("[CLEANUP_STATUS] job=%s error=%s", job_id, exc)
+                
+                # 3. Delete JobMetadata row
+                try:
+                    job_table.delete_entity(username, job_id)
+                    total_deleted += 1
+                    logger.info("[CLEANUP_JOB] Deleted job=%s user=%s", job_id, username)
+                except Exception as exc:
+                    logger.warning("[CLEANUP_JOB] Failed to delete job=%s: %s", job_id, exc)
+            
+        except Exception as exc:
+            logger.error("[CLEANUP_OLD_JOBS] Failed: %s", exc)
+        
+        return total_deleted
+
+    def cleanup_old_repo_github_metadata(self, older_than_iso: str) -> int:
+        """Cleanup stale RepoGitHubMetadata entries.
+        
+        Fingerprint-based cleanup pattern: Removes cached metadata not recently accessed.
+        Stale metadata will be refetched on next sync via fingerprint comparison.
+        
+        Args:
+            older_than_iso: ISO timestamp cutoff (metadata older than this is deleted)
+            
+        Returns:
+            Number of metadata rows deleted
+        """
+        table = self._get_table_client(self.table_names.repo_github_metadata)
+        if not table:
+            return 0
+        
+        safe_ts = _azure_safe_timestamp(older_than_iso)
+        filter_str = f"updated_at lt '{safe_ts}'"
+        
+        count = 0
+        try:
+            # Query only keys to delete
+            entities = list(table.list_entities(
+                filter=filter_str,
+                select=["PartitionKey", "RowKey"]
+            ))
+            
+            logger.info("[CLEANUP_GITHUB_METADATA] Found %d stale metadata rows", len(entities))
+            
+            for e in entities:
+                try:
+                    table.delete_entity(e["PartitionKey"], e["RowKey"])
+                    count += 1
+                except Exception as del_exc:
+                    logger.warning("[CLEANUP_GITHUB_METADATA] Failed to delete: %s", del_exc)
+            
+        except Exception as exc:
+            logger.error("[CLEANUP_GITHUB_METADATA] Failed: %s", exc)
+        
+        return count
+
+    def cleanup_old_discovered_paths(self, older_than_iso: str) -> int:
+        """Cleanup stale RepoDiscoveredPaths entries.
+        
+        Fingerprint-based cleanup pattern: Removes cached blob path references not recently accessed.
+        Cross-checks with RepoGitHubMetadata to detect orphaned or mismatched fingerprints.
+        
+        Args:
+            older_than_iso: ISO timestamp cutoff (paths older than this are candidates for deletion)
+            
+        Returns:
+            Number of discovered path rows deleted
+        """
+        paths_table = self._get_table_client(self.table_names.repo_discovered_paths)
+        if not paths_table:
+            return 0
+        
+        safe_ts = _azure_safe_timestamp(older_than_iso)
+        filter_str = f"updated_at lt '{safe_ts}'"
+        
+        count = 0
+        try:
+            # Query old discovered path entries
+            old_paths = list(paths_table.list_entities(
+                filter=filter_str,
+                select=["PartitionKey", "RowKey", "fingerprint"]
+            ))
+            
+            logger.info("[CLEANUP_DISCOVERED_PATHS] Found %d stale path entries", len(old_paths))
+            
+            metadata_table = self._get_table_client(self.table_names.repo_github_metadata)
+            
+            for path_entity in old_paths:
+                username = path_entity.get("PartitionKey")
+                repo_name = path_entity.get("RowKey")
+                path_fingerprint = path_entity.get("fingerprint")
+                
+                should_delete = False
+                
+                # Check if corresponding RepoGitHubMetadata exists with matching fingerprint
+                if metadata_table:
+                    try:
+                        metadata = metadata_table.get_entity(username, repo_name)
+                        metadata_fingerprint = metadata.get("fingerprint")
+                        
+                        # Delete if fingerprints mismatch (stale blobs)
+                        if path_fingerprint and metadata_fingerprint != path_fingerprint:
+                            should_delete = True
+                            logger.debug(
+                                "[CLEANUP_PATHS] Fingerprint mismatch %s/%s: path=%s metadata=%s",
+                                username, repo_name, path_fingerprint, metadata_fingerprint
+                            )
+                    except ResourceNotFoundError:
+                        # Orphaned paths (no metadata) should be deleted
+                        should_delete = True
+                        logger.debug("[CLEANUP_PATHS] Orphaned path entry: %s/%s", username, repo_name)
+                    except Exception:
+                        # If we can't verify, delete old entries
+                        should_delete = True
+                else:
+                    # No metadata table means we can't verify - delete old entries
+                    should_delete = True
+                
+                if should_delete:
+                    try:
+                        paths_table.delete_entity(username, repo_name)
+                        count += 1
+                    except Exception as del_exc:
+                        logger.warning("[CLEANUP_PATHS] Failed to delete %s/%s: %s", username, repo_name, del_exc)
+            
+        except Exception as exc:
+            logger.error("[CLEANUP_DISCOVERED_PATHS] Failed: %s", exc)
+        
         return count
 
     def _deserialize_repo_languages(self, entity: Dict[str, Any]) -> Dict[str, Any]:

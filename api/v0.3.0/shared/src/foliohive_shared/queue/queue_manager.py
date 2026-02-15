@@ -163,7 +163,7 @@ class QueueManager:
         job_id: str,
         username: str,
         repo_name: str,
-        fingerprint: Optional[str] = None,
+        fingerprint: str,
         *,
         trace_id: Optional[str] = None,
         request_id: Optional[str] = None,
@@ -199,12 +199,12 @@ class QueueManager:
 
         return bool(self.send_message(SYNC_QUEUE, message))
 
-    def enqueue_cache_job(
+    def enqueue_cache(
         self,
         username: str,
         job_id: str,
         repo_name: str,
-        fingerprint: Optional[str] = None,
+        fingerprint: str,
         *,
         trace_id: Optional[str] = None,
     ) -> bool:
@@ -214,7 +214,7 @@ class QueueManager:
             username: GitHub username
             job_id: Unique job identifier
             repo_name: Repository name
-            fingerprint: Optional metadata fingerprint for cache validation
+            fingerprint: fingerprint for cache validation
             trace_id: Optional trace ID for logging correlation
             
         Returns:
@@ -235,27 +235,6 @@ class QueueManager:
         }
         
         return bool(self.send_message(CACHE_QUEUE, message))
-
-    # def enqueue_merge_job(
-    #     self,
-    #     job_id: str,
-    #     username: str,
-    #     synced_repos: List[str],
-    #     *,
-    #     trace_id: Optional[str] = None,
-    #     request_id: Optional[str] = None,
-    #     session_id: Optional[str] = None,
-    # ) -> bool:
-    #     message = {
-    #         "job_id": job_id,
-    #         "username": username,
-    #         "synced_repos": synced_repos,
-    #         "trigger_source": "sync_complete",
-    #         "trace_id": trace_id,
-    #         "request_id": request_id,
-    #         "session_id": session_id,
-    #         "queued_at": datetime.now(timezone.utc).isoformat(),
-    #     }
-    #     return bool(self.send_message(MERGE_QUEUE, message))
+1
 
 queue_manager = QueueManager()

@@ -64,38 +64,12 @@ def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     return payload
 
 
-def _calculate_bundle_fingerprint(username: str, job_id: str) -> str:
-    """Calculate bundle fingerprint from repo statuses.
-    
-    Uses repo fingerprints from RepoGitHubMetadata table to generate
-    a deterministic bundle-level fingerprint.
-    """
-    statuses = table_manager.list_repo_statuses(job_id)
-    cached_repos = [s for s in statuses if s.get("status") == "cached"]
-    
-    # Sort by repo name for consistency
-    cached_repos.sort(key=lambda r: r.get("repo_name", ""))
-    
-    fingerprints = []
-    for repo_status in cached_repos:
-        repo_name = repo_status.get("repo_name")
-        if not repo_name:
-            continue
-        
-        # Get GitHub metadata to extract fingerprint
-        github_metadata = table_manager.get_repo_github_metadata(username, repo_name)
-        if github_metadata and github_metadata.get("fingerprint"):
-            fingerprints.append(github_metadata["fingerprint"])
-    
-    if fingerprints:
-        return FingerprintManager.generate_bundle_fingerprint(fingerprints)
-    
-    # Fallback: use repo names if no fingerprints available
-    repo_names = [r.get("repo_name") for r in cached_repos if r.get("repo_name")]
-    return FingerprintManager.generate_content_fingerprint({"repos": sorted(repo_names)})
-
-
-def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] = None) -> Dict[str, Any]:
+def _fetch_and_cache_files(
+        username: str,
+        repo_name: str,
+        fingerprint: str,
+        job_id: Optional[str] = None
+    )-> Dict[str, Any]:
     """Fetch and cache file contents with generous persistence limits.
 
     Persistence Strategy:
@@ -109,6 +83,13 @@ def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] 
     - query summary: Uses 2 configs × 4KB = 8KB
     
     This design avoids re-caching when use cases change.
+    
+    Args:
+        username: GitHub username
+        repo_name: Repository name
+        fingerprint: Snapshot of RepoGitHubMetadataRow.fingerprint from queue message
+        job_id: Job ID for tracking and persistence
+    
     Returns:
         Dict with 'cached_count' and 'api_usage' keys
     """
@@ -178,13 +159,14 @@ def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] 
     )
     
     # Persist discovered paths to table storage for later retrieval
+    # fingerprint is snapshot copy from sync_worker, passed via queue message
     if job_id:
         _persist_discovered_paths(
-            job_id=job_id,
             username=username,
             repo_name=repo_name,
             config_files=config_files,
             readme_files=readme_files,
+            fingerprint=fingerprint
         )
     
     # Record API usage if job_id provided
@@ -198,16 +180,24 @@ def _fetch_and_cache_files(username: str, repo_name: str, job_id: Optional[str] 
 
 
 def _persist_discovered_paths(
-    job_id: str,
     username: str,
     repo_name: str,
     config_files: Dict[str, str],
     readme_files: Dict[str, str],
+    fingerprint: str,
 ) -> None:
     """Persist discovered file paths to table storage for later retrieval.
     
     Separates discovered paths into readme_paths and config_paths for
     easy categorization by get_repo_files() in api_gateway.
+    
+    Args:
+        username: GitHub username
+        repo_name: Repository name
+        config_files: Dict of config filename -> content
+        readme_files: Dict of readme filename -> content
+        fingerprint: Snapshot copy of RepoGitHubMetadataRow.fingerprint at cache time.
+            Used for cache invalidation - when fingerprints mismatch, blobs are stale.
     """
     from datetime import datetime, timezone
     
@@ -220,9 +210,9 @@ def _persist_discovered_paths(
     safe_timestamp = now.replace(":", "-").replace("+", "_")
     
     row = RepoDiscoveredPathsRow(
-        job_id=job_id,
-        repo_name=repo_name,
         username=username,
+        repo_name=repo_name,
+        fingerprint=fingerprint,
         discovered_paths=all_paths,
         readme_paths=readme_paths,
         config_paths=config_paths,
@@ -232,8 +222,8 @@ def _persist_discovered_paths(
     
     table_manager.upsert_repo_discovered_paths(row)
     logger.info(
-        "[PERSIST_DISCOVERED_PATHS] job=%s repo=%s total=%d readme=%d config=%d",
-        job_id, repo_name, len(all_paths), len(readme_paths), len(config_paths)
+        "[PERSIST_DISCOVERED_PATHS] user=%s repo=%s fingerprint=%s total=%d readme=%d config=%d",
+        username, repo_name, fingerprint or "<none>", len(all_paths), len(readme_paths), len(config_paths)
     )
 
 
@@ -367,34 +357,9 @@ def _update_cache_progress(
         )
     
     # Complete job when all files are cached 
-    if not synced:  # No repos still in 'synced' state means all are cached or failed
-        if cached:
-            logger.info(
-                "[JOB_CACHED] job=%s - All files cached, completing job with %d repos (skipped %d failed)",
-                job_id,
-                len(cached),
-                len(failed),
-            )
-            
-            # Calculate bundle fingerprint from table data
-            fingerprint = _calculate_bundle_fingerprint(username, job_id)
-            
-            # Mark job complete
-            table_manager.update_job_metadata(
-                username,
-                job_id,
-                {
-                    "status": "completed",
-                    "bundle_fingerprint": fingerprint,
-                    "completed_at": now,
-                },
-            )
-            logger.info("[JOB_COMPLETED] job=%s repos=%d fingerprint=%s", job_id, len(cached), fingerprint)
-            
-            logger.info("[TRAINING_DISABLED] job=%s - Training queue deprecated", job_id)
-        elif failed:
-            table_manager.update_job_metadata(username, job_id, {"status": "failed"})
-            logger.error("[JOB_FAILED] job=%s - All cache jobs failed", job_id)
+    if not synced and failed:
+        table_manager.update_job_metadata(username, job_id, {"status": "failed"})
+        logger.error("[JOB_FAILED] job=%s - All cache jobs failed", job_id)
 
 
 @bp.queue_trigger(arg_name="msg", queue_name="github-cache", connection="AzureWebJobsStorage")
@@ -403,6 +368,9 @@ def process_cache_job(msg: func.QueueMessage) -> None:
     
     This worker operates asynchronously from metadata sync. Files are cached in the
     background for client consumption (via get_repo_files) and training workflows.
+    
+    Fingerprint-based cache invalidation avoids expensive GitHub API calls when
+    repo blobs haven't changed (similar to metadata sync pattern).
     """
     payload = None
     username = None
@@ -415,6 +383,7 @@ def process_cache_job(msg: func.QueueMessage) -> None:
         username = payload.get("username")
         job_id = payload.get("job_id")
         repo_name = payload.get("repo_name")
+        fingerprint = payload.get("fingerprint")  # Extract from queue message
         trace_id = payload.get("trace_id")
 
         queue_message_id = getattr(msg, "id", None)
@@ -436,8 +405,8 @@ def process_cache_job(msg: func.QueueMessage) -> None:
             )
 
         # Fetch and cache file contents
-        logger.info("[CACHE] Starting file cache for job=%s repo=%s user=%s", job_id, repo_name, username)
-        _fetch_and_cache_files(username, repo_name, job_id=job_id)
+        logger.info("[CACHE] Starting file cache for job=%s repo=%s user=%s fingerprint=%s", job_id, repo_name, username, fingerprint)
+        _fetch_and_cache_files(username, repo_name, fingerprint, job_id=job_id)
         logger.info("[CACHE] File cache completed for job=%s repo=%s", job_id, repo_name)
         
         # Update progress tracking

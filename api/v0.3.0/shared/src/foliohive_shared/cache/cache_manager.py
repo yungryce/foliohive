@@ -231,7 +231,7 @@ class CacheManager:
         data: Any,
         ttl: Optional[int] = None,
         *,
-        fingerprint: Optional[str] = None,
+        fingerprint: str,
     ) -> bool:
         if _hot_cache_enabled():
             hot_ttl = ttl if ttl is not None else self.default_ttl

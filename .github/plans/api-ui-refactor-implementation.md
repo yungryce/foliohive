@@ -14,23 +14,19 @@
 
 ### API Gateway Problems
 
-1. **N+1 Query Pattern**: `get_candidate_bundle()` calls `get_repo_metadata()` in a loop (1 query per repo)
-   - Location: [api/v0.3.0/function-app/blueprints/api_gateway.py](api/v0.3.0/function-app/blueprints/api_gateway.py#L200-L220)
-   - Impact: O(N) table queries for every bundle/profile request
-
-2. **Status Side Effects**: `get_repo_cache_status()` enqueues cache jobs when state is `synced` or `cache_in_progress`
+1. **Status Side Effects**: `get_repo_cache_status()` enqueues cache jobs when state is `synced` or `cache_in_progress`
    - Location: [api/v0.3.0/function-app/blueprints/api_gateway.py](api/v0.3.0/function-app/blueprints/api_gateway.py#L350)
    - Impact: Aggressive polling causes repeated enqueueing; logic belongs in workers
 
-3. **Overlapping Status Endpoints**: Both `get_job_status()` and `get_repo_cache_status()` read `RepoSyncStatusRow`
+2. **Overlapping Status Endpoints**: Both `get_job_status()` and `get_repo_cache_status()` read `RepoSyncStatusRow`
    - Confusion: When is job "done"? What's the difference between endpoints?
    - Impact: UI polls both for same underlying state
 
-4. **Repeated Request Parsing**: Username/repo validation, session resolution, job resolution duplicated across 8+ endpoints
+3. **Repeated Request Parsing**: Username/repo validation, session resolution, job resolution duplicated across 8+ endpoints
    - No shared helpers for: param validation, error responses, session/job lookup
    - Impact: Code duplication, inconsistent error messages
 
-5. **Metadata Retrieval Inefficiency**: `_batch_get_repo_metadata()` does linear search per repo (O(N²))
+4. **Metadata Retrieval Inefficiency**: `_batch_get_repo_metadata()` does linear search per repo (O(N²))
    - Location: [api/v0.3.0/shared/src/foliohive_shared/table/table_manager.py](api/v0.3.0/shared/src/foliohive_shared/table/table_manager.py)
    - Should use dict/lookup for O(1) access
 
@@ -179,68 +175,7 @@ def success_response(data: dict, status_code: int = 200) -> HttpResponse:
 
 ---
 
-#### Step 1.2: Fix N+1 Metadata Query
-
-**File**: `api/v0.3.0/shared/src/foliohive_shared/table/table_manager.py`
-
-**Add new method**:
-```python
-def batch_get_repos_metadata(self, job_id: str, repo_names: list[str]) -> dict[str, dict]:
-    """
-    Fetch metadata for multiple repos in a single query.
-    Returns: dict mapping repo_name -> metadata_dict
-    """
-    if not repo_names:
-        return {}
-    
-    # Query all repos for this job at once
-    partition_key = job_id
-    all_repos = self.query_entities(
-        table_name=self.REPO_METADATA_TABLE,
-        query_filter=f"PartitionKey eq '{partition_key}'"
-    )
-    
-    # Build lookup dict
-    result = {}
-    for entity in all_repos:
-        repo_name = entity.get("RowKey", "")
-        if repo_name in repo_names:
-            result[repo_name] = {
-                "repo_name": repo_name,
-                "languages": entity.get("languages"),
-                "github_metadata": entity.get("github_metadata"),
-                "readme_blob_url": entity.get("readme_blob_url"),
-                "discovered_paths": entity.get("discovered_paths"),
-                # ... other fields
-            }
-    
-    return result
-```
-
-**Update `get_candidate_bundle()`** in `api_gateway.py`:
-```python
-def get_candidate_bundle(username: str, job_id: str) -> dict:
-    # ... existing job/status lookup ...
-    
-    # Get all repos for job (just names)
-    repo_status_list = table_manager.get_repos_for_job(job_id)
-    repo_names = [r["repo_name"] for r in repo_status_list]
-    
-    # Single batch query instead of N queries
-    repos_metadata_dict = table_manager.batch_get_repos_metadata(job_id, repo_names)
-    
-    # Assemble bundle
-    bundle = {
-        "candidate_username": username,
-        "job_id": job_id,
-        "repositories": [repos_metadata_dict.get(name, {}) for name in repo_names]
-    }
-    return bundle
-```
-
----
-
-#### Step 1.3: Make Status Endpoints Read-Only
+#### Step 1.2: Make Status Endpoints Read-Only
 
 **Current**: `get_repo_cache_status()` enqueues cache jobs as side effect
 
@@ -257,7 +192,7 @@ def get_repo_cache_status(req: HttpRequest) -> HttpResponse:
     
     if status.cache_state == "synced":
         # DON'T DO THIS:
-        queue_manager.enqueue_cache_job(job_id, repo_name)
+        queue_manager.enqueue_cache(job_id, repo_name)
     
     return success_response({"cache_state": status.cache_state})
 ```
@@ -298,7 +233,7 @@ def get_repo_cache_status(req: HttpRequest) -> HttpResponse:
 
 ---
 
-#### Step 1.4: Consolidate Status Endpoints
+#### Step 1.3: Consolidate Status Endpoints
 
 **Design**: Single endpoint returning job-level status + per-repo rollup
 
@@ -374,13 +309,13 @@ def get_candidate_status(req: HttpRequest) -> HttpResponse:
 ```
 
 **Deprecation Path**:
-- Mark old `get_job_status()` and `get_repo_cache_status()` as deprecated
+- `get_job_status()` and `get_repo_cache_status()` now deprecated. 
 - Update UI to use new consolidated endpoint
-- Remove old endpoints in next major version
+- Remove old endpoints \
 
 ---
 
-#### Step 1.5: Add Conditional Request Support
+#### Step 1.4: Add Conditional Request Support
 
 **For metadata endpoints that are stable after sync**, add ETag support:
 

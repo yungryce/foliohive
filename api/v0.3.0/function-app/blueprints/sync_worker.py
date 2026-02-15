@@ -119,7 +119,7 @@ def _record_api_usage_from_tracker(
 def _fetch_repo_metadata(
     username: str,
     repo_name: str,
-    fingerprint: Optional[str] = None,
+    fingerprint: str,
     job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Fetch repository metadata only (fast) - stored in table_manager.
@@ -413,12 +413,12 @@ def process_sync_job(msg: func.QueueMessage) -> None:
         
         # Enqueue file caching job (async background task)
         logger.info("[CACHE] Enqueuing file cache for job=%s repo=%s", job_id, repo_name)
-        enqueued = queue_manager.enqueue_cache_job(
+        enqueued = queue_manager.enqueue_cache(
             username=username,
             job_id=job_id,
             repo_name=repo_name,
-            fingerprint=fingerprint,
             trace_id=trace_id,
+            fingerprint=fingerprint
         )
         if enqueued:
             logger.info("[CACHE_ENQUEUED] job=%s repo=%s - File caching job enqueued", job_id, repo_name)

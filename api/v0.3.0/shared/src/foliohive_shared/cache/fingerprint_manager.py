@@ -31,50 +31,6 @@ class FingerprintManager:
         fingerprint_json = json.dumps(fingerprint_data, sort_keys=True)
         return hashlib.md5(fingerprint_json.encode()).hexdigest()
 
-    @staticmethod
-    def generate_content_fingerprint(repos_bundle: Union[List[Dict[str, Any]], Dict[str, Any]]) -> str:
-        """Fingerprint a bundle of repos.
-
-        Accepts either:
-        - List of normalized repo entries with "repo_name" and "fingerprint"
-        - Dict with key "repos" containing a list of repo names (fallback)
-        """
-        normalized: List[Dict[str, Any]] = []
-
-        # Fallback shape used in cache_worker when no fingerprints are present
-        if isinstance(repos_bundle, dict) and "repos" in repos_bundle:
-            names = [r for r in repos_bundle.get("repos") or [] if r]
-            normalized = [{"repo_name": name} for name in names]
-        elif isinstance(repos_bundle, list):
-            normalized = repos_bundle
-
-        digest_inputs = []
-        for repo in normalized:
-            digest_inputs.append(
-                {
-                    "repo_name": repo.get("repo_name") or repo.get("name"),
-                    "fingerprint": repo.get("fingerprint"),
-                    "github_updated_at": repo.get("github_updated_at"),
-                }
-            )
-
-        digest_inputs.sort(key=lambda x: x.get("repo_name") or "")
-        fingerprint_str = json.dumps(digest_inputs, sort_keys=True)
-        return hashlib.md5(fingerprint_str.encode()).hexdigest()
-
-    @staticmethod
-    def generate_bundle_fingerprint(repo_fingerprints: List[str]) -> str:
-        """
-        Generate a fingerprint for a bundle of repositories based on their individual fingerprints.
-        
-        Args:
-            repo_fingerprints: List of repository fingerprints
-            
-        Returns:
-            A string hash representing the collection of repositories
-        """
-        fingerprint_str = json.dumps(sorted(repo_fingerprints))
-        return hashlib.md5(fingerprint_str.encode()).hexdigest()
 
     @staticmethod
     def generate_user_profile_fingerprint(user_profile: Dict[str, Any]) -> str:
@@ -95,3 +51,4 @@ class FingerprintManager:
         }
         fingerprint_json = json.dumps(fingerprint_data, sort_keys=True)
         return hashlib.md5(fingerprint_json.encode()).hexdigest()
+    
