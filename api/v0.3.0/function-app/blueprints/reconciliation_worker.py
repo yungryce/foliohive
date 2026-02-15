@@ -39,26 +39,6 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-@bp.timer_trigger(arg_name="timer", schedule=CACHE_CLEANUP_SCHEDULE, run_on_startup=True)
-def cleanup_non_bundle_cache(timer: func.TimerRequest) -> None:
-    # 1. Cleanup blob cache
-    if os.getenv("CF_CACHE_CLEANUP_ENABLED", "true").lower() == "true":
-        max_age_hours = _env_int("CF_CACHE_CLEANUP_MAX_AGE_HOURS", 24)
-        prefixes = get_non_bundle_cache_prefixes()
-        deleted = cache_manager.clean_stale_blobs(prefixes, max_age_hours=max_age_hours)
-        if deleted:
-            logger.info("[CACHE_CLEANUP] deleted_blobs=%d", deleted)
-
-    # 2. Cleanup stale RepoLanguages table rows
-    if os.getenv("CF_TABLE_CLEANUP_ENABLED", "true").lower() == "true":
-        # Keep languages for longer (e.g. 7 days) to allow debugging/history
-        table_retention_days = _env_int("CF_TABLE_RETENTION_DAYS", 7)
-        cutoff = (_utcnow() - timedelta(days=table_retention_days)).isoformat()
-        
-        deleted_rows = table_manager.cleanup_old_repo_languages(cutoff)
-        if deleted_rows:
-            logger.info("[TABLE_CLEANUP] deleted_rows=%d (older than %d days)", deleted_rows, table_retention_days)
-
 @bp.timer_trigger(arg_name="timer", schedule=JOB_CLEANUP_SCHEDULE, run_on_startup=True)
 def cleanup_old_jobs(timer: func.TimerRequest) -> None:
     """Cleanup old jobs and cascade-delete related job-scoped tables.

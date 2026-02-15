@@ -104,17 +104,6 @@ export class RepoBundleService {
     );
   }
 
-  checkBundle(username: string): Observable<boolean> {
-    const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}`;
-    return this.http.get<any>(url).pipe(
-      map(res => {
-        // Backend wraps response: {status: "success", ok: true, data: {...}, meta: {...}}
-        const payload = res?.status === 'success' && res?.data ? res.data : res;
-        return payload && Array.isArray(payload.data) && payload.data.length > 0;
-      }),
-      catchError(() => of(false))
-    );
-  }
 
   /**
    * Retrieve candidate portfolio metadata.

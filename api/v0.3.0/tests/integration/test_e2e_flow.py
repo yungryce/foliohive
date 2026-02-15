@@ -28,7 +28,6 @@ def mock_queue_messages():
     return {
         'github-sync': [],
         'merge-results': [],
-        'job-status-updates': [],
     }
 
 

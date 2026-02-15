@@ -5,7 +5,6 @@ import pytest  # type: ignore
 
 from foliohive_shared.queue.queue_manager import (
     CACHE_QUEUE,
-    JOB_STATUS_QUEUE,
     SYNC_QUEUE,
     QueueManager,
 )
@@ -54,7 +53,7 @@ def test_queue_manager_initializes_queues() -> None:
     manager = QueueManager(service_client=service)
 
     assert manager.is_enabled() is True
-    expected = {SYNC_QUEUE, CACHE_QUEUE, JOB_STATUS_QUEUE}
+    expected = {SYNC_QUEUE, CACHE_QUEUE}
     assert expected.issubset(service.clients.keys())
     assert all(service.clients[name].created for name in expected)
 

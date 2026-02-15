@@ -1,34 +1,10 @@
-# API Gateway & UI Refactor Implementation Guide
+UI Refactor Implementation Guide
 
 **Goal**: Eliminate repeated operations across functions, optimize data retrieval, separate concerns clearly, and align UI services with API responses.
-
-**Design Decisions**:
-- Split metadata/summary endpoints (avoid metadata waiting for AI summary)
-- Status endpoints are read-only; no side-effect enqueueing
-- Workers (sync_worker, cache_worker) own all job enqueueing
 - Each UI service serves its feature; shared infra lives in core/shared
 
 ---
 
-## Current Issues
-
-### API Gateway Problems
-
-1. **Status Side Effects**: `get_repo_cache_status()` enqueues cache jobs when state is `synced` or `cache_in_progress`
-   - Location: [api/v0.3.0/function-app/blueprints/api_gateway.py](api/v0.3.0/function-app/blueprints/api_gateway.py#L350)
-   - Impact: Aggressive polling causes repeated enqueueing; logic belongs in workers
-
-2. **Overlapping Status Endpoints**: Both `get_job_status()` and `get_repo_cache_status()` read `RepoSyncStatusRow`
-   - Confusion: When is job "done"? What's the difference between endpoints?
-   - Impact: UI polls both for same underlying state
-
-3. **Repeated Request Parsing**: Username/repo validation, session resolution, job resolution duplicated across 8+ endpoints
-   - No shared helpers for: param validation, error responses, session/job lookup
-   - Impact: Code duplication, inconsistent error messages
-
-4. **Metadata Retrieval Inefficiency**: `_batch_get_repo_metadata()` does linear search per repo (O(N²))
-   - Location: [api/v0.3.0/shared/src/foliohive_shared/table/table_manager.py](api/v0.3.0/shared/src/foliohive_shared/table/table_manager.py)
-   - Should use dict/lookup for O(1) access
 
 ### UI Issues
 
@@ -43,323 +19,14 @@
    - ConfigService, SessionIdService, CacheService used everywhere
    - No clear "core API client" pattern
 
-4. **Aggressive Polling**: 2-5 second intervals without backoff or conditional requests
-   - AI page: 3s × 40 attempts
-   - Projects: 5s × 24 attempts
-   - Repo detail: 2s × 30 attempts per repo
 
 ---
 
 ## Implementation Plan
 
-### Phase 1: API Gateway - Eliminate Repeated Operations
+### Phase 1: UI Service Reorganization
 
-#### Step 1.1: Create Request Helpers Module
-
-**File**: `api/v0.3.0/function-app/blueprints/request_helpers.py`
-
-```python
-"""Shared request parsing and validation helpers."""
-from azure.functions import HttpRequest, HttpResponse
-import logging
-
-logger = logging.getLogger(__name__)
-
-def validate_username(username: str) -> HttpResponse | None:
-    """Validate GitHub username format. Returns error response or None."""
-    if not username or not username.strip():
-        return HttpResponse(
-            json.dumps({"error": "Username is required"}),
-            status_code=400,
-            mimetype="application/json"
-        )
-    if len(username) > 39:  # GitHub limit
-        return HttpResponse(
-            json.dumps({"error": "Username exceeds maximum length"}),
-            status_code=400,
-            mimetype="application/json"
-        )
-    return None
-
-def validate_repo_name(repo_name: str) -> HttpResponse | None:
-    """Validate repository name format. Returns error response or None."""
-    if not repo_name or not repo_name.strip():
-        return HttpResponse(
-            json.dumps({"error": "Repository name is required"}),
-            status_code=400,
-            mimetype="application/json"
-        )
-    return None
-
-def get_session_id(req: HttpRequest) -> tuple[str | None, HttpResponse | None]:
-    """
-    Extract and validate session ID from request headers.
-    Returns: (session_id, error_response)
-    If error_response is not None, caller should return it immediately.
-    """
-    session_id = req.headers.get("X-Session-Id")
-    if not session_id:
-        error = HttpResponse(
-            json.dumps({"error": "X-Session-Id header is required"}),
-            status_code=400,
-            mimetype="application/json"
-        )
-        return None, error
-    return session_id, None
-
-def resolve_job(
-    table_manager,
-    username: str,
-    job_id: str | None = None,
-    allow_latest: bool = True
-) -> tuple[dict | None, HttpResponse | None]:
-    """
-    Resolve job by explicit job_id or latest job for username.
-    Returns: (job_dict, error_response)
-    If error_response is not None, caller should return it immediately.
-    """
-    if job_id:
-        job = table_manager.get_job_metadata(job_id)
-        if not job:
-            error = HttpResponse(
-                json.dumps({"error": f"Job {job_id} not found"}),
-                status_code=404,
-                mimetype="application/json"
-            )
-            return None, error
-        if job.get("candidate_username") != username:
-            error = HttpResponse(
-                json.dumps({"error": "Job does not belong to this candidate"}),
-                status_code=403,
-                mimetype="application/json"
-            )
-            return None, error
-        return job, None
-    
-    if allow_latest:
-        job = table_manager.get_latest_job_for_candidate(username)
-        if not job:
-            error = HttpResponse(
-                json.dumps({"error": f"No jobs found for candidate {username}"}),
-                status_code=404,
-                mimetype="application/json"
-            )
-            return None, error
-        return job, None
-    
-    error = HttpResponse(
-        json.dumps({"error": "job_id parameter is required"}),
-        status_code=400,
-        mimetype="application/json"
-    )
-    return None, error
-
-def error_response(message: str, status_code: int = 500) -> HttpResponse:
-    """Create standardized error response."""
-    return HttpResponse(
-        json.dumps({"error": message}),
-        status_code=status_code,
-        mimetype="application/json"
-    )
-
-def success_response(data: dict, status_code: int = 200) -> HttpResponse:
-    """Create standardized success response."""
-    return HttpResponse(
-        json.dumps(data),
-        status_code=status_code,
-        mimetype="application/json"
-    )
-```
-
-**Changes in `api_gateway.py`**: Replace all inline validation/session/job lookups with calls to these helpers.
-
----
-
-#### Step 1.2: Make Status Endpoints Read-Only
-
-**Current**: `get_repo_cache_status()` enqueues cache jobs as side effect
-
-**Change**: Remove all `queue_manager.enqueue_*` calls from status endpoints
-
-**File**: `api/v0.3.0/function-app/blueprints/api_gateway.py`
-
-**Before**:
-```python
-@bp.route("/candidate/<username>/<repo>/cache-status")
-def get_repo_cache_status(req: HttpRequest) -> HttpResponse:
-    # ... validation ...
-    status = table_manager.get_repo_sync_status(job_id, repo_name)
-    
-    if status.cache_state == "synced":
-        # DON'T DO THIS:
-        queue_manager.enqueue_cache(job_id, repo_name)
-    
-    return success_response({"cache_state": status.cache_state})
-```
-
-**After**:
-```python
-@bp.route("/candidate/<username>/<repo>/cache-status")
-def get_repo_cache_status(req: HttpRequest) -> HttpResponse:
-    """Read-only status check. Does NOT enqueue work."""
-    session_id, err = get_session_id(req)
-    if err:
-        return err
-    
-    err = validate_username(username)
-    if err:
-        return err
-    
-    err = validate_repo_name(repo)
-    if err:
-        return err
-    
-    job, err = resolve_job(table_manager, username, req.params.get("job_id"))
-    if err:
-        return err
-    
-    status = table_manager.get_repo_sync_status(job["job_id"], repo)
-    
-    return success_response({
-        "repo_name": repo,
-        "sync_state": status.sync_state,
-        "cache_state": status.cache_state,
-        "cache_progress": status.cache_progress,
-        "updated_at": status.timestamp.isoformat()
-    })
-```
-
-**Worker Responsibility**: Ensure `sync_worker.py` enqueues cache jobs when sync completes.
-
----
-
-#### Step 1.3: Consolidate Status Endpoints
-
-**Design**: Single endpoint returning job-level status + per-repo rollup
-
-**New Endpoint**: `GET /candidate/{username}/status?job_id={id}`
-
-**File**: `api/v0.3.0/function-app/blueprints/api_gateway.py`
-
-```python
-@bp.route("/candidate/<username>/status")
-def get_candidate_status(req: HttpRequest) -> HttpResponse:
-    """
-    Get comprehensive status for a candidate's sync job.
-    Returns job-level status + per-repo sync/cache states.
-    """
-    session_id, err = get_session_id(req)
-    if err:
-        return err
-    
-    err = validate_username(username)
-    if err:
-        return err
-    
-    job, err = resolve_job(table_manager, username, req.params.get("job_id"))
-    if err:
-        return err
-    
-    job_id = job["job_id"]
-    
-    # Get job-level metadata
-    job_meta = table_manager.get_job_metadata(job_id)
-    
-    # Get all repo statuses in one query
-    repo_statuses = table_manager.get_repos_for_job(job_id)
-    
-    # Compute rollup
-    total_repos = len(repo_statuses)
-    synced_count = sum(1 for r in repo_statuses if r["sync_state"] == "synced")
-    cached_count = sum(1 for r in repo_statuses if r["cache_state"] == "cached")
-    failed_count = sum(1 for r in repo_statuses if r["sync_state"] == "failed")
-    
-    overall_state = "pending"
-    if failed_count > 0:
-        overall_state = "failed"
-    elif cached_count == total_repos:
-        overall_state = "cached"
-    elif synced_count == total_repos:
-        overall_state = "synced"
-    elif synced_count > 0:
-        overall_state = "syncing"
-    
-    return success_response({
-        "job_id": job_id,
-        "candidate_username": username,
-        "overall_state": overall_state,
-        "progress": {
-            "total_repos": total_repos,
-            "synced": synced_count,
-            "cached": cached_count,
-            "failed": failed_count
-        },
-        "repositories": [
-            {
-                "repo_name": r["repo_name"],
-                "sync_state": r["sync_state"],
-                "cache_state": r["cache_state"],
-                "cache_progress": r.get("cache_progress", 0)
-            }
-            for r in repo_statuses
-        ],
-        "started_at": job_meta.get("started_at"),
-        "updated_at": job_meta.get("updated_at")
-    })
-```
-
-**Deprecation Path**:
-- `get_job_status()` and `get_repo_cache_status()` now deprecated. 
-- Update UI to use new consolidated endpoint
-- Remove old endpoints \
-
----
-
-#### Step 1.4: Add Conditional Request Support
-
-**For metadata endpoints that are stable after sync**, add ETag support:
-
-**File**: `api/v0.3.0/function-app/blueprints/api_gateway.py`
-
-```python
-import hashlib
-
-def compute_etag(data: dict) -> str:
-    """Compute ETag from response data."""
-    content = json.dumps(data, sort_keys=True)
-    return hashlib.sha256(content.encode()).hexdigest()[:16]
-
-@bp.route("/candidate/<username>/repos")
-def get_candidate_repos_metadata(req: HttpRequest) -> HttpResponse:
-    """Get metadata for all candidate repos with ETag support."""
-    # ... validation and data retrieval ...
-    
-    response_data = {
-        "candidate_username": username,
-        "job_id": job_id,
-        "repositories": repos_metadata
-    }
-    
-    etag = compute_etag(response_data)
-    
-    # Check If-None-Match
-    if_none_match = req.headers.get("If-None-Match")
-    if if_none_match == etag:
-        return HttpResponse(status_code=304)  # Not Modified
-    
-    return HttpResponse(
-        json.dumps(response_data),
-        status_code=200,
-        mimetype="application/json",
-        headers={"ETag": etag, "Cache-Control": "private, max-age=60"}
-    )
-```
-
----
-
-### Phase 2: UI Service Reorganization
-
-#### Step 2.1: Create Core API Client
+#### Step 1.1: Create Core API Client
 
 **New File**: `ui/src/app/core/services/api-client.service.ts`
 
@@ -435,7 +102,7 @@ export class ApiClientService {
 
 ---
 
-#### Step 2.2: Reorganize Services by Feature
+#### Step 1.2: Reorganize Services by Feature
 
 **New Structure**:
 ```
@@ -467,7 +134,7 @@ ui/src/app/
 
 ---
 
-#### Step 2.3: Fix Endpoint Name Mismatches
+#### Step 1.3: Fix Endpoint Name Mismatches
 
 **File**: `ui/src/app/features/projects/services/repo-metadata.service.ts`
 
@@ -493,7 +160,7 @@ getReposMetadata(username: string, jobId?: string): Observable<RepoMetadata[]> {
 
 ---
 
-#### Step 2.4: Fix Response Shape Mismatches
+#### Step 1.4: Fix Response Shape Mismatches
 
 **API returns** `cache_metadata` but **UI expects** `cacheStatus`.
 
@@ -526,7 +193,7 @@ Choose Option A for quick fix, Option B for consistency.
 
 ---
 
-#### Step 2.5: Implement Polling with Backoff
+#### Step 1.5: Implement Polling with Backoff
 
 **File**: `ui/src/app/features/candidate/services/candidate-status.service.ts`
 
@@ -739,35 +406,3 @@ describe('CandidateStatusService', () => {
 - [ ] Linter passes (Pylance, ESLint)
 
 ---
-
-## Migration Path
-
-1. **Week 1**: Implement API helpers + N+1 fix (non-breaking)
-2. **Week 2**: Add new `/status` endpoint; keep old endpoints (deprecated)
-3. **Week 3**: Refactor UI services to use ApiClient + new endpoints
-4. **Week 4**: Update polling logic with backoff + ETag support
-5. **Week 5**: Remove deprecated status endpoints after UI migration confirmed
-
----
-
-## Rollback Plan
-
-- All changes are backward-compatible until Week 5
-- If issues arise, UI can revert to old service implementations
-- API keeps both old and new status endpoints until UI fully migrated
-- N+1 fix is transparent (same response shape, just faster)
-
----
-
-## Open Questions
-
-1. Should we add WebSocket/SSE for status instead of polling? (Future consideration)
-2. Should metadata responses include `Retry-After` header when state is not final?
-3. Do we want batch status endpoint for multiple candidates? (Admin view use case)
-4. Should we version the API (`/v1/candidate/...`) before making these changes?
-
----
-
-**Last Updated**: 2026-02-13  
-**Status**: Ready for Implementation  
-**Estimated Effort**: 3-4 weeks (1 backend dev + 1 frontend dev)

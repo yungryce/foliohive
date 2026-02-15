@@ -108,7 +108,6 @@ class TestQueueRouting:
         queues = {
             "github-sync": [],
             "merge-results": [],
-            "job-status-updates": [],
         }
 
         class MockRouter:

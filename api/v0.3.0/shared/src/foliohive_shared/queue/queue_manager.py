@@ -16,7 +16,6 @@ logger.propagate = True
 
 SYNC_QUEUE = "github-sync"
 CACHE_QUEUE = "github-cache"
-JOB_STATUS_QUEUE = "job-status-updates"
 
 
 def _clean_queue_name(name: str) -> str:
@@ -46,7 +45,6 @@ class QueueManager:
         self.queue_names = queue_names or {
             SYNC_QUEUE: SYNC_QUEUE,
             CACHE_QUEUE: CACHE_QUEUE,
-            JOB_STATUS_QUEUE: JOB_STATUS_QUEUE,
         }
         self.service_client = service_client or self._create_service_client()
         self._queue_clients: Dict[str, QueueClient] = {}

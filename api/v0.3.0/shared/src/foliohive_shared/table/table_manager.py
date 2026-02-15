@@ -76,7 +76,7 @@ class JobMetadataRow:
     username: str  # PartitionKey
     job_id: str  # RowKey
     status: str = "queued" # "queued" | "syncing" | "metadata_ready" | "completed" | "failed"
-    bundle_fingerprint: str
+    bundle_fingerprint: Optional[str] = None
     force_refresh: bool = False
     last_requeue_at: Optional[str] = None
     trace_id: Optional[str] = None
@@ -217,6 +217,7 @@ class UserProfileRow:
     """
 
     username: str  # PartitionKey
+    fingerprint: str  # Content fingerprint 
     profile_key: str = "profile"  # RowKey
     github_id: Optional[int] = None
     name: Optional[str] = None
@@ -234,7 +235,6 @@ class UserProfileRow:
     following: int = 0
     github_created_at: Optional[str] = None
     github_updated_at: Optional[str] = None
-    fingerprint: str
     cached_at: Optional[str] = None
     updated_at: Optional[str] = None
 

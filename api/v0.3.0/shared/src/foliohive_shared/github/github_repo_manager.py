@@ -108,11 +108,6 @@ class GitHubRepoManager:
         self.api = api
         self.username = username
 
-    @cache_manager.cache_decorator(
-        cache_key_func=lambda username, repo, **kwargs: f"repo_metadata:{username}:{repo}",
-        ttl=3600,
-        on_cache_hit=_record_repo_metadata_cache_hit,
-    )
     def get_repo_metadata(
         self,
         username: Optional[str]=None,
@@ -155,11 +150,6 @@ class GitHubRepoManager:
         repo_data["api_usage"] = usage_tracker.to_dict()
         return repo_data
 
-    @cache_manager.cache_decorator(
-        cache_key_func=lambda username=None, **kwargs: f"repos_metadata:{username}:all",
-        ttl=3600,
-        on_cache_hit=_record_repo_list_cache_hit,
-    )
     def get_all_repos_metadata(
         self,
         username: Optional[str]=None,

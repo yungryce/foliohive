@@ -33,33 +33,46 @@ export class LandingComponent implements OnInit {
 
     this.loading = true;
 
-    // Check if bundle already exists
-    this.repoService.checkBundle(username).subscribe({
-      next: (exists) => {
-        if (exists) {
-          // Bundle exists, navigate directly without forcing refresh
-          this.candidateContext.upsertCandidate({ username });
-          this.loading = false;
-          this.router.navigate(['/ai'], { queryParams: { username } });
-        } else {
-          // Bundle doesn't exist, trigger refresh
-          this.repoService.startBuild(username, true).subscribe({
-            next: (response) => {
-              const jobId = response?.job_id;
+    // Check if latest job exists and is valid
+    this.repoService.getUserBundle(username, undefined, false).subscribe({
+      next: (bundle) => {
+        if (bundle?.job_id) {
+          // Job exists, verify status to ensure it's still valid
+          this.repoService.getJobStatus(username, bundle.job_id).subscribe({
+            next: (status) => {
+              // Job exists and is valid, navigate to AI view
               this.candidateContext.upsertCandidate({ username });
               this.loading = false;
-              this.router.navigate(['/ai'], { queryParams: { username, job_id: jobId } });
+              this.router.navigate(['/ai'], { queryParams: { username, job_id: bundle.job_id } });
             },
             error: (err) => {
-              this.loading = false;
-              this.error = 'Failed to start refresh. Is api-gateway running?';
-            },
+              // Job status check failed (404 or error), trigger new build
+              this.triggerNewBuild(username);
+            }
           });
+        } else {
+          // No job_id in bundle, trigger new build
+          this.triggerNewBuild(username);
         }
       },
       error: (err) => {
+        // No bundle found, trigger new build
+        this.triggerNewBuild(username);
+      },
+    });
+  }
+
+  private triggerNewBuild(username: string): void {
+    this.repoService.startBuild(username, true).subscribe({
+      next: (response) => {
+        const jobId = response?.job_id;
+        this.candidateContext.upsertCandidate({ username });
         this.loading = false;
-        this.error = 'Failed to check bundle. Is api-gateway running?';
+        this.router.navigate(['/ai'], { queryParams: { username, job_id: jobId } });
+      },
+      error: (err: any) => {
+        this.loading = false;
+        this.error = 'Failed to start refresh. Is api-gateway running?';
       },
     });
   }
@@ -70,15 +83,18 @@ export class LandingComponent implements OnInit {
 
   private restoreStoredCandidates(): void {
     const candidates = this.candidateContext.storedCandidates.slice(0, 5);
+    console.log('Restoring candidates from storage:', candidates);
     if (!candidates.length) return;
 
     if (!this.candidateContext.activeUsername) {
       this.candidateContext.setActive(candidates[0].username);
+      console.log('No active candidate. Setting active to:', candidates[0].username);
     }
 
     candidates.forEach(candidate => {
-      this.repoService.checkBundle(candidate.username).subscribe((exists) => {
-        if (!exists) {
+      this.repoService.getUserBundle(candidate.username, undefined, false).subscribe((bundle) => {
+        // Remove candidate if no valid job or data found
+        if (!bundle?.job_id || !bundle?.data || bundle.data.length === 0) {
           this.candidateContext.removeCandidate(candidate.username);
         }
       });

@@ -285,56 +285,6 @@ class CacheManager:
             logger.warning("cache-manager: error deleting key %s: %s", cache_key, exc)
             return False
 
-    def clean_stale_blobs(
-        self,
-        prefixes: Iterable[str],
-        *,
-        max_age_hours: Optional[int] = None,
-    ) -> int:
-        """Delete expired or stale blobs under the provided prefixes."""
-        self._ensure_initialized()
-        if not self.use_cache or not self._blob_service_client:
-            return 0
-
-        container_client = self._blob_service_client.get_container_client(self.container_name)
-        deleted = 0
-        now = _utcnow()
-        max_age_delta = timedelta(hours=max_age_hours) if max_age_hours else None
-
-        for prefix in prefixes:
-            if not prefix:
-                continue
-            try:
-                blobs = container_client.list_blobs(name_starts_with=prefix, include=["metadata"])
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning("cache-manager: unable to list blobs for prefix %s: %s", prefix, exc)
-                continue
-
-            for blob in blobs:
-                name = getattr(blob, "name", "") or ""
-                if not name:
-                    continue
-
-                metadata = getattr(blob, "metadata", None) or {}
-                expires_at = metadata.get("expires_at")
-                parsed_expiry = _parse_iso(expires_at)
-                if parsed_expiry and now >= parsed_expiry:
-                    try:
-                        container_client.delete_blob(name)
-                        deleted += 1
-                    except Exception as exc:  # pragma: no cover
-                        logger.warning("cache-manager: failed to delete expired blob %s: %s", name, exc)
-                    continue
-
-                if max_age_delta:
-                    last_modified = getattr(blob, "last_modified", None)
-                    if last_modified and now - last_modified >= max_age_delta:
-                        try:
-                            container_client.delete_blob(name)
-                            deleted += 1
-                        except Exception as exc:  # pragma: no cover
-                            logger.warning("cache-manager: failed to delete stale blob %s: %s", name, exc)
-        return deleted
 
     # ------------------------------------------------------------------
     # Repository file retrieval
