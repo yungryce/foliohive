@@ -82,14 +82,12 @@ def mock_cache_manager(mock_cache_store):
             return {
                 'status': 'valid',
                 'data': mock_cache_store[key]['data'],
-                'fingerprint': mock_cache_store[key].get('fingerprint'),
             }
         return {'status': 'missing', 'data': None}
 
-    def save(key, data, ttl=None, fingerprint=None):
+    def save(key, data, ttl=None):
         mock_cache_store[key] = {
             'data': data,
-            'fingerprint': fingerprint,
             'saved_at': datetime.now(timezone.utc).isoformat(),
         }
         return True
@@ -336,7 +334,7 @@ class TestMergeWorkerIntegration:
             cache_key = mock_cache_manager.generate_cache_key(
                 kind='repo', username=username, repo=repo['name']
             )
-            mock_cache_manager.save(cache_key, repo, fingerprint=repo['fingerprint'])
+            mock_cache_manager.save(cache_key, repo)
 
         # Load repos from cache (simulating merge worker)
         loaded_repos = []
@@ -361,13 +359,12 @@ class TestMergeWorkerIntegration:
 
         bundle_key = mock_cache_manager.generate_cache_key(kind='bundle', username=username)
         bundle_fingerprint = 'bundle_fp_combined'
-        mock_cache_manager.save(bundle_key, merged_bundle, fingerprint=bundle_fingerprint)
+        mock_cache_manager.save(bundle_key, merged_bundle)
 
         # Verify bundle is saved
         result = mock_cache_manager.get(bundle_key)
         assert result['status'] == 'valid'
         assert len(result['data']) == 2
-        assert result['fingerprint'] == bundle_fingerprint
 
     def test_merge_updates_job_to_completed(self, mock_cache_manager):
         """Verify merge worker updates job status to completed."""
@@ -442,7 +439,7 @@ class TestFullPipelineIntegration:
             cache_key = mock_cache_manager.generate_cache_key(
                 kind='repo', username=username, repo=sync_msg['repo_name']
             )
-            mock_cache_manager.save(cache_key, repo_data, fingerprint=sync_msg['fingerprint'])
+            mock_cache_manager.save(cache_key, repo_data)
             synced_repos.append(sync_msg['repo_name'])
 
         # Update job progress
@@ -468,7 +465,7 @@ class TestFullPipelineIntegration:
                 merged_bundle.append(result['data'])
 
         bundle_key = mock_cache_manager.generate_cache_key(kind='bundle', username=username)
-        mock_cache_manager.save(bundle_key, merged_bundle, fingerprint='bundle_fp')
+        mock_cache_manager.save(bundle_key, merged_bundle)
 
         # Update job to completed
         job_data = mock_cache_manager.get(job_key)['data']
@@ -496,7 +493,7 @@ class TestFullPipelineIntegration:
             {'name': 'repo-cached', 'fingerprint': 'fp_old', 'has_documentation': True},
         ]
         bundle_key = mock_cache_manager.generate_cache_key(kind='bundle', username=username)
-        mock_cache_manager.save(bundle_key, existing_bundle, fingerprint='old_bundle_fp')
+        mock_cache_manager.save(bundle_key, existing_bundle)
 
         # Only sync the new repo
         new_repo_name = 'repo-new'
@@ -512,17 +509,16 @@ class TestFullPipelineIntegration:
         new_cache_key = mock_cache_manager.generate_cache_key(
             kind='repo', username=username, repo='repo-new'
         )
-        mock_cache_manager.save(new_cache_key, new_repo_data, fingerprint='fp_new')
+        mock_cache_manager.save(new_cache_key, new_repo_data)
 
         # Merge combines old and new
         old_bundle = mock_cache_manager.get(bundle_key)['data']
         merged = old_bundle + [new_repo_data]
-        mock_cache_manager.save(bundle_key, merged, fingerprint='new_bundle_fp')
+        mock_cache_manager.save(bundle_key, merged)
 
         # Verify merged bundle
         result = mock_cache_manager.get(bundle_key)
         assert len(result['data']) == 2
-        assert result['fingerprint'] == 'new_bundle_fp'
 
 
 # ---------------------------------------------------------------------------
@@ -583,19 +579,19 @@ class TestCacheSynchronization:
     """Test cache consistency across workers."""
 
     def test_fingerprint_propagation(self, mock_cache_manager):
-        """Verify fingerprints propagate correctly through the pipeline."""
+        """Verify fingerprints stored in data propagate correctly through the pipeline."""
         username = 'testuser'
 
-        # Sync worker saves with fingerprint
+        # Sync worker saves with fingerprint in data
         repo_fp = 'repo_fingerprint_abc123'
         repo_key = mock_cache_manager.generate_cache_key(
             kind='repo', username=username, repo='test-repo'
         )
-        mock_cache_manager.save(repo_key, {'name': 'test-repo'}, fingerprint=repo_fp)
+        mock_cache_manager.save(repo_key, {'name': 'test-repo', 'fingerprint': repo_fp})
 
-        # Merge worker reads fingerprint
+        # Merge worker reads fingerprint from data
         result = mock_cache_manager.get(repo_key)
-        assert result['fingerprint'] == repo_fp
+        assert result['data']['fingerprint'] == repo_fp
 
     def test_bundle_fingerprint_derived_from_repos(self, mock_cache_manager):
         """Verify bundle fingerprint reflects constituent repos."""
@@ -611,11 +607,12 @@ class TestCacheSynchronization:
         combined = '_'.join(sorted(repo_fps))
 
         bundle_key = mock_cache_manager.generate_cache_key(kind='bundle', username=username)
-        mock_cache_manager.save(bundle_key, repos, fingerprint=f"bundle_{combined}")
+        mock_cache_manager.save(bundle_key, repos)
 
         result = mock_cache_manager.get(bundle_key)
-        assert 'fp_1' in result['fingerprint']
-        assert 'fp_2' in result['fingerprint']
+        # Fingerprints are now stored in the data itself
+        assert any('fp_1' in r['fingerprint'] for r in result['data'])
+        assert any('fp_2' in r['fingerprint'] for r in result['data'])
 
     def test_job_metadata_consistency(self, mock_cache_manager):
         """Verify job metadata remains consistent across updates."""

@@ -1329,7 +1329,6 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     repo_files = _get_repo_files(
         username,
         selected_repos,
-        job_id=ctx.job_id,
         max_additional_readmes=file_budget["max_readme_files"],
         max_config_files=file_budget["max_config_files"],
         include_readme=False
@@ -1393,7 +1392,6 @@ def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
     repo_files = _get_repo_files(
         username,
         [{"repo_name": repo}],
-        job_id=ctx.job_id,
         max_additional_readmes=file_budget["max_readme_files"],
         max_config_files=file_budget["max_config_files"],
         include_readme=True,  # Always include primary readme for repo summary
@@ -1475,7 +1473,6 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
     repo_files = _get_repo_files(
         username,
         selected_repos,
-        job_id=ctx.job_id,
         max_additional_readmes=file_budget["max_readme_files"],
         max_config_files=file_budget["max_config_files"],
     )

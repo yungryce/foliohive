@@ -4,19 +4,17 @@ This module purposefully keeps the cache story simple: hot metadata now lives in
 Azure Table Storage (via ``foliohive_shared.table``), while this helper
 manages the remaining blob-based payloads such as repo bundles or large
 intermediate artifacts. The public surface area stays compatible with the
-existing callers (simple ``get``/``save`` helpers plus the decorator used by the
-GitHub client) but the implementation is trimmed to the essentials.
+existing callers (simple ``get``/``save`` helpers) and the implementation is
+trimmed to the essentials.
 """
 
 from __future__ import annotations
 
-import functools
-import inspect
 import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Dict, Optional
 
 from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
 from azure.identity import DefaultAzureCredential
@@ -173,7 +171,6 @@ class CacheManager:
                 return {
                     "status": "valid",
                     "data": cached_value,
-                    "fingerprint": None,
                     "last_modified": None,
                     "size_bytes": None,
                 }
@@ -217,7 +214,6 @@ class CacheManager:
             return {
                 "status": "valid",
                 "data": payload.get("data"),
-                "fingerprint": metadata.get("fingerprint"),
                 "last_modified": properties.last_modified.isoformat() if properties.last_modified else None,
                 "size_bytes": properties.size,
             }
@@ -230,8 +226,6 @@ class CacheManager:
         cache_key: str,
         data: Any,
         ttl: Optional[int] = None,
-        *,
-        fingerprint: str,
     ) -> bool:
         if _hot_cache_enabled():
             hot_ttl = ttl if ttl is not None else self.default_ttl
@@ -242,8 +236,6 @@ class CacheManager:
             return False
 
         metadata: Dict[str, str] = {}
-        if fingerprint:
-            metadata["fingerprint"] = fingerprint
         if ttl is not None:
             expires_at = (_utcnow() + timedelta(seconds=int(ttl))).isoformat()
             metadata["expires_at"] = expires_at
@@ -262,10 +254,9 @@ class CacheManager:
                 metadata=metadata,
             )
             logger.info(
-                "cache-manager: blob save key=%s expires_at=%s fingerprint=%s",
+                "cache-manager: blob save key=%s expires_at=%s",
                 cache_key,
-                metadata.get("expires_at"),
-                metadata.get("fingerprint") or "<none>",
+                metadata.get("expires_at") or "<none>",
             )
             return True
         except Exception as exc:
@@ -468,77 +459,7 @@ class CacheManager:
         
         return result
 
-    # ------------------------------------------------------------------
-    # Decorator helper used by GitHub client
-    # ------------------------------------------------------------------
-    def cache_decorator(
-        self,
-        cache_key_func: Callable,
-        ttl: Optional[int] = None,
-        *,
-        on_cache_hit: Optional[Callable[[dict], None]] = None,
-    ):
-        def decorator(func: Callable):
-            signature = inspect.signature(func)
-            resolve_key = self._build_cache_key_resolver(cache_key_func)
 
-            @functools.wraps(func)
-            def wrapper(*args, **kwargs):
-                if not self.use_cache:
-                    return func(*args, **kwargs)
-
-                bound = self._bind_arguments(signature, args, kwargs, func.__name__)
-                if bound is None:
-                    return func(*args, **kwargs)
-
-                cache_key = resolve_key(bound)
-                if not cache_key:
-                    return func(*args, **kwargs)
-
-                cached = self.get(cache_key)
-                if cached.get("status") == "valid":
-                    if on_cache_hit:
-                        try:
-                            on_cache_hit(bound)
-                        except Exception as exc:  # pragma: no cover - defensive
-                            logger.debug("cache-manager: cache hit hook failed for %s: %s", func.__name__, exc)
-                    return cached.get("data")
-
-                result = func(*args, **kwargs)
-                if cached.get("status") != "disabled":
-                    self.save(cache_key, result, ttl=ttl)
-                return result
-
-            return wrapper
-
-        return decorator
-
-    @staticmethod
-    def _bind_arguments(signature: inspect.Signature, args: tuple, kwargs: dict, func_name: str) -> Optional[dict]:
-        try:
-            bound = signature.bind_partial(*args, **kwargs)
-        except TypeError:
-            logger.warning("cache-manager: failed to bind cache arguments for %s", func_name)
-            return None
-        bound.arguments.pop("self", None)
-        bound.arguments.pop("cls", None)
-        return dict(bound.arguments)
-
-    @staticmethod
-    def _build_cache_key_resolver(cache_key_func: Callable) -> Callable[[dict], Optional[str]]:
-        cache_sig = inspect.signature(cache_key_func)
-        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in cache_sig.parameters.values())
-        allowed = set(cache_sig.parameters.keys()) if not accepts_kwargs else None
-
-        def resolver(bound_arguments: dict) -> Optional[str]:
-            try:
-                payload = bound_arguments if accepts_kwargs else {k: bound_arguments.get(k) for k in allowed}
-                return cache_key_func(**payload)
-            except Exception as exc:
-                logger.warning("cache-manager: cache key generation failed: %s", exc)
-                return None
-
-        return resolver
 
 
 # Global instance mimicking the historic import style

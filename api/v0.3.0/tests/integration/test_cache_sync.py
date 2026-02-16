@@ -222,14 +222,14 @@ class TestCrossWorkerCacheConsistency:
             "readme": "# Test Repo",
             "fingerprint": "fp_sync_123",
         }
-        cache_store.save(repo_key, repo_data, fingerprint="fp_sync_123")
+        cache_store.save(repo_key, repo_data)
 
         # Merge worker reads the same data
         result = cache_store.get(repo_key)
 
         assert result["status"] == "valid"
         assert result["data"]["name"] == repo_name
-        assert result["fingerprint"] == "fp_sync_123"
+        assert result["data"]["fingerprint"] == "fp_sync_123"
 
     def test_merge_worker_bundle_readable_by_api_gateway(self, cache_store):
         """Verify bundle cached by merge worker is readable by API gateway."""
@@ -241,7 +241,7 @@ class TestCrossWorkerCacheConsistency:
             {"name": "repo-1", "fingerprint": "fp_1"},
             {"name": "repo-2", "fingerprint": "fp_2"},
         ]
-        cache_store.save(bundle_key, bundle, fingerprint="bundle_fp")
+        cache_store.save(bundle_key, bundle)
 
         # API gateway reads bundle
         result = cache_store.get(bundle_key)
@@ -306,16 +306,16 @@ class TestCacheUpdateSemantics:
         assert "field_a" not in result["data"]
 
     def test_fingerprint_updated_on_save(self, cache_store):
-        """Verify fingerprint is updated on save."""
+        """Verify fingerprint in data is preserved on save."""
         key = "test_key"
 
-        cache_store.save(key, {"data": "v1"}, fingerprint="fp_v1")
+        cache_store.save(key, {"data": "v1", "fingerprint": "fp_v1"})
         result1 = cache_store.get(key)
-        assert result1["fingerprint"] == "fp_v1"
+        assert result1["data"]["fingerprint"] == "fp_v1"
 
-        cache_store.save(key, {"data": "v2"}, fingerprint="fp_v2")
+        cache_store.save(key, {"data": "v2", "fingerprint": "fp_v2"})
         result2 = cache_store.get(key)
-        assert result2["fingerprint"] == "fp_v2"
+        assert result2["data"]["fingerprint"] == "fp_v2"
 
     def test_cached_at_updated_on_save(self, cache_store):
         """Verify cached_at timestamp is updated on save."""

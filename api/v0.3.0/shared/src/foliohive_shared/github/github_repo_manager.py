@@ -215,11 +215,6 @@ class GitHubRepoManager:
             profile["api_usage"] = usage_tracker.to_dict()
         return profile
 
-    @cache_manager.cache_decorator(
-        cache_key_func=lambda username, repo, path, **kwargs: f"file_content:{username}:{repo}:{path}",
-        ttl=3600,
-        on_cache_hit=_record_file_content_cache_hit,
-    )
     def get_file_content(
         self,
         username: Optional[str],
@@ -239,6 +234,22 @@ class GitHubRepoManager:
         """
         if not username:
             raise ValueError(USERNAME_REQUIRED_ERROR)
+        
+        # Check cache first
+        cache_key = f"file_content:{username}:{repo}:{path}"
+        cached = cache_manager.get(cache_key)
+        if cached.get("status") == "valid":
+            # Record cache hit for usage tracking
+            if usage:
+                _record_file_content_cache_hit({
+                    "username": username,
+                    "repo": repo,
+                    "path": path,
+                    "usage": usage,
+                })
+            return cached.get("data")
+        
+        # Cache miss - fetch from GitHub API
         endpoint = f"repos/{username}/{repo}/contents/{path}"
         file_data = self.api.make_request(
             'GET',
@@ -247,15 +258,17 @@ class GitHubRepoManager:
             usage=usage,
             target_key=path,
         )
+        
+        content = None
         if isinstance(file_data, dict) and file_data.get('type') == 'file':
-            return self.api.decode_file_content(file_data)
-        return None
+            content = self.api.decode_file_content(file_data)
+        
+        # Save to cache with TTL
+        if cached.get("status") != "disabled" and content is not None:
+            cache_manager.save(cache_key, content, ttl=3600)
+        
+        return content
 
-    @cache_manager.cache_decorator(
-        cache_key_func=lambda username, repo, ref=None, **kwargs: f"repo_path_index:{username}:{repo}:{ref or 'default'}",
-        ttl=900,
-        on_cache_hit=_record_repo_tree_cache_hit,
-    )
     def get_repo_path_index(
         self,
         username: Optional[str],
@@ -269,6 +282,21 @@ class GitHubRepoManager:
         if not username:
             raise ValueError(USERNAME_REQUIRED_ERROR)
 
+        # Check cache first
+        cache_key = f"repo_path_index:{username}:{repo}:{ref or 'default'}"
+        cached = cache_manager.get(cache_key)
+        if cached.get("status") == "valid":
+            # Record cache hit for usage tracking
+            if usage:
+                _record_repo_tree_cache_hit({
+                    "username": username,
+                    "repo": repo,
+                    "ref": ref,
+                    "usage": usage,
+                })
+            return cached.get("data") or []
+
+        # Cache miss - resolve ref and fetch from GitHub API
         resolved_ref = ref
         if not resolved_ref:
             try:
@@ -302,7 +330,14 @@ class GitHubRepoManager:
             path = item.get("path")
             if path:
                 paths.add(path)
-        return sorted(paths)
+        
+        result = sorted(paths)
+        
+        # Save to cache with TTL
+        if cached.get("status") != "disabled":
+            cache_manager.save(cache_key, result, ttl=900)
+        
+        return result
 
     def discover_repo_files(
         self,
@@ -327,7 +362,7 @@ class GitHubRepoManager:
         path_index = self.get_repo_path_index(username=username, repo=repo, usage=usage)
         path_index_set = set(path_index) if path_index else set()
         if not path_index_set:
-            logger.debug("Empty path index for %s/%s; falling back to candidate probes.", username, repo)
+            logger.info("Empty path index for %s/%s; falling back to candidate probes.", username, repo)
 
         target_paths = self._discover_file_target_paths_by_level(
             path_index=path_index_set,

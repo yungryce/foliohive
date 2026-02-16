@@ -86,7 +86,7 @@ class TestCacheManagerGet:
         blob_client.exists.return_value = True
 
         properties = MagicMock()
-        properties.metadata = {"fingerprint": "abc123"}
+        properties.metadata = {}
         properties.last_modified = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
         properties.size = 1024
         blob_client.get_blob_properties.return_value = properties
@@ -96,7 +96,6 @@ class TestCacheManagerGet:
 
         assert result["status"] == "valid"
         assert result["data"] == {"k": "v"}
-        assert result["fingerprint"] == "abc123"
         assert result["size_bytes"] == 1024
 
     def test_get_expired_entry(self):
@@ -149,11 +148,10 @@ class TestCacheManagerSave:
         cache = CacheManager()
         blob_client = self._prepare_blob(cache)
 
-        assert cache.save("key", {"value": 1}, ttl=60, fingerprint="abc") is True
+        assert cache.save("key", {"value": 1}, ttl=60) is True
 
         upload_kwargs = blob_client.upload_blob.call_args.kwargs
         metadata = upload_kwargs["metadata"]
-        assert metadata["fingerprint"] == "abc"
         assert "expires_at" in metadata
 
     def test_save_handles_errors(self):
@@ -201,33 +199,6 @@ class TestCacheManagerDelete:
 
         assert cache.delete("key") is False
 
-
-class TestCacheDecorator:
-    def test_returns_cached_data(self):
-        cache = CacheManager()
-        cache.use_cache = True
-        cache.get = Mock(return_value={"status": "valid", "data": "cached"})
-        cache.save = Mock()
-
-        @cache.cache_decorator(lambda username: f"repos_{username}")
-        def loader(username: str) -> str:
-            return "fresh"
-
-        assert loader("alice") == "cached"
-        cache.save.assert_not_called()
-
-    def test_populates_cache_on_miss(self):
-        cache = CacheManager()
-        cache.use_cache = True
-        cache.get = Mock(return_value={"status": "missing", "data": None})
-        cache.save = Mock(return_value=True)
-
-        @cache.cache_decorator(lambda username: f"repos_{username}", ttl=42)
-        def loader(username: str) -> str:
-            return f"fresh-{username}"
-
-        assert loader("bob") == "fresh-bob"
-        cache.save.assert_called_once_with("repos_bob", "fresh-bob", ttl=42)
 
 
 class TestCacheManagerCacheKeyGeneration:
