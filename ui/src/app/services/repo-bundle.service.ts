@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
-import { Observable, of } from 'rxjs';
+import { Observable, of, throwError } from 'rxjs';
 import { map, catchError } from 'rxjs/operators';
 import { ConfigService } from './config.service';
 import { CacheService } from './cache.service';
@@ -57,7 +57,11 @@ export interface SessionCandidate {
 export interface SingleRepoBundleResponse {
   username: string;
   repo: string;
+  job_id?: string;
+  last_modified?: string;
+  status?: string;
   fingerprint?: string;
+  repo_entry?: any;
   primary_readme?: string;
   readme_files?: { [path: string]: string };
   config_files?: { [filename: string]: string };
@@ -74,14 +78,30 @@ export class RepoBundleService {
 
   /**
    * Trigger backend orchestration to (re)build bundles for a user.
+   * Returns job_id for status polling.
    * POST /candidate/{username}/refresh
+   * 
+   * @param username - GitHub username
+   * @param force - Force refresh even if recent data exists
+   * @returns Observable<string> - Job ID for polling
+   * @throws Error if no job_id returned or request fails
    */
-  startBuild(username: string, force = true): Observable<RefreshResponse> {
+  startBuild(username: string, force = true): Observable<string> {
     const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/refresh`;
     return this.http.post<any>(url, { force_refresh: force }).pipe(
       map(res => {
-        if (res?.status === 'success' && res?.data) return res.data as RefreshResponse;
-        return res as RefreshResponse;
+        const data = res?.status === 'success' && res?.data ? res.data : res;
+        const jobId = data?.job_id;
+        
+        if (!jobId) {
+          throw new Error('No job_id returned from refresh endpoint');
+        }
+        
+        return jobId as string;
+      }),
+      catchError(err => {
+        const errorMsg = err?.error?.message || err?.message || 'Failed to start build';
+        return throwError(() => new Error(errorMsg));
       })
     );
   }
@@ -109,7 +129,7 @@ export class RepoBundleService {
    * Retrieve candidate portfolio metadata.
    * GET /candidate/{username}?job_id=...
    */
-  getUserBundle(username: string, jobId?: string, useCache = true): Observable<RepoBundleResponse> {
+  getCandidateMetadata(username: string, jobId?: string, useCache = true): Observable<RepoBundleResponse> {
     const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}`;
     const cacheKey = `bundle-${username}-${jobId || 'latest'}`;
 
@@ -133,6 +153,32 @@ export class RepoBundleService {
       }),
       catchError(err => {
         return of({ username, data: [] } as RepoBundleResponse);
+      })
+    );
+  }
+
+  /**
+   * Retrieve metadata for a single repository.
+   * GET /candidate/{username}/{repo}/metadata
+   */
+  getCandidateRepoMetadata(username: string, repo: string, useCache = true): Observable<SingleRepoBundleResponse> {
+    const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/${encodeURIComponent(repo)}/metadata`;
+    const cacheKey = `bundle-repo-${username}-${repo}`;
+
+    if (useCache) {
+      const cached = this.cache.get<SingleRepoBundleResponse>(cacheKey);
+      if (cached) return of(cached);
+    }
+
+    return this.http.get<any>(url).pipe(
+      map(res => {
+        const payload = (res?.status === 'success' && res?.data ? res.data : res) as SingleRepoBundleResponse;
+        const normalized = payload ?? ({ username, repo, data: null } as SingleRepoBundleResponse);
+        this.cache.set(cacheKey, normalized, 1000 * 60 * 5); // 5 min cache
+        return normalized;
+      }),
+      catchError(err => {
+        return of({ username, repo, data: null } as SingleRepoBundleResponse);
       })
     );
   }

@@ -128,12 +128,30 @@ export class AIAssistantService {
         return res as AIAssistantResponse;
       }),
       catchError(err => {
-        if (err.status === 404 && req.username) {
-          // On not found, kick off a build with force_refresh
-          this.startBuild(req.username, true).subscribe();
+        const errorCode = err?.error?.error_code;
+        const status = err?.status;
+        
+        // Handle NOT_READY errors (files not yet cached)
+        if (status === 404 && (errorCode === 'NOT_READY' || errorCode === 'NOT_FOUND')) {
+          if (req.username) {
+            // Trigger build in background but return helpful message
+            this.startBuild(req.username, true).subscribe();
+          }
+          
+          return of({
+            response: errorCode === 'NOT_READY' 
+              ? 'Portfolio data is still being prepared. Please wait a moment and try again, or trigger a manual refresh.'
+              : 'No portfolio data found for this candidate. A refresh has been triggered - please try again in a minute.',
+            repositories_used: [],
+            total_repositories: 0,
+            query: req.query
+          } as AIAssistantResponse);
         }
+        
+        // Generic error fallback
+        const errorMsg = err?.error?.message || err?.message || 'AI service failed or is unavailable.';
         return of({
-          response: 'AI service failed or is unavailable. Please try again.',
+          response: `${errorMsg} Please try again.`,
           repositories_used: [],
           total_repositories: 0,
           query: req.query

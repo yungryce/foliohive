@@ -1260,6 +1260,55 @@ def get_candidate_repos_metadata(req: func.HttpRequest) -> func.HttpResponse:
     )
 
 
+@bp.route(route="candidate/{username}/{repo}/metadata", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_candidate_repo_metadata(req: func.HttpRequest) -> func.HttpResponse:
+    """Retrieve metadata for a single repository.
+
+    Uses normalized table storage and returns one repository bundle entry so the
+    UI can render project metadata immediately while README summary generation
+    continues asynchronously.
+    """
+    username = req.route_params.get("username")
+    repo = req.route_params.get("repo")
+    if not username:
+        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400, error_code="VALIDATION_ERROR")
+    if not repo:
+        return _create_error_response("Repository name required", 400, error_code="VALIDATION_ERROR")
+
+    ctx = _prepare_candidate_context(req, username)
+    if not ctx.job_id:
+        return _create_error_response(
+            f"No candidate found for '{username}'. Trigger refresh first.",
+            404,
+            error_code="NOT_FOUND",
+            request_id=ctx.trace.get("request_id"),
+        )
+
+    job = ctx.job or {}
+    detail_bundle = _build_repo_detail_entry(repo, ctx=ctx)
+    repo_entry = detail_bundle.get("repo_entry", {})
+
+    if not repo_entry:
+        return _create_error_response(
+            f"Repository metadata for '{repo}' not ready",
+            404,
+            error_code="NOT_READY",
+            request_id=ctx.trace.get("request_id"),
+        )
+
+    payload = {
+        "username": ctx.username,
+        "repo": repo,
+        "job_id": job.get("job_id") or ctx.job_id,
+        "fingerprint": job.get("bundle_fingerprint"),
+        "last_modified": _restore_iso_timestamp(job.get("updated_at")) or job.get("updated_at"),
+        "status": job.get("status"),
+        "repo_entry": repo_entry,
+        "data": repo_entry,
+    }
+    return _create_success_response(payload, request_id=ctx.trace.get("request_id"))
+
+
 @bp.route(route="candidate/{username}/profile", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_profile(req: func.HttpRequest) -> func.HttpResponse:
     """Retrieve aggregated candidate profile data.

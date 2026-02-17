@@ -6,6 +6,7 @@ import { Observable, catchError, finalize, map, of } from 'rxjs';
 import DOMPurify from 'dompurify';
 import { AIAssistantService, ReadmeSummaryResponse } from '../../services/assistant.service';
 import { CandidateContextService } from '../../services/candidate-context.service';
+import { RepoBundleService } from '../../services/repo-bundle.service';
 
 /**
  * Aligned with backend schema from get_repo_files in api_gateway.py
@@ -33,6 +34,7 @@ export class ProjectComponent implements OnInit {
   private ai = inject(AIAssistantService);
   private sanitizer = inject(DomSanitizer);
   private candidateContext = inject(CandidateContextService);
+  private repoBundle = inject(RepoBundleService);
 
   contentHtml: SafeHtml = '';
   summaryLoading = false;
@@ -43,21 +45,47 @@ export class ProjectComponent implements OnInit {
   repo$!: Observable<RepoDetailVM | null>;
 
   ngOnInit(): void {
-    this.repoName = this.route.snapshot.paramMap.get('repo') || '';
+    const { username, repoName } = this.extractRouteParams();
 
-    const active = this.candidateContext.activeCandidate;
-    this.username = active?.username ?? '';
-
-    if (!this.username || !this.repoName) {
+    if (!username || !repoName) {
       this.summaryError = 'Missing candidate or repository.';
       this.repo$ = of(this.toVM(null));
       return;
     }
 
+    this.loadRepoMetadata(username, repoName);
+    this.loadReadmeSummary(username, repoName);
+  }
+
+  /**
+   * Extract username from context and repo name from route params.
+   */
+  private extractRouteParams(): { username: string; repoName: string } {
+    const repoName = this.route.snapshot.paramMap.get('repo') || '';
+    const active = this.candidateContext.activeCandidate;
+    const username = active?.username ?? '';
+    return { username, repoName };
+  }
+
+  /**
+   * Load repository metadata immediately for quick display.
+   * Uses single-repo endpoint to fetch only what we need.
+   */
+  private loadRepoMetadata(username: string, repoName: string): void {
+    this.repo$ = this.repoBundle.getCandidateRepoMetadata(username, repoName).pipe(
+      map((res) => this.toVM(res?.repo_entry ?? res?.data ?? null)),
+      catchError(() => of(this.toVM(null)))
+    );
+  }
+
+  /**
+   * Load README summary in parallel with metadata.
+   * Polls for cache readiness and updates content once available.
+   */
+  private loadReadmeSummary(username: string, repoName: string): void {
     this.summaryLoading = true;
-    
-    // Use polling to wait for cache to be ready
-    this.repo$ = this.ai.pollForReadme(this.username, this.repoName).pipe(
+
+    this.ai.pollForReadme(username, repoName).pipe(
       map((res: ReadmeSummaryResponse) => {
         const summaryHtml = res?.readme_summary_html || '';
         if (summaryHtml) {
@@ -66,21 +94,19 @@ export class ProjectComponent implements OnInit {
         } else {
           this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>No README summary available.</p>');
         }
-
-        return this.toVM(res?.repo_entry ?? null);
       }),
       catchError((err) => {
-        // Extract meaningful error message from HttpErrorResponse or generic error
         const errorMsg = err?.message || err?.error?.message || 'Failed to load README summary.';
         this.summaryError = errorMsg;
         this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>README summary unavailable.</p>');
-        return of(this.toVM(null));
+        return of(null);
       }),
       finalize(() => {
         this.summaryLoading = false;
       })
-    );
+    ).subscribe();
   }
+
 
   /**
    * Transform backend bundle entry to detail view model.

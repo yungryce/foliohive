@@ -2,11 +2,12 @@ import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { Subject, takeUntil } from 'rxjs';
+import { Subject, takeUntil, switchMap, catchError, of } from 'rxjs';
 import DOMPurify from 'dompurify';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
 import { ProfileService, CandidateProfileResponse, CandidateSummaryResponse } from '../services/profile.service';
+import { JobPollingService } from '../services/job-polling.service';
 
 @Component({
   selector: 'app-profile',
@@ -20,6 +21,7 @@ export class ProfileComponent implements OnInit, OnDestroy {
   private router = inject(Router);
   private candidateContext = inject(CandidateContextService);
   private profileService = inject(ProfileService);
+  private jobPollingService = inject(JobPollingService);
   private sanitizer = inject(DomSanitizer);
 
   private readonly destroy$ = new Subject<void>();
@@ -93,7 +95,31 @@ export class ProfileComponent implements OnInit, OnDestroy {
     this.summaryError = '';
     this.summaryHtml = null;
 
-    this.profileService.getCandidateSummary(username, jobId).subscribe({
+    // Optimistically try to load summary
+    this.profileService.getCandidateSummary(username, jobId).pipe(
+      catchError((error) => {
+        // Check if error is NOT_READY (404) and we have a job_id
+        const isNotReady = error?.status === 404 || error?.error?.error_code === 'NOT_READY';
+        
+        if (isNotReady && jobId) {
+          // Poll until files are ready, then retry
+          this.summaryHtml = this.sanitizer.bypassSecurityTrustHtml('<p>Summary generating… Please wait.</p>');
+          
+          return this.jobPollingService.waitForFilesReady(username, jobId).pipe(
+            switchMap(() => this.profileService.getCandidateSummary(username, jobId)),
+            catchError(() => {
+              // Failed even after polling
+              return of({ username, summary_html: '' } as CandidateSummaryResponse);
+            }),
+            takeUntil(this.destroy$)
+          );
+        }
+        
+        // Not a NOT_READY error or no job_id - return empty
+        return of({ username, summary_html: '' } as CandidateSummaryResponse);
+      }),
+      takeUntil(this.destroy$)
+    ).subscribe({
       next: (summary: CandidateSummaryResponse) => {
         const html = summary?.summary_html || '';
         if (html) {

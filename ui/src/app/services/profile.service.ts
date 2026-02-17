@@ -1,8 +1,9 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
-import { Observable, catchError, map, of } from 'rxjs';
+import { Observable, catchError, map, of, switchMap, throwError } from 'rxjs';
 import { ConfigService } from './config.service';
 import { CacheService } from './cache.service';
+import { JobPollingService } from './job-polling.service';
 
 export interface CandidateProfileResponse {
   username: string;
@@ -32,6 +33,7 @@ export class ProfileService {
   private http = inject(HttpClient);
   private config = inject(ConfigService);
   private cache = inject(CacheService);
+  private jobPollingService = inject(JobPollingService);
 
   getCandidateProfile(username: string, jobId?: string, useCache = true): Observable<CandidateProfileResponse> {
     const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/profile`;
@@ -69,6 +71,42 @@ export class ProfileService {
         return (payload ?? { username }) as CandidateSummaryResponse;
       }),
       catchError(err => {
+        // Re-throw error for caller to handle (e.g., polling logic)
+        return throwError(() => err);
+      })
+    );
+  }
+
+  /**
+   * Get candidate summary with automatic polling if data is not ready.
+   * 
+   * This method wraps getCandidateSummary with polling logic:
+   * - Tries to fetch summary immediately
+   * - On NOT_READY (404) error, polls until files_ready
+   * - Retries fetch after files are ready
+   * 
+   * @param username - GitHub username
+   * @param jobId - Job ID (required for polling)
+   * @returns Observable<CandidateSummaryResponse>
+   */
+  getCandidateSummaryWithPolling(username: string, jobId?: string): Observable<CandidateSummaryResponse> {
+    return this.getCandidateSummary(username, jobId).pipe(
+      catchError((error) => {
+        // Check if error is NOT_READY (404) and we have a job_id
+        const isNotReady = error?.status === 404 || error?.error?.error_code === 'NOT_READY';
+        
+        if (isNotReady && jobId) {
+          // Poll until files are ready, then retry
+          return this.jobPollingService.waitForFilesReady(username, jobId).pipe(
+            switchMap(() => this.getCandidateSummary(username, jobId)),
+            catchError(() => {
+              // Failed even after polling - return empty
+              return of({ username, summary_html: '' } as CandidateSummaryResponse);
+            })
+          );
+        }
+        
+        // Not a NOT_READY error or no job_id - return empty
         return of({ username, summary_html: '' } as CandidateSummaryResponse);
       })
     );

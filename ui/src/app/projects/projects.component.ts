@@ -2,10 +2,10 @@ import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterModule } from '@angular/router';
-import { RepoBundleService, RepoBundleResponse, JobStatusResponse } from '../services/repo-bundle.service';
+import { RepoBundleService, RepoBundleResponse } from '../services/repo-bundle.service';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
-import { Observable, map, of, Subject, switchMap, takeUntil, takeWhile, tap, timer } from 'rxjs';
+import { Observable, map, of, Subject, takeUntil, tap } from 'rxjs';
 
 /**
  * Aligned with backend schema from _repo_row_to_bundle_entry in api_gateway.py
@@ -58,9 +58,6 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   loading = false;
   loadingMessage = '';
 
-  // Building state
-  building = false;
-  buildMessage = '';
   bundleEmpty = false;
 
   ngOnInit(): void {
@@ -85,79 +82,8 @@ export class ProjectsComponent implements OnInit, OnDestroy {
     this.destroy$.complete();
   }
 
-  triggerBuild(): void {
-    if (this.building) return;
-    this.building = true;
-    this.buildMessage = 'Starting build… This may take a few minutes.';
-    this.repoBundleService.startBuild(this.username, true).subscribe({
-      next: (response) => {
-        const jobId = response.job_id;
-        if (!jobId) {
-          this.building = false;
-          this.buildMessage = 'Build started but no job ID returned.';
-          return;
-        }
-
-        this.candidateContext.upsertCandidate({ username: this.username });
-
-        // Poll job status API for progress updates (up to 120 seconds)
-        timer(0, 5000).pipe(
-          takeWhile((_, i) => i < 24), // 24*5s = 2 minutes max
-          switchMap(() => this.repoBundleService.getJobStatus(this.username, jobId)),
-          takeWhile((status) => {
-            // Continue polling until completed/failed or null
-            if (!status) return false;
-            return status.status !== 'completed' && status.status !== 'failed';
-          }, true) // inclusive=true to process final completed status
-        ).subscribe({
-          next: status => {
-            if (!status) {
-              this.building = false;
-              this.buildMessage = 'Job status unavailable.';
-              return;
-            }
-
-            // Update progress message with detailed breakdown
-            const { completed = 0, total = 0, cached = 0, synced = 0, pending = 0, failed = 0 } = status.progress || {};
-            this.buildMessage = `Building… ${status.progress?.percentage ?? 0}% (${cached} ready, ${synced} syncing, ${pending} pending, ${failed} failed)`;
-
-            // Load/refresh data progressively as repos become available
-            if (status.metadata_ready) {
-              this.loadRepoBundle();
-            }
-
-            // Stop building state only when fully completed or failed
-            if (status.files_ready || status.status === 'completed') {
-              this.building = false;
-              this.buildMessage = `Build complete! ${cached} repositories ready.`;
-              this.loadRepoBundle(); // Final reload to ensure bundle_fingerprint
-            } else if (status.status === 'failed') {
-              this.building = false;
-              this.buildMessage = `Build failed. ${cached} repositories ready, ${failed} failed.`;
-            }
-          },
-          error: () => {
-            this.building = false;
-            this.buildMessage = 'Failed to poll job status.';
-          },
-          complete: () => {
-            // Polling timed out or completed
-            if (this.building) {
-              this.building = false;
-              this.buildMessage = 'Build may still be processing. Refresh to check status.';
-            }
-          }
-        });
-      },
-      error: () => {
-        this.building = false;
-        this.buildMessage = 'Failed to start build. Please try again.';
-      }
-    });
-  }
-
   loadRepoBundle(): void {
-    this.repoBundle$ = this.repoBundleService.getUserBundle(this.username).pipe(
+    this.repoBundle$ = this.repoBundleService.getCandidateMetadata(this.username).pipe(
       tap(bundle => {
         this.bundleEmpty = !(Array.isArray(bundle?.data) && bundle.data.length > 0);
       })
@@ -269,6 +195,7 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   }
 
   applyFilters(): void { this.loadRepoBundle(); }
+
   resetFilters(): void {
     this.showForks = true;
     this.selectedLanguage = '';

@@ -2,10 +2,10 @@ import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
-import { Subscription, timer } from 'rxjs';
-import { switchMap } from 'rxjs/operators';
+import { Subscription } from 'rxjs';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { RepoBundleService, JobStatusResponse } from '../services/repo-bundle.service';
+import { JobPollingService } from '../services/job-polling.service';
 import { AIAssistantService, AIAssistantResponse } from '../services/assistant.service';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { marked } from 'marked';
@@ -28,6 +28,7 @@ export class AiComponent implements OnInit, OnDestroy {
   private route = inject(ActivatedRoute);
   private router = inject(Router);
   private repoService = inject(RepoBundleService);
+  private jobPollingService = inject(JobPollingService);
   private candidateContext = inject(CandidateContextService);
   private ai = inject(AIAssistantService);
   private sanitizer = inject(DomSanitizer);
@@ -112,10 +113,8 @@ export class AiComponent implements OnInit, OnDestroy {
     this.polling = true;
     this.noRepositories = false;
 
-    // Poll every 3 seconds for up to 2 minutes (40 attempts)
-    this.pollSub = timer(0, 3000).pipe(
-      switchMap(() => this.repoService.getJobStatus(username, jobId))
-    ).subscribe({
+    // Use JobPollingService for consistent polling behavior
+    this.pollSub = this.jobPollingService.pollJobStatus(username, jobId).subscribe({
       next: (statusResponse) => {
         if (!statusResponse) {
           this.stopPollingAndCheck();
@@ -135,19 +134,15 @@ export class AiComponent implements OnInit, OnDestroy {
         } else if (statusResponse.status === 'failed') {
           this.stopPollingAndCheck();
         }
-        // Continue polling for 'queued', 'syncing', or 'metadata_ready' status
       },
       error: (err) => {
         this.stopPollingAndCheck();
-      }
-    });
-
-    // Safety timeout: stop polling after 2 minutes
-    setTimeout(() => {
-      if (this.polling) {
+      },
+      complete: () => {
+        // Polling completed or timed out
         this.stopPollingAndCheck();
       }
-    }, 120000);
+    });
   }
 
   private stopPollingAndCheck(): void {
@@ -170,7 +165,7 @@ export class AiComponent implements OnInit, OnDestroy {
     const username = this.activeUsername;
     if (!username) return;
 
-    this.repoService.getUserBundle(username, undefined, true).subscribe(bundle => {
+    this.repoService.getCandidateMetadata(username, undefined, true).subscribe(bundle => {
       const hasRepos = Array.isArray(bundle?.data) && bundle.data.length > 0;
       this.noRepositories = !hasRepos;
       
@@ -191,7 +186,7 @@ export class AiComponent implements OnInit, OnDestroy {
       return;
     }
 
-    this.repoService.getUserBundle(username, undefined, true).subscribe(bundle => {
+    this.repoService.getCandidateMetadata(username, undefined, true).subscribe(bundle => {
       const hasRepos = Array.isArray(bundle?.data) && bundle.data.length > 0;
       this.noRepositories = !hasRepos;
       
@@ -218,7 +213,7 @@ export class AiComponent implements OnInit, OnDestroy {
       return;
     }
 
-    this.repoService.getUserBundle(username, undefined, false).subscribe(bundle => {
+    this.repoService.getCandidateMetadata(username, undefined, false).subscribe(bundle => {
       const repos = Array.isArray(bundle?.data) ? bundle.data : [];
       const scored: SuggestedRepo[] = repos
         .map((repo: any) => {
