@@ -131,7 +131,7 @@ def _fetch_and_cache_files(
             filename=file_identifier,
         )
         cache_manager.save(key, content)
-        logger.debug(
+        logger.info(
             "Cached readme file: repo=%s file_identifier=%s key=%s",
             repo_name, file_identifier, key
         )
@@ -146,7 +146,7 @@ def _fetch_and_cache_files(
             filename=filename,
         )
         cache_manager.save(key, content)
-        logger.debug(
+        logger.info(
             "Cached config file: repo=%s filename=%s key=%s",
             repo_name, filename, key
         )

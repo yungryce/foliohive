@@ -1315,8 +1315,9 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     
     profile = _get_or_refresh_user_profile(username)
 
-    # Get budget-aware limits for profile summary type
-    file_budget = get_file_budget("profile")
+    # SummaryManager with File Budgeting and Caching
+    manager = SummaryManager(username=username)
+    file_budget = manager.get_file_budget("profile")
     
     # Select repos early to minimize file fetching
     selected_repos = _select_repos_for_context(
@@ -1344,9 +1345,6 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
         }
     logger.info("repo files for summary generation (limited): %s", repo_files_summary)
     logger.info("Generated statistics for profile summary: %s", bundle["statistics"])
-                
-    # New path: Use SummaryManager with caching
-    manager = SummaryManager(username=username)
 
     result = manager.get_or_generate_profile_summary(
         job_id=ctx.job_id or "default",
@@ -1385,8 +1383,9 @@ def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
     detail = _build_repo_detail_entry(repo, ctx=ctx)
     repo_entry = detail.get("repo_entry", {})
 
-    # Get budget-aware limits for readme summary type
-    file_budget = get_file_budget("readme")
+    # SummaryManager with File Budgeting and Caching
+    manager = SummaryManager(username=username)
+    file_budget = manager.get_file_budget("readme")
 
     # Build repo files dict with budget-aware limits and include primary readme
     repo_files = _get_repo_files(
@@ -1399,9 +1398,6 @@ def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
 
     logger.info("repo files for summary generation (limited): %s", repo_files.get(repo, {}))
     logger.info("Generated repo metadata for repo summary: %s", repo_entry)
-
-    # New path: Use SummaryManager with caching
-    manager = SummaryManager(username=username)
 
     result = manager.get_or_generate_readme_summary(
         job_id=ctx.job_id or "default",
@@ -1458,9 +1454,10 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
             error_code="NOT_READY",
             request_id=ctx.trace.get("request_id") if ctx else None,
         )
-    
-    # Get budget-aware limits for query summary type
-    file_budget = get_file_budget("query")
+
+    # SummaryManager with File Budgeting and Caching
+    manager = SummaryManager(username=username)
+    file_budget = manager.get_file_budget("query")
     
     # Select repos early to minimize file fetching
     selected_repos = _select_repos_for_context(
@@ -1480,9 +1477,6 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
     logger.info("repo files for summary generation (limited): %s", repo_files)
     logger.info("Generated statistics for portfolio query: %s", bundle["statistics"])
     
-    # Use SummaryManager to build bundle context and generate response
-    # Pass selected_repos instead of repo_rows to avoid redundant selection in SummaryManager
-    manager = SummaryManager(username=username)
     response = manager.get_or_generate_query_response(
         job_id=ctx.job_id or "default",
         query=query,

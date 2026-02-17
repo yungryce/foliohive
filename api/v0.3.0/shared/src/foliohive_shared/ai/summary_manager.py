@@ -97,13 +97,13 @@ TOKEN_BUDGETS = {
 FILE_BUDGETS = {
     "profile": {
         "max_repos": 20,              # 8 repos for profile context
-        "max_readme_files": 0,       # Testing with only config files for profile summaries
+        "max_readme_files": 5,       # Testing with only config files for profile summaries
         "max_config_files": 20,       # 2 key config files per repo
     },
     "readme": {
         "max_repos": 1,              # Single repo focus
-        "max_readme_files": 2,       # Primary + 2 additional readmes
-        "max_config_files": 3,       # 3 config files for detailed analysis
+        "max_readme_files": 5,       # Primary + 2 additional readmes
+        "max_config_files": 5,       # 3 config files for detailed analysis
     },
     "query": {
         "max_repos": 8,              # Up to 8 repos for query context
