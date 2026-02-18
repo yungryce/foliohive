@@ -952,6 +952,8 @@ def get_session_candidates(req: func.HttpRequest) -> func.HttpResponse:
     """List usernames recently viewed in this session.
 
     Returns browsing history for the session, useful for 'recently viewed' UI features.
+    Validates that each candidate's associated job still exists; filters out stale candidates
+    whose jobs have been deleted from the database.
     """
     trace = _get_trace_context(req)
     session_id = trace.get("session_id")
@@ -967,17 +969,37 @@ def get_session_candidates(req: func.HttpRequest) -> func.HttpResponse:
             limit = 10
 
     candidates = table_manager.list_session_candidates(session_id, limit=limit)
+    
+    # Validate candidates: filter out those whose jobs no longer exist
+    valid_candidates = []
+    for row in candidates:
+        username = row.get("username")
+        latest_job_id = row.get("latest_job_id")
+        
+        if not username:
+            continue
+        
+        # If candidate has a job_id, verify it still exists
+        if latest_job_id:
+            job = table_manager.get_job_metadata(username, latest_job_id)
+            if not job:
+                # Job doesn't exist - candidate is stale, skip it
+                logger.info(
+                    "Filtering out stale session candidate: session=%s username=%s job_id=%s (job no longer exists)",
+                    session_id, username, latest_job_id
+                )
+                continue
+        
+        # Candidate is valid (either has no job_id or job exists)
+        valid_candidates.append({
+            "username": username,
+            "latest_job_id": latest_job_id,
+            "last_viewed_at": row.get("last_viewed_at"),
+            "query_count": row.get("query_count"),
+        })
+    
     payload = {
-        "candidates": [
-            {
-                "username": row.get("username"),
-                "latest_job_id": row.get("latest_job_id"),
-                "last_viewed_at": row.get("last_viewed_at"),
-                "query_count": row.get("query_count"),
-            }
-            for row in candidates
-            if row.get("username")
-        ]
+        "candidates": valid_candidates
     }
     return _create_success_response(payload, cache_control="no-cache")
 
@@ -1366,7 +1388,7 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
 
     # SummaryManager with File Budgeting and Caching
     manager = SummaryManager(username=username)
-    file_budget = manager.get_file_budget("profile")
+    file_budget = get_file_budget("profile")
     
     # Select repos early to minimize file fetching
     selected_repos = _select_repos_for_context(
@@ -1434,7 +1456,7 @@ def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
 
     # SummaryManager with File Budgeting and Caching
     manager = SummaryManager(username=username)
-    file_budget = manager.get_file_budget("readme")
+    file_budget = get_file_budget("readme")
 
     # Build repo files dict with budget-aware limits and include primary readme
     repo_files = _get_repo_files(
@@ -1506,7 +1528,7 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
 
     # SummaryManager with File Budgeting and Caching
     manager = SummaryManager(username=username)
-    file_budget = manager.get_file_budget("query")
+    file_budget = get_file_budget("query")
     
     # Select repos early to minimize file fetching
     selected_repos = _select_repos_for_context(

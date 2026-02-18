@@ -21,7 +21,6 @@ logger.propagate = True
 
 bp = func.Blueprint()
 
-DEFAULT_SCHEDULE = "0 */3 * * * *"  # every 3 minutes
 JOB_CLEANUP_SCHEDULE = "0 0 */3 * * *"  # every 3 hours
 REPO_METADATA_CLEANUP_SCHEDULE = "0 0 */2 * * *"  # every 2 hours
 DISCOVERED_PATHS_CLEANUP_SCHEDULE = "0 0 */2 * * *"  # every 2 hours
@@ -39,11 +38,14 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-@bp.timer_trigger(arg_name="timer", schedule=JOB_CLEANUP_SCHEDULE, run_on_startup=True)
+@bp.timer_trigger(arg_name="timer", schedule=JOB_CLEANUP_SCHEDULE)
 def cleanup_old_jobs(timer: func.TimerRequest) -> None:
     """Cleanup old jobs and cascade-delete related job-scoped tables.
     
     Job-based cleanup pattern: Removes completed/failed job artifacts after retention period.
+    Only deletes stale jobs when a candidate has multiple jobs, always preserving at least
+    one job per candidate (the most recent one). Uses updated_at timestamp for staleness check.
+    
     Cascade deletes: JobMetadata, RepoLanguages, RepoSyncStatus.
     """
     if os.getenv("CF_JOB_CLEANUP_ENABLED", "true").lower() != "true":
@@ -57,7 +59,7 @@ def cleanup_old_jobs(timer: func.TimerRequest) -> None:
         logger.info("[JOB_CLEANUP] deleted_rows=%d (older than %d days)", deleted_rows, retention_days)
 
 
-@bp.timer_trigger(arg_name="timer", schedule=REPO_METADATA_CLEANUP_SCHEDULE, run_on_startup=True)
+@bp.timer_trigger(arg_name="timer", schedule=REPO_METADATA_CLEANUP_SCHEDULE)
 def cleanup_old_repo_github_metadata(timer: func.TimerRequest) -> None:
     """Cleanup stale RepoGitHubMetadata entries.
     
@@ -75,7 +77,7 @@ def cleanup_old_repo_github_metadata(timer: func.TimerRequest) -> None:
         logger.info("[REPO_GITHUB_METADATA_CLEANUP] deleted_metadata=%d (older than %d days)", deleted_metadata, retention_days)
 
 
-@bp.timer_trigger(arg_name="timer", schedule=DISCOVERED_PATHS_CLEANUP_SCHEDULE, run_on_startup=True)
+@bp.timer_trigger(arg_name="timer", schedule=DISCOVERED_PATHS_CLEANUP_SCHEDULE)
 def cleanup_old_discovered_paths(timer: func.TimerRequest) -> None:
     """Cleanup stale RepoDiscoveredPaths entries.
     

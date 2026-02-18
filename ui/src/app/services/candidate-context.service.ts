@@ -150,35 +150,59 @@ export class CandidateContextService {
 
   private syncFromSession(): void {
     this.repoService.getSessionCandidates(this.maxStored).subscribe((candidates: SessionCandidate[]) => {
-      if (!Array.isArray(candidates) || candidates.length === 0) return;
+      if (!Array.isArray(candidates)) return;
 
       const existing = this.candidatesSubject.value;
-      const seen = new Set<string>();
+      const apiUsernames = new Set<string>();
       const merged: CandidateContext[] = [];
 
-      for (const candidate of candidates) {
-        const username = (candidate?.username || '').trim();
-        if (!username || seen.has(username)) continue;
-        const prior = existing.find((c: CandidateContext) => c.username === username);
-        merged.push({ username, skillsText: prior?.skillsText });
-        seen.add(username);
-      }
+      // Case 1: API returns candidates - keep those (with local skillsText) 
+      //         and preserve local candidates not in API
+      if (candidates.length > 0) {
+        // Add API candidates first
+        for (const candidate of candidates) {
+          const username = (candidate?.username || '').trim();
+          if (!username) continue;
+          const prior = existing.find((c: CandidateContext) => c.username === username);
+          merged.push({ username, skillsText: prior?.skillsText });
+          apiUsernames.add(username);
+        }
 
-      for (const candidate of existing) {
-        const username = candidate.username;
-        if (!username || seen.has(username)) continue;
-        merged.push(candidate);
-        seen.add(username);
+        // Then add local candidates not in API (preserve user's local state)
+        for (const candidate of existing) {
+          const username = candidate.username;
+          if (!username || apiUsernames.has(username)) continue;
+          merged.push(candidate);
+          apiUsernames.add(username);
+        }
+      } else {
+        // Case 2: API returns empty list - candidates are stale/invalid (jobs deleted)
+        // Clear everything and notify client to remove from storage
+        if (existing.length > 0) {
+          // Log that we're clearing stale candidates
+          console.debug('Session candidates validation: API returned empty, clearing %d stale candidates', existing.length);
+        }
+        this.candidatesSubject.next([]);
+        this.persistCandidates([]);
+        this.activeUsernameSubject.next(null);
+        this.persistActive(null);
+        return;
       }
 
       const limited = merged.slice(0, this.maxStored);
-      if (limited.length) {
+      if (limited.length > 0) {
         this.candidatesSubject.next(limited);
         this.persistCandidates(limited);
         if (!this.activeUsernameSubject.value) {
           this.activeUsernameSubject.next(limited[0].username);
           this.persistActive(limited[0].username);
         }
+      } else {
+        // No candidates available - clear state
+        this.candidatesSubject.next([]);
+        this.persistCandidates([]);
+        this.activeUsernameSubject.next(null);
+        this.persistActive(null);
       }
     });
   }

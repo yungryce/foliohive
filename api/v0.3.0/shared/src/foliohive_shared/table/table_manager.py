@@ -1044,13 +1044,16 @@ class TableManager:
         """Cleanup old jobs and cascade delete related job-scoped tables.
         
         Job-based cleanup pattern: Removes completed/failed job artifacts after retention period.
+        Only deletes stale jobs when a candidate has multiple jobs, always preserving at least
+        one job per candidate (the most recent one).
+        
         Cascade deletes from:
         - RepoLanguages (PartitionKey = job_id)
         - RepoSyncStatus (PartitionKey = job_id)
         - JobMetadata (PartitionKey = username, RowKey = job_id)
         
         Args:
-            older_than_iso: ISO timestamp cutoff (jobs older than this are deleted)
+            older_than_iso: ISO timestamp cutoff (jobs older than this are candidates for deletion)
             
         Returns:
             Total rows deleted across all tables
@@ -1060,7 +1063,7 @@ class TableManager:
             return 0
         
         safe_ts = _azure_safe_timestamp(older_than_iso)
-        filter_str = f"created_at lt '{safe_ts}'"
+        filter_str = f"updated_at lt '{safe_ts}'"
         
         total_deleted = 0
         
@@ -1068,59 +1071,88 @@ class TableManager:
             # Scan JobMetadata for old jobs
             old_jobs = list(job_table.list_entities(
                 filter=filter_str,
-                select=["PartitionKey", "RowKey", "job_id"]
+                select=["PartitionKey", "RowKey", "job_id", "updated_at"]
             ))
             
-            logger.info("[CLEANUP_OLD_JOBS] Found %d old jobs to delete", len(old_jobs))
+            logger.info("[CLEANUP_OLD_JOBS] Found %d old jobs (candidates for deletion)", len(old_jobs))
             
+            # Group jobs by username to check if candidate has multiple jobs
+            jobs_by_user: Dict[str, List[Dict[str, Any]]] = {}
             for job_entity in old_jobs:
                 username = job_entity.get("PartitionKey")
-                job_id = job_entity.get("RowKey") or job_entity.get("job_id")
+                if username:
+                    jobs_by_user.setdefault(username, []).append(job_entity)
+            
+            # For each user, check their total job count and only delete if they have multiple jobs
+            for username, old_user_jobs in jobs_by_user.items():
+                # Get total job count for this user
+                all_user_jobs = self.list_jobs_metadata(username)
+                total_job_count = len(all_user_jobs)
                 
-                if not job_id:
+                if total_job_count <= 1:
+                    # Only one job exists for this candidate - preserve it
+                    logger.info(
+                        "[CLEANUP_OLD_JOBS] Preserving only job for user=%s (job_count=%d)",
+                        username, total_job_count
+                    )
                     continue
                 
-                # 1. Delete RepoLanguages for this job (partition-scoped delete)
-                lang_table = self._get_table_client(self.table_names.repo_languages)
-                if lang_table:
-                    try:
-                        lang_entities = list(lang_table.query_entities(
-                            f"PartitionKey eq '{job_id}'",
-                            select=["PartitionKey", "RowKey"]
-                        ))
-                        for lang_e in lang_entities:
-                            try:
-                                lang_table.delete_entity(lang_e["PartitionKey"], lang_e["RowKey"])
-                                total_deleted += 1
-                            except Exception:
-                                pass
-                    except Exception as exc:
-                        logger.warning("[CLEANUP_LANGUAGES] job=%s error=%s", job_id, exc)
+                # Multiple jobs exist - safe to delete old ones
+                logger.info(
+                    "[CLEANUP_OLD_JOBS] user=%s has %d total jobs, deleting %d old jobs",
+                    username, total_job_count, len(old_user_jobs)
+                )
                 
-                # 2. Delete RepoSyncStatus for this job (partition-scoped delete)
-                status_table = self._get_table_client(self.table_names.repo_sync_status)
-                if status_table:
+                for job_entity in old_user_jobs:
+                    job_id = job_entity.get("RowKey") or job_entity.get("job_id")
+                    
+                    if not job_id:
+                        continue
+                    
+                    # 1. Delete RepoLanguages for this job (partition-scoped delete)
+                    lang_table = self._get_table_client(self.table_names.repo_languages)
+                    if lang_table:
+                        try:
+                            lang_entities = list(lang_table.query_entities(
+                                f"PartitionKey eq '{job_id}'",
+                                select=["PartitionKey", "RowKey"]
+                            ))
+                            for lang_e in lang_entities:
+                                try:
+                                    lang_table.delete_entity(lang_e["PartitionKey"], lang_e["RowKey"])
+                                    total_deleted += 1
+                                except Exception:
+                                    pass
+                        except Exception as exc:
+                            logger.warning("[CLEANUP_LANGUAGES] job=%s error=%s", job_id, exc)
+                    
+                    # 2. Delete RepoSyncStatus for this job (partition-scoped delete)
+                    status_table = self._get_table_client(self.table_names.repo_sync_status)
+                    if status_table:
+                        try:
+                            status_entities = list(status_table.query_entities(
+                                f"PartitionKey eq '{job_id}'",
+                                select=["PartitionKey", "RowKey"]
+                            ))
+                            for status_e in status_entities:
+                                try:
+                                    status_table.delete_entity(status_e["PartitionKey"], status_e["RowKey"])
+                                    total_deleted += 1
+                                except Exception:
+                                    pass
+                        except Exception as exc:
+                            logger.warning("[CLEANUP_STATUS] job=%s error=%s", job_id, exc)
+                    
+                    # 3. Delete JobMetadata row
                     try:
-                        status_entities = list(status_table.query_entities(
-                            f"PartitionKey eq '{job_id}'",
-                            select=["PartitionKey", "RowKey"]
-                        ))
-                        for status_e in status_entities:
-                            try:
-                                status_table.delete_entity(status_e["PartitionKey"], status_e["RowKey"])
-                                total_deleted += 1
-                            except Exception:
-                                pass
+                        job_table.delete_entity(username, job_id)
+                        total_deleted += 1
+                        logger.info(
+                            "[CLEANUP_JOB] Deleted job=%s user=%s (user had %d total jobs)",
+                            job_id, username, total_job_count
+                        )
                     except Exception as exc:
-                        logger.warning("[CLEANUP_STATUS] job=%s error=%s", job_id, exc)
-                
-                # 3. Delete JobMetadata row
-                try:
-                    job_table.delete_entity(username, job_id)
-                    total_deleted += 1
-                    logger.info("[CLEANUP_JOB] Deleted job=%s user=%s", job_id, username)
-                except Exception as exc:
-                    logger.warning("[CLEANUP_JOB] Failed to delete job=%s: %s", job_id, exc)
+                        logger.warning("[CLEANUP_JOB] Failed to delete job=%s: %s", job_id, exc)
             
         except Exception as exc:
             logger.error("[CLEANUP_OLD_JOBS] Failed: %s", exc)
