@@ -1,13 +1,11 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, catchError, map, of } from 'rxjs';
+import { Observable, catchError, map, throwError } from 'rxjs';
 import { ConfigService } from './config.service';
 
 export interface AIAssistantRequest {
   query: string;
-  username?: string;
-  instance_id?: string;
-  status_query_url?: string;
+  username: string;
 }
 
 export interface AIAssistantResponse {
@@ -15,14 +13,6 @@ export interface AIAssistantResponse {
   repositories_used: { name: string; relevance_score: number }[];
   total_repositories: number;
   query: string;
-}
-
-export interface CacheStatusResponse {
-  status: 'cached' | 'processing' | 'pending' | 'failed' | 'not_found';
-  message: string;
-  job_id?: string;
-  cache_message_id?: string;
-  error?: string;
 }
 
 export interface ReadmeSummaryResponse {
@@ -38,88 +28,10 @@ export class AIAssistantService {
   private http = inject(HttpClient);
   private config = inject(ConfigService);
 
-  /** Trigger backend orchestration to (re)build bundles for a user. */
-  startBuild(username: string, force = true): Observable<any> {
-    const url = `${this.config.apiUrl}/bundles/${encodeURIComponent(username)}/refresh`;
-    return this.http.post(url, { force_refresh: force });
-  }
-
-  /** Check cache status for a repository */
-  getCacheStatus(username: string, repo: string): Observable<CacheStatusResponse> {
-    const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/${encodeURIComponent(repo)}/cache-status`;
-    return this.http.get<any>(url).pipe(
-      map(res => {
-        if (res?.status === 'success' && res?.data) return res.data as CacheStatusResponse;
-        return res as CacheStatusResponse;
-      }),
-      catchError(err => {
-        return of({
-          status: 'not_found',
-          message: 'Failed to check cache status'
-        } as CacheStatusResponse);
-      })
-    );
-  }
-
-  /** Poll for readme summary with automatic retry until cached */
-  pollForReadme(
-    username: string,
-    repo: string,
-    maxAttempts: number = 30,
-    intervalMs: number = 2000
-  ): Observable<ReadmeSummaryResponse> {
-    let attempts = 0;
-
-    return new Observable(observer => {
-      const checkAndFetch = () => {
-        attempts++;
-
-        // First check cache status
-        this.getCacheStatus(username, repo).subscribe({
-          next: (status) => {
-            
-            if (status.status === 'cached') {
-              // Cache is ready - fetch the readme
-              this.getReadmeSummary(username, repo).subscribe({
-                next: (summary) => {
-                  observer.next(summary);
-                  observer.complete();
-                },
-                error: (err) => {
-                  // Fetch failed even though cache showed ready - this is a fatal error
-                  observer.error(new Error(`Failed to fetch README: ${err.statusText || err.message}`));
-                }
-              });
-            } else if (status.status === 'processing' || status.status === 'pending') {
-              // Still processing - poll again if we haven't exceeded max attempts
-              if (attempts < maxAttempts) {
-                setTimeout(checkAndFetch, intervalMs);
-              } else {
-                observer.error(new Error(`Cache still not ready after ${maxAttempts} attempts`));
-              }
-            } else if (status.status === 'not_found') {
-              // No job found - trigger refresh first
-              observer.error(new Error('No job found. Please trigger a refresh first.'));
-            } else if (status.status === 'failed') {
-              // Failed - but backend re-enqueues, so poll again
-              if (attempts < maxAttempts) {
-                setTimeout(checkAndFetch, intervalMs);
-              } else {
-                observer.error(new Error(`Cache job failed: ${status.error || 'unknown error'}`));
-              }
-            }
-          },
-          error: (err) => {
-            observer.error(err);
-          }
-        });
-      };
-
-      // Start polling
-      checkAndFetch();
-    });
-  }
-
+  /**
+   * Query candidate portfolio with AI.
+   * Throws error for caller to handle (e.g., polling logic).
+   */
   askPortfolio(req: AIAssistantRequest): Observable<AIAssistantResponse> {
     const url = `${this.config.apiUrl}/ai`;
     return this.http.post<any>(url, req).pipe(
@@ -128,38 +40,16 @@ export class AIAssistantService {
         return res as AIAssistantResponse;
       }),
       catchError(err => {
-        const errorCode = err?.error?.error_code;
-        const status = err?.status;
-        
-        // Handle NOT_READY errors (files not yet cached)
-        if (status === 404 && (errorCode === 'NOT_READY' || errorCode === 'NOT_FOUND')) {
-          if (req.username) {
-            // Trigger build in background but return helpful message
-            this.startBuild(req.username, true).subscribe();
-          }
-          
-          return of({
-            response: errorCode === 'NOT_READY' 
-              ? 'Portfolio data is still being prepared. Please wait a moment and try again, or trigger a manual refresh.'
-              : 'No portfolio data found for this candidate. A refresh has been triggered - please try again in a minute.',
-            repositories_used: [],
-            total_repositories: 0,
-            query: req.query
-          } as AIAssistantResponse);
-        }
-        
-        // Generic error fallback
-        const errorMsg = err?.error?.message || err?.message || 'AI service failed or is unavailable.';
-        return of({
-          response: `${errorMsg} Please try again.`,
-          repositories_used: [],
-          total_repositories: 0,
-          query: req.query
-        } as AIAssistantResponse);
+        // Re-throw error for caller to handle (e.g., polling logic)
+        return throwError(() => err);
       })
     );
   }
 
+  /**
+   * Gets summary query for a candidate.
+   * Throws error for caller to handle (e.g., polling logic).
+   */
   getReadmeSummary(username: string, repo: string): Observable<ReadmeSummaryResponse> {
     const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/${encodeURIComponent(repo)}/readme-summary`;
     return this.http.get<any>(url).pipe(
@@ -168,9 +58,8 @@ export class AIAssistantService {
         return res as ReadmeSummaryResponse;
       }),
       catchError(err => {
-        // Re-throw the error instead of silently returning empty response
-        // This allows polling to detect and handle failures appropriately
-        throw err;
+        // Re-throw error for caller to handle (e.g., polling logic)
+        return throwError(() => err);
       })
     );
   }

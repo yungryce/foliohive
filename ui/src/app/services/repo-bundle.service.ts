@@ -68,6 +68,15 @@ export interface SingleRepoBundleResponse {
   data?: any;
 }
 
+export interface ReadmeSummaryResponse {
+  username: string;
+  repo: string;
+  job_id?: string;
+  repo_entry?: any;
+  readme_summary_html?: string;
+  cache_metadata?: any;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -182,6 +191,24 @@ export class RepoBundleService {
       })
     );
   }
+
+    /**
+     * Gets summary query for a candidate.
+     * Throws error for caller to handle (e.g., polling logic).
+     */
+    getReadmeSummary(username: string, repo: string): Observable<ReadmeSummaryResponse> {
+      const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/${encodeURIComponent(repo)}/readme-summary`;
+      return this.http.get<any>(url).pipe(
+        map(res => {
+          if (res?.status === 'success' && res?.data) return res.data as ReadmeSummaryResponse;
+          return res as ReadmeSummaryResponse;
+        }),
+        catchError(err => {
+          // Re-throw error for caller to handle (e.g., polling logic)
+          return throwError(() => err);
+        })
+      );
+    }
 
   /**
    * List usernames recently viewed in this session.

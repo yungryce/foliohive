@@ -15,30 +15,9 @@
           </div>
           <a routerLink="/profile" class="px-3 py-2 rounded bg-(--soft) hover:brightness-95">View profile</a>
         </div>
-
-        <!-- Job building progress -->
-        <div *ngIf="polling && status" class="mt-4 rounded-lg bg-(--soft) p-4">
-          <div class="flex items-center gap-3 mb-2">
-            <svg class="animate-spin h-5 w-5 text-(--primary)" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <span class="text-sm font-medium">Building portfolio...</span>
-          </div>
-          <div class="text-xs text-(--muted) mb-2">
-            Processing {{ status.progress.completed || 0 }} of {{ status.progress.total || 0 }} repositories
-            ({{ status.progress.percentage || 0 }}%)
-          </div>
-          <div class="h-2 rounded-full bg-(--border) overflow-hidden">
-            <div 
-              class="h-full bg-(--primary) transition-all duration-300" 
-              [style.width.%]="status.progress.percentage || 0"
-            ></div>
-          </div>
-        </div>
       </div>
 
-      <div *ngIf="noRepositories && !polling" class="rounded-lg border border-(--border) bg-(--card) p-4 mb-6">
+      <div *ngIf="noRepositories" class="rounded-lg border border-(--border) bg-(--card) p-4 mb-6">
         <h2 class="text-sm font-semibold mb-2">No repositories found</h2>
         <p class="text-sm text-(--muted)">
           We couldn’t find any repositories for this candidate. Try another username or remove this candidate.
@@ -69,13 +48,13 @@
         </div>
       </div>
 
-      <div class="rounded-lg border border-(--border) bg-(--card) p-4" [class.opacity-60]="noRepositories || polling">
+      <div class="rounded-lg border border-(--border) bg-(--card) p-4" [class.opacity-60]="noRepositories">
         <label for="query" class="block text-sm font-medium text-(--muted)">Ask about this candidate</label>
         <textarea
           id="query"
           [(ngModel)]="query"
           rows="3"
-          [disabled]="noRepositories || polling"
+          [disabled]="noRepositories"
           class="w-full mt-2 px-3 py-2 rounded-md border border-(--border) bg-(--bg) text-(--fg) focus:outline-none focus:ring-2 focus:ring-(--ring)"
           placeholder="e.g., Which repos best demonstrate system design?"
         ></textarea>
@@ -83,15 +62,12 @@
           <button
             (click)="ask()"
             class="px-4 py-2 rounded bg-(--primary) text-(--primary-foreground) hover:brightness-95"
-            [disabled]="loadingAnswer || noRepositories || polling"
+            [disabled]="loadingAnswer || noRepositories"
           >
             {{ loadingAnswer ? 'Asking…' : 'Ask' }}
           </button>
         </div>
         <p *ngIf="error" class="mt-2 text-sm text-red-500">{{ error }}</p>
-        <p *ngIf="polling" class="mt-2 text-sm text-(--muted)">
-          Waiting for portfolio to finish building...
-        </p>
       </div>
 
       <div *ngIf="repositoriesUsed.length" class="rounded-lg border border-(--border) bg-(--card) p-4 mt-6">
