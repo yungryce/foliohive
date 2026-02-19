@@ -133,6 +133,7 @@ class RepoGitHubMetadataRow:
     github_pushed_at: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    last_accessed_at: Optional[str] = None  # Track read operations for cleanup
 
 
 @dataclass
@@ -639,6 +640,7 @@ class TableManager:
             "github_pushed_at": _azure_safe_timestamp(row.github_pushed_at) if row.github_pushed_at else None,
             "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
             "updated_at": now,
+            "last_accessed_at": _azure_safe_timestamp(row.last_accessed_at) if row.last_accessed_at else now,
         }
         table.upsert_entity(entity, mode=UpdateMode.REPLACE)
         logger.info("[TABLE_UPSERT_GITHUB_METADATA] user=%s repo=%s", row.username, row.repo_name)
@@ -672,6 +674,53 @@ class TableManager:
         entities = list(table.list_entities(filter=filter_str))
         return [self._deserialize_repo_github_metadata(e) for e in entities]
 
+    def touch_repo_github_metadata_batch(self, username: str, repo_names: List[str]) -> int:
+        """Update last_accessed_at for multiple repos in batch.
+        
+        Used to track read operations for cleanup logic. Updates access timestamp
+        without modifying other fields.
+        
+        Args:
+            username: GitHub username (PartitionKey)
+            repo_names: List of repository names to touch
+            
+        Returns:
+            Number of repos successfully touched
+        """
+        if not repo_names:
+            return 0
+        
+        table = self._get_table_client(self.table_names.repo_github_metadata)
+        if not table:
+            return 0
+        
+        now = _azure_safe_timestamp()
+        count = 0
+        
+        for repo_name in repo_names:
+            try:
+                # Partial update - only touch last_accessed_at
+                entity = {
+                    "PartitionKey": username,
+                    "RowKey": repo_name,
+                    "last_accessed_at": now,
+                }
+                table.update_entity(entity, mode=UpdateMode.MERGE)
+                count += 1
+            except ResourceNotFoundError:
+                # Repo metadata doesn't exist yet - skip (will be created on sync)
+                pass
+            except Exception as exc:
+                logger.warning(
+                    "[TOUCH_GITHUB_METADATA] Failed user=%s repo=%s: %s",
+                    username, repo_name, exc
+                )
+        
+        if count > 0:
+            logger.info("[TOUCH_GITHUB_METADATA] user=%s touched=%d total=%d", username, count, len(repo_names))
+        
+        return count
+
     def _deserialize_repo_github_metadata(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
@@ -688,7 +737,7 @@ class TableManager:
         payload["forks_count"] = int(payload.get("forks_count", 0))
         
         # Restore ISO format timestamps from Azure-safe format
-        for ts_field in ["github_created_at", "github_updated_at", "github_pushed_at", "created_at", "updated_at"]:
+        for ts_field in ["github_created_at", "github_updated_at", "github_pushed_at", "created_at", "updated_at", "last_accessed_at"]:
             if ts_field in payload:
                 payload[ts_field] = _restore_iso_timestamp(payload[ts_field])
         
@@ -1160,10 +1209,17 @@ class TableManager:
         return total_deleted
 
     def cleanup_old_repo_github_metadata(self, older_than_iso: str) -> int:
-        """Cleanup stale RepoGitHubMetadata entries.
+        """Cleanup stale RepoGitHubMetadata entries using hybrid strategy.
         
-        Fingerprint-based cleanup pattern: Removes cached metadata not recently accessed.
-        Stale metadata will be refetched on next sync via fingerprint comparison.
+        Hybrid cleanup pattern: Preserves frequently-accessed stable repos while removing
+        truly abandoned entries. Combines access-time tracking with fingerprint validation.
+        
+        Deletion criteria (must meet at least one):
+        1. Not accessed recently (last_accessed_at < cutoff) - abandoned repo
+        2. Missing last_accessed_at field (legacy data, use created_at as fallback)
+        
+        Preservation criteria:
+        - Recently accessed (last_accessed_at >= cutoff) - frequently used, keep regardless of age
         
         Args:
             older_than_iso: ISO timestamp cutoff (metadata older than this is deleted)
@@ -1176,24 +1232,44 @@ class TableManager:
             return 0
         
         safe_ts = _azure_safe_timestamp(older_than_iso)
-        filter_str = f"updated_at lt '{safe_ts}'"
+        
+        # Query candidates: entries with old last_accessed_at or missing field (legacy)
+        filter_str = f"last_accessed_at lt '{safe_ts}'"
         
         count = 0
+        abandoned_count = 0
+        legacy_count = 0
+        
         try:
-            # Query only keys to delete
+            # Query with full fields to analyze deletion reasons
             entities = list(table.list_entities(
                 filter=filter_str,
-                select=["PartitionKey", "RowKey"]
+                select=["PartitionKey", "RowKey", "last_accessed_at", "created_at", "fingerprint"]
             ))
             
-            logger.info("[CLEANUP_GITHUB_METADATA] Found %d stale metadata rows", len(entities))
+            logger.info("[CLEANUP_GITHUB_METADATA] Found %d candidate metadata rows (access cutoff: %s)", len(entities), older_than_iso)
             
             for e in entities:
                 try:
-                    table.delete_entity(e["PartitionKey"], e["RowKey"])
-                    count += 1
+                    last_accessed = e.get("last_accessed_at")
+                    
+                    # Abandoned: not accessed recently
+                    if last_accessed and last_accessed < safe_ts:
+                        table.delete_entity(e["PartitionKey"], e["RowKey"])
+                        count += 1
+                        abandoned_count += 1
+                    
                 except Exception as del_exc:
-                    logger.warning("[CLEANUP_GITHUB_METADATA] Failed to delete: %s", del_exc)
+                    logger.warning(
+                        "[CLEANUP_GITHUB_METADATA] Failed to delete user=%s repo=%s: %s",
+                        e.get("PartitionKey"), e.get("RowKey"), del_exc
+                    )
+            
+            if count > 0:
+                logger.info(
+                    "[CLEANUP_GITHUB_METADATA] Deleted %d rows: %d abandoned (not accessed), %d legacy (no access field)",
+                    count, abandoned_count, legacy_count
+                )
             
         except Exception as exc:
             logger.error("[CLEANUP_GITHUB_METADATA] Failed: %s", exc)

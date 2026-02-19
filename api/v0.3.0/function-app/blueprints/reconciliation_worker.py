@@ -12,7 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import azure.functions as func
 
-from foliohive_shared import cache_manager, queue_manager, table_manager
+from foliohive_shared import table_manager
 from foliohive_shared.github.github_repo_manager import get_non_bundle_cache_prefixes
 
 logger = logging.getLogger("cloudfolio.reconciler")
@@ -61,10 +61,11 @@ def cleanup_old_jobs(timer: func.TimerRequest) -> None:
 
 @bp.timer_trigger(arg_name="timer", schedule=REPO_METADATA_CLEANUP_SCHEDULE)
 def cleanup_old_repo_github_metadata(timer: func.TimerRequest) -> None:
-    """Cleanup stale RepoGitHubMetadata entries.
+    """Cleanup stale RepoGitHubMetadata entries using hybrid strategy.
     
-    Fingerprint-based cleanup pattern: Removes cached metadata not recently accessed.
-    Stale metadata will be refetched on next sync via fingerprint comparison in _identify_repo_freshness.
+    Hybrid cleanup pattern: Preserves frequently-accessed stable repos while removing
+    truly abandoned entries. Deletes repos not accessed within retention period.
+    Access tracking prevents deletion of stable repos that are frequently validated.
     """
     if os.getenv("CF_REPO_GITHUB_METADATA_CLEANUP_ENABLED", "true").lower() != "true":
         return
@@ -74,7 +75,12 @@ def cleanup_old_repo_github_metadata(timer: func.TimerRequest) -> None:
 
     deleted_metadata = table_manager.cleanup_old_repo_github_metadata(cutoff)
     if deleted_metadata:
-        logger.info("[REPO_GITHUB_METADATA_CLEANUP] deleted_metadata=%d (older than %d days)", deleted_metadata, retention_days)
+        logger.info(
+            "[REPO_GITHUB_METADATA_CLEANUP] deleted=%d (retention_days=%d, cutoff=%s)",
+            deleted_metadata,
+            retention_days,
+            cutoff
+        )
 
 
 @bp.timer_trigger(arg_name="timer", schedule=DISCOVERED_PATHS_CLEANUP_SCHEDULE)

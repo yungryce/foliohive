@@ -505,17 +505,24 @@ def _query_repo_rows(
                 if row.get("status") in ("synced", "cached") and row.get("repo_name")
             ]
         
+        # Single query for all repos (avoids duplication)
+        all_repos = table_manager.query_repo_github_metadata(username)
+        
+        # Determine repos to track for cleanup (either filtered or all)
+        repos_to_touch = target_repo_names or [
+            repo.get("repo_name") for repo in all_repos if repo.get("repo_name")
+        ]
+        
+        # Track access in batch (touch either filtered or all repos)
+        if repos_to_touch:
+            table_manager.touch_repo_github_metadata_batch(username, repos_to_touch)
+        
+        # Filter results if target repos specified, else return all
         if target_repo_names:
-            # ✅ FIX: Single batch query instead of loop
-            all_repos = table_manager.query_repo_github_metadata(username)  # 1 query!
-            
-            # Filter in memory (O(N) vs O(N) queries)
             target_set = set(target_repo_names)
-            result = [repo for repo in all_repos if repo.get("repo_name") in target_set]
-            return result
-        else:
-            # No filter - return all user repos
-            return table_manager.query_repo_github_metadata(username)
+            return [repo for repo in all_repos if repo.get("repo_name") in target_set]
+        
+        return all_repos
             
     except Exception:
         logger.warning(
@@ -893,6 +900,11 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
         for row in github_metadata_rows
         if row.get("repo_name") and row.get("fingerprint")
     }
+
+    # Track access for cleanup logic (batch update to minimize writes)
+    accessed_repo_names = [row.get("repo_name") for row in github_metadata_rows if row.get("repo_name")]
+    if accessed_repo_names:
+        table_manager.touch_repo_github_metadata_batch(username, accessed_repo_names)
 
     stale_repos: List[Dict[str, Any]] = []
     valid_repos: List[Dict[str, Any]] = []
@@ -1403,7 +1415,7 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
         selected_repos,
         max_additional_readmes=file_budget["max_readme_files"],
         max_config_files=file_budget["max_config_files"],
-        include_readme=False
+        include_readme=True,
     )
     
     # Log file counts only (not content)
@@ -1415,7 +1427,9 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
             "config_files_count": len(file_data.get("config_files", []))
         }
     logger.info("repo files for summary generation (limited): %s", repo_files_summary)
-    logger.info("Generated statistics for profile summary: %s", bundle["statistics"])
+    logger.info("Generated profile metadata for summary generation: %s", profile)
+    logger.info("Selected repos for summary generation: %s", [repo.get("repo_name") for repo in selected_repos])
+    logger.info("Generating profile summary with file budget: %s", bundle)
 
     result = manager.get_or_generate_profile_summary(
         job_id=ctx.job_id or "default",
