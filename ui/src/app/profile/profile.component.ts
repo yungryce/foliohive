@@ -8,6 +8,7 @@ import { CandidateContextService } from '../services/candidate-context.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
 import { ProfileService, CandidateProfileResponse, CandidateSummaryResponse } from '../services/profile.service';
 import { JobPollingService } from '../services/job-polling.service';
+import { CacheService } from '../services/cache.service';
 
 @Component({
   selector: 'app-profile',
@@ -23,6 +24,7 @@ export class ProfileComponent implements OnInit, OnDestroy {
   private profileService = inject(ProfileService);
   private jobPollingService = inject(JobPollingService);
   private sanitizer = inject(DomSanitizer);
+  private cache = inject(CacheService);
 
   private readonly destroy$ = new Subject<void>();
 
@@ -95,6 +97,22 @@ export class ProfileComponent implements OnInit, OnDestroy {
     this.summaryError = '';
     this.summaryHtml = null;
 
+    // Check cache first (24 hour TTL for expensive summaries)
+    const cacheKey = `profile-summary-${username}-${jobId || 'latest'}`;
+    const cached = this.cache.get<CandidateSummaryResponse>(cacheKey);
+    
+    if (cached) {
+      const html = cached?.summary_html || '';
+      if (html) {
+        const cleanHtml = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } }) as string;
+        this.summaryHtml = this.sanitizer.bypassSecurityTrustHtml(cleanHtml);
+      } else {
+        this.summaryHtml = this.sanitizer.bypassSecurityTrustHtml('<p>No summary available yet.</p>');
+      }
+      this.loadingSummary = false;
+      return;
+    }
+
     // Optimistically try to load summary
     this.profileService.getCandidateSummary(username, jobId).pipe(
       catchError((error) => {
@@ -121,6 +139,11 @@ export class ProfileComponent implements OnInit, OnDestroy {
       takeUntil(this.destroy$)
     ).subscribe({
       next: (summary: CandidateSummaryResponse) => {
+        // Cache successful response (24 hour TTL)
+        if (summary?.summary_html) {
+          this.cache.set(cacheKey, summary, 24 * 60 * 60 * 1000);
+        }
+        
         const html = summary?.summary_html || '';
         if (html) {
           const cleanHtml = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } }) as string;

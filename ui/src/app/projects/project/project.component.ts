@@ -7,6 +7,7 @@ import DOMPurify from 'dompurify';
 import { CandidateContextService } from '../../services/candidate-context.service';
 import { RepoBundleService, ReadmeSummaryResponse } from '../../services/repo-bundle.service';
 import { JobPollingService } from '../../services/job-polling.service';
+import { CacheService } from '../../services/cache.service';
 
 /**
  * Aligned with backend schema from get_repo_files in api_gateway.py
@@ -35,6 +36,7 @@ export class ProjectComponent implements OnInit, OnDestroy {
   private candidateContext = inject(CandidateContextService);
   private repoBundle = inject(RepoBundleService);
   private jobPollingService = inject(JobPollingService);
+  private cache = inject(CacheService);
 
   private readonly destroy$ = new Subject<void>();
 
@@ -96,12 +98,28 @@ export class ProjectComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * Load README summary using optimistic approach.
+   * Load README summary using optimistic approach with localStorage caching.
    * Attempts immediate fetch, polls if data not ready.
    */
   private loadReadmeSummary(username: string, repoName: string, jobId: string): void {
     this.summaryLoading = true;
     this.summaryError = '';
+
+    // Check cache first (24 hour TTL for expensive summaries)
+    const cacheKey = `readme-summary-${username}-${repoName}-${jobId}`;
+    const cached = this.cache.get<ReadmeSummaryResponse>(cacheKey);
+    
+    if (cached) {
+      const summaryHtml = cached?.readme_summary_html || '';
+      if (summaryHtml) {
+        const cleanHtml = DOMPurify.sanitize(summaryHtml, { USE_PROFILES: { html: true } }) as string;
+        this.contentHtml = this.sanitizer.bypassSecurityTrustHtml(cleanHtml);
+      } else {
+        this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>No README summary available yet.</p>');
+      }
+      this.summaryLoading = false;
+      return;
+    }
 
     // Optimistically try to load summary
     this.repoBundle.getReadmeSummary(username, repoName).pipe(
@@ -130,6 +148,11 @@ export class ProjectComponent implements OnInit, OnDestroy {
       takeUntil(this.destroy$)
     ).subscribe({
       next: (res: ReadmeSummaryResponse) => {
+        // Cache successful response (24 hour TTL)
+        if (res?.readme_summary_html) {
+          this.cache.set(cacheKey, res, 24 * 60 * 60 * 1000);
+        }
+        
         const summaryHtml = res?.readme_summary_html || '';
         if (summaryHtml) {
           const cleanHtml = DOMPurify.sanitize(summaryHtml, { USE_PROFILES: { html: true } }) as string;
