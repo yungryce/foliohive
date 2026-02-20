@@ -1,82 +1,121 @@
-#sym:get_standard_config_files is used to retrieve #sym:STANDARD_CONFIG_FILE_CANDIDATES using #sym:discover_repo_files 
+Summary functions: 
+ - `api_gateway.get_profile_summary()` 
+ - `api_gateway.get_repo_summary()`
+ - `api_gateway.portfolio_query()`
 
-We are cleaning up data retrieved and data retrieved for config files can be improved to extract only files needed. for example, dependency fields can be extracted diectly without extracting full file with non relevant detail
+Issue: We are over-feeding context ~45k and under-constraining output ~6k.
 
+Bug: Response truncated (hit max_completion_tokens=6000).
 
-------------------------------------------------------------------
-
-Response truncated (hit max_completion_tokens=6000). We are over-feeding context ~45k and under-constraining output ~6k.
-
-| Use Case      | Input     | Notes     | Suggestion       |
-| **Repo Summary**    | Single repo README, metadata, config                      | Can allow **more context per repo** since it’s only one repo | Stage 1: Extraction → Stage 2: Interpretation → Stage 3: Presentation. This is effectively a **short pipeline per repo**.                                                      |
-| **Profile Summary** | Multiple repos’ metadata, summaries, language/config data | Already compressed via repo summaries. Needs aggregation     | Stage 1: Aggregate repo summaries → Stage 2: Cross-repo interpretation/evaluation → Stage 3: Profile presentation. Don’t reprocess raw repo content; work from repo summaries. |
-| **Query Summary**   | User query + profile summary                              | Queries should operate on already compressed data            | Stage 1: Filter/retrieve relevant repo summaries → Stage 2: Query-focused evaluation → Stage 3: Query response presentation.                                                   |
-
-[Repo Summary Pipeline]          <- per repo
-Extraction -> Interpretation -> Presentation (optional)
-[Profile Summary Pipeline]       <- multi-repo
-Input: repo summaries
-Aggregation -> Evaluation -> Presentation (HTML / profile card)
-[Query Summary Pipeline]         <- user query
-Input: profile summary / repo summaries
-Filter -> Query evaluation -> Presentation (Answer)
-
-- Repo Summary: single short pipeline per repo (can be parallelized)
-- Profile Summary: multi-stage aggregation pipeline consuming repo summaries
-- Query Summary: lightweight multi-stage pipeline consuming already compressed data
-Important: Early extraction must happen once per repo; all downstream stages work on structured, compressed data.
-
-Recommendations / Best Practices
-1. Treat repo summarization as a standalone early-stage process.
-    - This prevents recomputation.
-    - Allows max input context per repo without blowing up multi-repo pipelines.
-2. Profile and query summaries should be multi-stage pipelines that operate on repo summaries.
-    - Use aggregation, evaluation, and presentation stages.
-3. Token budgets should shrink at each stage.
-    - Repo summaries: allow richer input
-    - Profile/query: input is compressed, output concise
-4. Parallelize repo summaries where possible.
-    - Reduces wall-time latency for profile generation
-5. Keep presentation separate.
-    - Flair, formatting, and recruiter-facing output should happen last.
-5. Store/reuse intermediate summaries in Azure Storage for cost and latency efficiency.
-
-Conclusion:
-Repo summary = independent process/stage per repo
-Profile summary = multi-stage pipeline aggregating repo summaries
-Query summary = multi-stage pipeline on compressed data
-Multi-stage pipelines start at repo summary for signal extraction and continue downstream for aggregation/evaluation/presentation.
+Input Context for `foliohive_shared/ai/summary_manager.py` capturing sample config file contents, readme contents and metadata: 
+- `.github/plans/get_profile_summary.log`: This has logs summary inputs from `api_gateway._build_repo_statistics()` for aggregated metadata and `api_gateway._get_repo_files` for file contents (readme and config)
+- `.github/plans/get_repo_summary.log`: This has logs summary inputs from `api_gateway._get_portfolio_bundle()` for repo metadata and `api_gateway._get_repo_files` for file contents (readme and config)
 
 
-Output Constraints
-Maximum defined token budget
-Maximum sections allowed
-Maximum highlighted repositories
-No new inferred skills
-No deviation from evaluation output
+### Phase 1: Config Extraction Layer (Prep)
+1. Extend data_filter.py with extraction schemas
+    - Add CONFIG_EXTRACTION_SCHEMAS dict mapping file patterns to extraction functions
+    - Implement extractors for config types (prioritized by top repo language):
+        - Python: Extract dependency names only from requirements.txt, core fields from pyproject.toml
+        - Node/JS: Extract dependencies from package.json (extract top-level deps only)
+        - Java: Extract dependencies from pom.xml (<dependencies> section), build.gradle (dependencies block)
+        - Docker: Dockerfile extraction; extend for docker-compose.yml (services, images, volumes)
+        - Cloud/IaC: Extract resources from main.tf, pipeline stages from azure-pipelines.yml
+        - pattern repeated for other common languages
+    - Each extractor returns structured dict, not raw text (e.g., {"dependencies": [...], "scripts": {...}})
+
+2. Modify cache_worker.py _cache_blob_file() function
+    - After downloading blob content, check if file matches extraction schema
+    - If match found, apply extractor and store only extracted data. discard raw content
+    - Store extracted data in new blob path: extracted/{fingerprint}/{repo_name}/{filename}.json
+    - Update discoverable paths table to track extraction status
+
+3. Update cache_manager.py get_repo_files()
+    - Retrieve extracted config files
+    - skip if extraction not available
+    - Return structured dict: {"filename": str, "content": str, "extracted": dict | None}
+
+4. Update summary_manager.py chunking methods
+    - Modify chunk_config_file() to use extracted data when available
+    - Format extracted data compactly (e.g., dependency names as comma-separated list)
+    - Reduces config token budget usage by 60-80%
 
 
-| Stage           | Target Input | Target Output |
-| --------------- | ------------ | ------------- |
-| Repo summary    | 10–20k       | 1–2k          |
-| Skill inference | 3–6k         | 800–1200      |
-| Aggregation     | 5–10k        | 1–2k          |
-| HTML            | 5k           | 2–3k          |
+### Phase 2: Repo Summary Pipeline (Stage 1 Interpretation)
 
-| Pipeline        | Input context                                      | Output target | Notes                               |
-| --------------- | -------------------------------------------------- | ------------- | ----------------------------------- |
-| Repo Summary    | Full README + metadata + configs (~10–12k tokens)  | 1–2k tokens   | More per-repo context allowed       |
-| Profile Summary | Compressed repo summaries (~5k per repo × N repos) | 2–3k          | Aggregate, deduplicate, rank skills |
-| Query Summary   | Filtered profile summaries (~5k–10k total)         | 1–2k          | Generate query-focused answer       |
-Key: Stage 1 Extraction is heavier for repo summaries, lighter for profile/query since input is already compressed.
+1. Add summary_manager.py method generate_repo_micro_summary()
+    - Input: Single repo context (README + metadata + extracted configs)
+    - Token budget: 10-12k input → 1-2k output
+    - Generates structured JSON summary (not HTML):
+        ```Json
+        {
+        "overview": "2-3 sentence description",
+        "key_features": ["bullet", "points"],
+        "tech_stack": {"languages": [...], "frameworks": [...], "tools": [...]},
+        "architecture_patterns": ["observed patterns with evidence"],
+        "skill_signals": [{"skill": str, "confidence": float, "evidence": str}]
+        }
+        ```
+    - Cache result in blob storage at summaries/{fingerprint}/{repo_name}/micro-summary.json
 
-Early Stage Recommendation
-- Always add an early per-repo summary stage for any multi-repo pipeline (profile or query).
-- This ensures:
-    - Pure signal extraction happens once per repo
-    - Cross-repo evaluation works on compact, deterministic summaries
-    - Multi-stage token usage is controlled
-- Without it, profile or query summarization would need to process full raw repo content each time → costly, high latency, high truncation risk
+2. Update cache_worker.py to generate micro-summaries
+    - After caching all blobs for a repo, trigger generate_repo_micro_summary() 
+    - Store summary alongside cached files (Consideration: caching blobs when summaries exist. possibilities for reusing blobs?)
+    - Mark repo as "summary_ready" in table_schema.py RepoSyncStatus table
+
+3. Add ai_assistant.py prompt for micro-summary
+    - Strict output format constraints (JSON only, no markdown)
+    - Focus on signal extraction, not presentation
+    - Explicit token limit: "Output must not exceed 2000 tokens"
+
+### Phase 3: Profile Aggregation Pipeline (Stage 2 Interpretation)
+1. Add summary_manager.py method aggregate_profile_from_summaries()
+    - Input: Collection of repo micro-summaries (NOT raw content)
+    - Token budget: 5-8k input (compressed summaries) → 2-3k output
+    - Two-stage process:
+        - Stage 2a - Skill Aggregation: Deduplicate skills across repos, rank by confidence × frequency
+        - Stage 2b - Profile Evaluation: Assess code quality, patterns, strengths based on aggregated signals
+    - Generates structured profile data (JSON), not HTML yet
+2. Add summary_manager.py method format_profile_html()
+    - Input: Aggregated profile JSON from step 1
+    - Token budget: ~3k input → ~2k output (HTML only)
+    - Pure presentation layer - no new analysis
+    - Strict constraints in prompt: "Maximum 5 sections, 4 repos mentioned, 3 sentences per repo"
+3. Refactor api_gateway.py get_profile_summary()
+    - Check if all repos have cached micro-summaries
+    - If yes: Load summaries → aggregate → format HTML
+    - if no: skip repo for aggregated summary
+    - Cache final profile HTML separately for fast retrieval
+
+### Phase 4: Query Pipeline (Stage 3 Query Evaluation)
+1. Add summary_manager.py method query_from_summaries()
+    - Input: User query + profile JSON (not HTML) + selected repo micro-summaries
+    - Token budget: 5-10k input → 1-2k output
+    - Filter relevant repos based on query keywords before loading summaries
+    - Return markdown answer with repo references
+2. Refactor api_gateway.py portfolio_query()
+    - Use cached profile aggregation + repo micro-summaries
+    - Avoid re-reading raw config files or READMEs
+
+
+### Phase 5: Token Budget Optimization
+1. Update summary_manager.py TOKEN_BUDGETS
+    Rebalance budgets per stage:
+    Stage	Metadata	README	Config	Reserve	Total
+    Repo micro-summary	2k	8k	2k	1k	13k
+    Profile aggregation	1k	0	0	1k	2k (summaries only)
+    Profile HTML formatting	3k	0	0	500	3.5k
+    Query	2k	0	0	1k	3k (summaries only)
+2. Update ai_assistant.py output token limits
+    - Repo micro-summary: max_completion_tokens=2000
+    - Profile aggregation: max_completion_tokens=3000
+    - Profile HTML: max_completion_tokens=2500
+    - Query: max_completion_tokens=2000
+3. Add output constraints to prompts in ai_assistant.py
+    - Explicitly state token limits in system messages
+    - Add counting instructions: "Use bullet lists. Maximum 3 sentences per repository."
+    - Add truncation warnings: "If you approach token limit, prioritize overview and top skills."
+
 
 
 - Output must be concise and fit within a short profile card.
@@ -99,8 +138,3 @@ Early Stage Recommendation
 If uncertain, lower confidence.
 - Based strictly on provided data, list observed architecture patterns
 
-
-
-will we benefit from further optimizing STANDARD_CONFIG_FILE_CANDIDATES and extracting file contents 
-- target standard files relevant to extract context for a repository across languages, platforms, and tech stacks
-- extract only relevant content from files thereby compressing context input data
