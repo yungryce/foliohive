@@ -22,9 +22,9 @@ from foliohive_shared import (
     FingerprintManager,
     GitHubAPI,
     GitHubRepoManager,
+    SummaryManager,
     table_manager,
     RepoAPIUsageRow,
-    RepoDiscoveredPathsRow,
 )
 
 logger = logging.getLogger("cloudfolio.cache_worker")
@@ -91,7 +91,7 @@ def _fetch_and_cache_files(
         job_id: Job ID for tracking and persistence
     
     Returns:
-        Dict with 'cached_count' and 'api_usage' keys
+        Dict with cached_count, api_usage, readme_content, and config_files
     """
     logger.info(
         "[FILES_FETCH_START] repo=%s - Fetching file contents (readme + config)",
@@ -137,20 +137,20 @@ def _fetch_and_cache_files(
         )
         cached_count += 1
     
-    # Cache config files using centralized key generation
-    for filename, content in config_files.items():
-        key = cache_manager.generate_cache_key(
-            username=username,
-            repo=repo_name,
-            file_type="config",
-            filename=filename,
-        )
-        cache_manager.save(key, content)
-        logger.info(
-            "Cached config file: repo=%s filename=%s key=%s",
-            repo_name, filename, key
-        )
-        cached_count += 1
+    extracted_config_files, extraction_metadata = repo_manager.extract_config_payloads(config_files)
+    cached_configs = repo_manager.cache_extracted_config_files(
+        cache_manager_obj=cache_manager,
+        username=username,
+        repo=repo_name,
+        extracted_config_files=extracted_config_files,
+    )
+    cached_count += cached_configs
+    logger.info(
+        "Cached extracted configs: repo=%s cached=%d discovered=%d",
+        repo_name,
+        cached_configs,
+        len(config_files),
+    )
     
     logger.info(
         "[FILES_FETCH_COMPLETE] repo=%s - Cached %d files (readme + config)",
@@ -161,12 +161,29 @@ def _fetch_and_cache_files(
     # Persist discovered paths to table storage for later retrieval
     # fingerprint is snapshot copy from sync_worker, passed via queue message
     if job_id:
-        _persist_discovered_paths(
+        repo_manager.persist_discovered_paths(
+            table_manager_obj=table_manager,
             username=username,
-            repo_name=repo_name,
+            repo=repo_name,
             config_files=config_files,
             readme_files=readme_files,
-            fingerprint=fingerprint
+            fingerprint=fingerprint,
+            extraction_metadata=extraction_metadata,
+        )
+        repo_manager.persist_extraction_statuses(
+            table_manager_obj=table_manager,
+            username=username,
+            repo=repo_name,
+            extraction_metadata=extraction_metadata,
+        )
+        logger.info(
+            "[PERSIST_DISCOVERED_PATHS] user=%s repo=%s fingerprint=%s total=%d readme=%d config=%d",
+            username,
+            repo_name,
+            fingerprint or "<none>",
+            len(readme_files) + len(config_files),
+            len(readme_files),
+            len(config_files),
         )
     
     # Record API usage if job_id provided
@@ -176,55 +193,9 @@ def _fetch_and_cache_files(
     return {
         "cached_count": cached_count,
         "api_usage": api_usage,
+        "readme_content": primary_readme,
+        "config_files": extracted_config_files,
     }
-
-
-def _persist_discovered_paths(
-    username: str,
-    repo_name: str,
-    config_files: Dict[str, str],
-    readme_files: Dict[str, str],
-    fingerprint: str,
-) -> None:
-    """Persist discovered file paths to table storage for later retrieval.
-    
-    Separates discovered paths into readme_paths and config_paths for
-    easy categorization by get_repo_files() in api_gateway.
-    
-    Args:
-        username: GitHub username
-        repo_name: Repository name
-        config_files: Dict of config filename -> content
-        readme_files: Dict of readme filename -> content
-        fingerprint: Snapshot copy of RepoGitHubMetadataRow.fingerprint at cache time.
-            Used for cache invalidation - when fingerprints mismatch, blobs are stale.
-    """
-    from datetime import datetime, timezone
-    
-    # Extract paths
-    readme_paths = list(readme_files.keys())
-    config_paths = list(config_files.keys())
-    all_paths = readme_paths + config_paths
-    
-    now = datetime.now(timezone.utc).isoformat()
-    safe_timestamp = now.replace(":", "-").replace("+", "_")
-    
-    row = RepoDiscoveredPathsRow(
-        username=username,
-        repo_name=repo_name,
-        fingerprint=fingerprint,
-        discovered_paths=all_paths,
-        readme_paths=readme_paths,
-        config_paths=config_paths,
-        created_at=safe_timestamp,
-        updated_at=safe_timestamp,
-    )
-    
-    table_manager.upsert_repo_discovered_paths(row)
-    logger.info(
-        "[PERSIST_DISCOVERED_PATHS] user=%s repo=%s fingerprint=%s total=%d readme=%d config=%d",
-        username, repo_name, fingerprint or "<none>", len(all_paths), len(readme_paths), len(config_paths)
-    )
 
 
 def _record_api_usage_for_file_cache(
@@ -285,6 +256,7 @@ def _update_cache_progress(
     username: str,
     repo_name: str,
     cache_failed: bool = False,
+    summary_ready: bool = False,
     *,
     message_id: Optional[str] = None,
     trace_id: Optional[str] = None,
@@ -296,7 +268,7 @@ def _update_cache_progress(
     """
     from datetime import datetime, timezone
     
-    status_value = "failed" if cache_failed else "cached"
+    status_value = "failed" if cache_failed else ("summary_ready" if summary_ready else "cached")
     now = datetime.now(timezone.utc).isoformat()
     
     # Update RepoSyncStatus with cache completion (partial update)
@@ -322,17 +294,19 @@ def _update_cache_progress(
 
     for row in statuses:
         status = row.get("status")
-        if status in ("cached", "failed", "synced"):
+        if status in ("cached", "summary_ready", "failed", "synced"):
             status_counts[status] += 1
             status_lists[status].append(row["repo_name"])
 
     cached = status_lists["cached"]
+    summary_ready_rows = status_lists["summary_ready"]
     failed = status_lists["failed"]
     synced = status_lists["synced"]
     
     logger.info(
-        "[CACHE_PROGRESS] job=%s cached=%d synced=%d failed=%d",
+        "[CACHE_PROGRESS] job=%s summary_ready=%d cached=%d synced=%d failed=%d",
         job_id,
+        len(summary_ready_rows),
         len(cached),
         len(synced),
         len(failed),
@@ -343,7 +317,7 @@ def _update_cache_progress(
     current_status = job.get("status") if job else "queued"
     
     # Set metadata_ready when first repo cached (metadata available for display)
-    if cached and current_status not in ("metadata_ready", "completed"):
+    if (cached or summary_ready_rows) and current_status not in ("metadata_ready", "completed"):
         table_manager.update_job_metadata(
             username,
             job_id,
@@ -352,7 +326,7 @@ def _update_cache_progress(
         logger.info(
             "[JOB_METADATA_READY] job=%s - First repo cached (%d/%d), metadata available for display",
             job_id,
-            len(cached),
+            len(cached) + len(summary_ready_rows),
             len(statuses),
         )
     
@@ -406,8 +380,36 @@ def process_cache_job(msg: func.QueueMessage) -> None:
 
         # Fetch and cache file contents
         logger.info("[CACHE] Starting file cache for job=%s repo=%s user=%s fingerprint=%s", job_id, repo_name, username, fingerprint)
-        _fetch_and_cache_files(username, repo_name, fingerprint, job_id=job_id)
+        fetch_result = _fetch_and_cache_files(username, repo_name, fingerprint, job_id=job_id)
         logger.info("[CACHE] File cache completed for job=%s repo=%s", job_id, repo_name)
+
+        summary_ready = False
+        try:
+            summary_manager = SummaryManager(username=username)
+            metadata_row = table_manager.get_repo_github_metadata(username, repo_name) or {}
+            summary_result = summary_manager.generate_repo_micro_summary(
+                repo_name=repo_name,
+                repo_metadata={
+                    "name": repo_name,
+                    "description": metadata_row.get("description") or "",
+                    "primary_language": metadata_row.get("primary_language"),
+                    "topics": metadata_row.get("topics") or [],
+                    "stats": {
+                        "stars": metadata_row.get("stars_count", 0),
+                        "forks": metadata_row.get("forks_count", 0),
+                    },
+                },
+                readme_content=fetch_result.get("readme_content"),
+                config_files=fetch_result.get("config_files", {}),
+                fingerprint=fingerprint,
+            )
+            if summary_result.get("summary"):
+                summary_ready = True
+                logger.info("[MICRO_SUMMARY] Generated for %s/%s", username, repo_name)
+            else:
+                logger.warning("[MICRO_SUMMARY] Failed for %s/%s reason=%s", username, repo_name, summary_result.get("reason") or summary_result.get("error"))
+        except Exception as summary_exc:
+            logger.warning("[MICRO_SUMMARY] Exception for %s/%s: %s", username, repo_name, summary_exc)
         
         # Update progress tracking
         _update_cache_progress(
@@ -415,6 +417,7 @@ def process_cache_job(msg: func.QueueMessage) -> None:
             username,
             repo_name,
             cache_failed=False,
+            summary_ready=summary_ready,
             message_id=queue_message_id,
             trace_id=trace_id,
         )

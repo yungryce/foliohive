@@ -1398,52 +1398,46 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     
     profile = _get_or_refresh_user_profile(username)
 
-    # SummaryManager with File Budgeting and Caching
     manager = SummaryManager(username=username)
     file_budget = get_file_budget("profile")
-    
-    # Select repos early to minimize file fetching
+
     selected_repos = _select_repos_for_context(
         bundle["repo_rows"], 
         strategy="recent", 
         max_repos=file_budget["max_repos"]
     )
-    
-    # Build repo files dict with budget-aware limits
-    repo_files = _get_repo_files(
-        username,
-        selected_repos,
-        max_additional_readmes=file_budget["max_readme_files"],
-        max_config_files=file_budget["max_config_files"],
-        include_readme=True,
-    )
-    
-    # Log file counts only (not content)
-    repo_files_summary = {}
-    for repo_name, file_data in repo_files.items():
-        repo_files_summary[repo_name] = {
-            "readme_content": "yes" if file_data.get("readme_content") else "no",
-            "readme_files_count": len(file_data.get("readme_files", {})),
-            "config_files_count": len(file_data.get("config_files", []))
-        }
-    logger.info("repo files for summary generation (limited): %s", repo_files_summary)
-    logger.info("Generated profile metadata for summary generation: %s", profile)
-    logger.info("Selected repos for summary generation: %s", [repo.get("repo_name") for repo in selected_repos])
-    logger.info("Generating profile summary with file budget: %s", bundle)
 
-    result = manager.get_or_generate_profile_summary(
-        job_id=ctx.job_id or "default",
+    micro_summaries = []
+    for repo in selected_repos:
+        repo_name = repo.get("repo_name")
+        fingerprint = repo.get("fingerprint")
+        if not repo_name or not fingerprint:
+            continue
+        micro = manager.get_repo_micro_summary(repo_name, fingerprint)
+        if not micro:
+            continue
+        micro_summaries.append(
+            {
+                "repo_name": repo_name,
+                "fingerprint": fingerprint,
+                "repo_metadata": repo,
+                "micro_summary": micro,
+            }
+        )
+
+    aggregate = manager.aggregate_profile_from_summaries(
+        micro_summaries=micro_summaries,
         profile=profile or {},
-        repo_rows=bundle["repo_rows"],
         statistics=bundle["statistics"],
-        repo_files=repo_files,
     )
+    summary_html = manager.format_profile_html(aggregate)
 
     payload = {
         "username": username,
         "job_id": ctx.job_id,
-        "summary_html": result["summary_html"],
-        "cache_metadata": result.get("metadata", {})
+        "summary_html": summary_html,
+        "repos_included": len(micro_summaries),
+        "repos_total": len(selected_repos),
     }
 
     return _create_success_response(payload, cache_control="no-cache", request_id=ctx.trace.get("request_id"))
@@ -1523,50 +1517,57 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
             request_id=_get_trace_context(req).get("request_id"),
         )
 
-    # Fetch candidate session and repo data
     profile = _get_or_refresh_user_profile(username)
     ctx = _prepare_candidate_context(req, username)
-    
-    # Use unified portfolio data fetcher
-    bundle = _build_repo_detail_entry([], ctx=ctx)
-    entries = bundle.get("entries", [])
-    # bundle = _get_portfolio_bundle(username, job_id=ctx.job_id) if ctx else None
-    
-    if not ctx or not bundle or not bundle["repo_rows"]:
+
+    bundle = _get_portfolio_bundle(username, job_id=ctx.job_id)
+
+    if not bundle["repo_rows"]:
         return _create_error_response(
             f"No candidate data available for '{username}'. Trigger refresh first.",
             404,
             error_code="NOT_READY",
-            request_id=ctx.trace.get("request_id") if ctx else None,
+            request_id=ctx.trace.get("request_id"),
         )
 
-    # SummaryManager with File Budgeting and Caching
     manager = SummaryManager(username=username)
     file_budget = get_file_budget("query")
-    
-    # Select repos early to minimize file fetching
+
     selected_repos = _select_repos_for_context(
         bundle["repo_rows"], 
         strategy="recent", 
         max_repos=file_budget["max_repos"]
     )
-    
-    # Build repo files dict with budget-aware limits
-    repo_files = _get_repo_files(
-        username,
-        selected_repos,
-        max_additional_readmes=file_budget["max_readme_files"],
-        max_config_files=file_budget["max_config_files"],
+
+    micro_summaries = []
+    for repo in selected_repos:
+        repo_name = repo.get("repo_name")
+        fingerprint = repo.get("fingerprint")
+        if not repo_name or not fingerprint:
+            continue
+        micro = manager.get_repo_micro_summary(repo_name, fingerprint)
+        if not micro:
+            continue
+        micro_summaries.append(
+            {
+                "repo_name": repo_name,
+                "fingerprint": fingerprint,
+                "repo_metadata": repo,
+                "micro_summary": micro,
+            }
+        )
+
+    aggregate = manager.aggregate_profile_from_summaries(
+        micro_summaries=micro_summaries,
+        profile=profile or {},
+        statistics=bundle.get("statistics") or {},
+    )
+    response = manager.query_from_summaries(
+        query=query,
+        profile_aggregate=aggregate,
+        repo_micro_summaries=micro_summaries,
+        max_repos=file_budget["max_repos"],
     )
 
-    logger.info("repo files for summary generation (limited): %s", repo_files)
-    logger.info("Generated statistics for portfolio query: %s", bundle["statistics"])
-    
-    response = manager.get_or_generate_query_response(
-        job_id=ctx.job_id or "default",
-        query=query,
-        repo_rows=selected_repos,  # Already filtered by strategy
-        repo_files=repo_files,
-    )
-    
+    response.update({"username": username, "job_id": ctx.job_id})
     return _create_success_response(response)

@@ -13,6 +13,7 @@ from azure.core.exceptions import ResourceNotFoundError
 from foliohive_shared.table.table_manager import (
     JobMetadataRow,
     RepoAPIUsageRow,
+    RepoDiscoveredPathsRow,
     RepoGitHubMetadataRow,
     RepoLanguagesRow,
     RepoSyncStatusRow,
@@ -458,6 +459,115 @@ def test_repo_api_usage_timestamp_restore(table_manager: TableManager) -> None:
     fetched = table_manager.list_api_usage("alice", operation="metadata_sync")
     assert fetched[0]["created_at"] == created_at
     assert fetched[0]["rate_limit_reset"] == rate_limit_reset
+
+
+class TestRepoDiscoveredPaths:
+    """Test RepoDiscoveredPathsRow CRUD and cleanup queries."""
+
+    def test_upsert_discovered_path_with_extraction_metadata(self, table_manager: TableManager) -> None:
+        table_manager.upsert_repo_discovered_paths(
+            RepoDiscoveredPathsRow(
+                username="alice",
+                repo_name="api",
+                fingerprint="fp-1",
+                discovered_paths=["README.md", "package.json"],
+                readme_paths=["README.md"],
+                config_paths=["package.json"],
+                extraction_metadata={
+                    "package.json": {
+                        "extractor_key": "_extract_package_json",
+                        "extraction_status": "extracted",
+                    }
+                },
+            )
+        )
+
+        fetched = table_manager.get_repo_discovered_paths("alice", "api")
+        assert fetched is not None
+        assert fetched["fingerprint"] == "fp-1"
+        assert fetched["discovered_paths"] == ["README.md", "package.json"]
+        assert fetched["readme_paths"] == ["README.md"]
+        assert fetched["config_paths"] == ["package.json"]
+        assert fetched["extraction_metadata"]["package.json"]["extraction_status"] == "extracted"
+
+    def test_query_discovered_paths_by_repo_and_fingerprint(self, table_manager: TableManager) -> None:
+        table_manager.upsert_repo_discovered_paths(
+            RepoDiscoveredPathsRow(
+                username="alice",
+                repo_name="worker",
+                fingerprint="fp-query",
+                discovered_paths=["Dockerfile"],
+                config_paths=["Dockerfile"],
+            )
+        )
+
+        fetched = table_manager.get_repo_discovered_paths("alice", "worker")
+        assert fetched is not None
+        assert fetched["repo_name"] == "worker"
+        assert fetched["fingerprint"] == "fp-query"
+
+    def test_delete_stale_paths_for_repo(self, table_manager: TableManager) -> None:
+        table_manager.upsert_repo_discovered_paths(
+            RepoDiscoveredPathsRow(
+                username="alice",
+                repo_name="stale-repo",
+                fingerprint="fp-old",
+                discovered_paths=["README.md"],
+            )
+        )
+        table_manager.upsert_repo_github_metadata(
+            RepoGitHubMetadataRow(
+                username="alice",
+                repo_name="stale-repo",
+                fingerprint="fp-new",
+            )
+        )
+
+        deleted = table_manager.cleanup_old_discovered_paths("2100-01-01T00:00:00+00:00")
+        assert deleted == 1
+        assert table_manager.get_repo_discovered_paths("alice", "stale-repo") is None
+
+    def test_extraction_status_transitions(self, table_manager: TableManager) -> None:
+        table_manager.upsert_repo_discovered_paths(
+            RepoDiscoveredPathsRow(
+                username="alice",
+                repo_name="etl",
+                fingerprint="fp-status",
+                discovered_paths=["pyproject.toml"],
+                config_paths=["pyproject.toml"],
+                extraction_metadata={
+                    "pyproject.toml": {
+                        "extractor_key": "_extract_pyproject_toml",
+                        "extraction_status": "pending",
+                    }
+                },
+            )
+        )
+
+        table_manager.update_repo_discovered_path_extraction_status(
+            "alice",
+            "etl",
+            "pyproject.toml",
+            extraction_status="extracted",
+            extractor_key="_extract_pyproject_toml",
+        )
+        extracted = table_manager.get_repo_discovered_paths("alice", "etl")
+        assert extracted is not None
+        assert extracted["extraction_metadata"]["pyproject.toml"]["extraction_status"] == "extracted"
+
+        table_manager.update_repo_discovered_path_extraction_status(
+            "alice",
+            "etl",
+            "pyproject.toml",
+            extraction_status="failed",
+            extractor_key="_extract_pyproject_toml",
+            error="invalid_toml",
+        )
+        failed = table_manager.get_repo_discovered_paths("alice", "etl")
+        assert failed is not None
+        entry = failed["extraction_metadata"]["pyproject.toml"]
+        assert entry["extraction_status"] == "failed"
+        assert entry["error"] == "invalid_toml"
 
 
 def test_user_profile_roundtrip(table_manager: TableManager) -> None:

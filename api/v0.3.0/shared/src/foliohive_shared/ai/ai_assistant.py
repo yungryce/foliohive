@@ -2,7 +2,7 @@ import json
 import os
 import logging
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
@@ -269,6 +269,109 @@ class AIAssistant:
                 "query": query
             }
 
+    def summarize_repo_micro_summary_json(
+        self,
+        *,
+        repo_name: str,
+        repo_context: Dict[str, Any],
+        model_tier: str = "default",
+    ) -> Dict[str, Any]:
+        """Generate a strict JSON micro-summary for one repository."""
+        if not repo_context:
+            return {"error": "empty_context"}
+        if not self.client:
+            return {"error": "ai_service_not_configured"}
+
+        system_message = self._build_repo_micro_summary_system(repo_name)
+        query = self._build_repo_micro_summary_user(repo_context)
+        request_id = f"repo-micro-{int(time.time())}"
+        result = self.call_ai_api(
+            system_message,
+            query,
+            request_id,
+            model_tier=model_tier,
+            max_completion_tokens=2000,
+        )
+
+        if "Unable to generate" in result or "encountered an error" in result:
+            return {"error": result}
+
+        try:
+            parsed = json.loads(result)
+            if not isinstance(parsed, dict):
+                return {"error": "invalid_json_root", "raw_sample": result[:300]}
+            return parsed
+        except Exception:
+            return {"error": "invalid_json", "raw_sample": result[:300]}
+
+    def summarize_profile_aggregation_json(
+        self,
+        *,
+        username: str,
+        micro_summaries: List[Dict[str, Any]],
+        model_tier: str = "default",
+    ) -> Dict[str, Any]:
+        """Generate profile aggregate JSON from repo micro-summaries."""
+        if not micro_summaries:
+            return {"error": "empty_micro_summaries"}
+        if not self.client:
+            return {"error": "ai_service_not_configured"}
+
+        system_message = self._build_profile_aggregation_system(username)
+        query = json.dumps({"username": username, "micro_summaries": micro_summaries}, ensure_ascii=False)
+        request_id = f"profile-agg-{int(time.time())}"
+        result = self.call_ai_api(
+            system_message,
+            query,
+            request_id,
+            model_tier=model_tier,
+            max_completion_tokens=2500,
+        )
+        try:
+            parsed = json.loads(result)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        return {"error": "invalid_json", "raw_sample": result[:300]}
+
+    def summarize_query_from_summaries(
+        self,
+        *,
+        query: str,
+        profile_aggregate: Dict[str, Any],
+        selected_repo_summaries: List[Dict[str, Any]],
+        model_tier: str = "default",
+    ) -> Dict[str, Any]:
+        """Generate recruiter-facing answer from aggregate + selected repo summaries."""
+        if not query.strip():
+            return {"response": "Please provide a query.", "repositories_used": [], "query": query}
+        if not self.client:
+            return {"error": "ai_service_not_configured"}
+
+        system_message = self._build_query_from_summaries_system(query)
+        payload = {
+            "query": query,
+            "profile_aggregate": profile_aggregate,
+            "selected_repo_summaries": selected_repo_summaries,
+        }
+        request_id = f"query-summaries-{int(time.time())}"
+        result = self.call_ai_api(
+            system_message,
+            json.dumps(payload, ensure_ascii=False),
+            request_id,
+            model_tier=model_tier,
+            max_completion_tokens=2500,
+        )
+        return {
+            "response": result,
+            "repositories_used": [
+                {"name": item.get("repo_name")} for item in selected_repo_summaries if item.get("repo_name")
+            ],
+            "total_repositories": len(selected_repo_summaries),
+            "query": query,
+        }
+
 
     # ---------------------------------------------------------------------------
     # Helper methods to build system prompts for different tasks
@@ -410,3 +513,65 @@ class AIAssistant:
         )
         
         return system_template
+
+    def _build_repo_micro_summary_system(self, repo_name: Optional[str] = None) -> str:
+        """Build system prompt for strict JSON repo micro-summary output."""
+        label = repo_name or "the repository"
+        return (
+            f"You analyze {label} and return JSON only.\n"
+            "Do not return markdown, prose, or code fences.\n"
+            "Output must be valid JSON object with exactly these top-level keys:\n"
+            "overview, key_features, tech_stack, architecture_patterns, skill_signals\n"
+            "Schema constraints:\n"
+            "- overview: string (2-3 sentences max)\n"
+            "- key_features: array of short strings\n"
+            "- tech_stack: object with languages/frameworks/tools arrays\n"
+            "- architecture_patterns: array of short strings\n"
+            "- skill_signals: array of objects {skill, confidence, evidence}\n"
+            "- confidence must be number between 0 and 1\n"
+            "Keep response concise and under 2000 tokens.\n"
+        )
+
+    def _build_repo_micro_summary_user(self, repo_context: Dict[str, Any]) -> str:
+        """Build user message for repo micro-summary generation."""
+        return (
+            "Generate a repository micro-summary from this context JSON.\n"
+            "Use README and extracted config evidence where present.\n"
+            "Return JSON only.\n\n"
+            + json.dumps(repo_context, ensure_ascii=False)
+        )
+
+    def _build_profile_aggregation_system(self, username: Optional[str] = None) -> str:
+        """Build system prompt for JSON-only profile aggregation from micro-summaries."""
+        candidate = username or self.username or "candidate"
+        return (
+            f"You aggregate repository micro-summaries for {candidate} into JSON only.\n"
+            "Do not return markdown, prose, or code fences.\n"
+            "Output must be valid JSON object with keys: overview, skills, domains, experience_signals.\n"
+            "skills must be array of {skill, score, evidence}.\n"
+            "domains must be array of {domain, evidence}.\n"
+            "experience_signals must include architecture_patterns and collaboration indicators when present.\n"
+            "Use only provided micro-summary evidence; do not speculate.\n"
+        )
+
+    def _build_profile_formatter_system(self, username: Optional[str] = None) -> str:
+        """Build system prompt for HTML-only formatting from aggregate JSON."""
+        candidate = username or self.username or "candidate"
+        return (
+            f"You format an aggregated profile JSON for {candidate} into HTML only.\n"
+            "Return only semantic HTML using h2/h3/p/ul/li/strong.\n"
+            "Sections required: Overview, Technical Skills & Tools, Code Quality & Practices, Strengths, Best Fit, Recent Activity.\n"
+            "Do not add details not present in JSON.\n"
+        )
+
+    def _build_query_from_summaries_system(self, query: str) -> str:
+        """Build system prompt for query responses using aggregate + selected summaries."""
+        return (
+            "You answer recruiter queries using only provided profile aggregate and repository micro-summaries.\n"
+            f"Primary query: {query}\n"
+            "Requirements:\n"
+            "- Start with direct answer.\n"
+            "- Cite repository names for evidence.\n"
+            "- Mention uncertainty if evidence is missing.\n"
+            "- Return concise markdown suitable for recruiter UI.\n"
+        )

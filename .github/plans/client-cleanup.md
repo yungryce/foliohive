@@ -1,140 +1,169 @@
-Summary functions: 
- - `api_gateway.get_profile_summary()` 
- - `api_gateway.get_repo_summary()`
- - `api_gateway.portfolio_query()`
+# Client Profile Summary Optimization Plan (Refactored)
 
-Issue: We are over-feeding context ~45k and under-constraining output ~6k.
+This plan targets summary quality and latency by replacing raw file-heavy prompts with extracted signals and staged summaries.
 
-Bug: Response truncated (hit max_completion_tokens=6000).
+Reference architecture and flow in `.github/copilot-instructions.md`:
+- `api_gateway.py -> sync_worker.py -> cache_worker.py`
+- Summary entry points:
+  - `api_gateway.get_profile_summary()`
+  - `api_gateway.get_repo_summary()`
+  - `api_gateway.portfolio_query()`
 
-Input Context for `foliohive_shared/ai/summary_manager.py` capturing sample config file contents, readme contents and metadata: 
-- `.github/plans/get_profile_summary.log`: This has logs summary inputs from `api_gateway._build_repo_statistics()` for aggregated metadata and `api_gateway._get_repo_files` for file contents (readme and config)
-- `.github/plans/get_repo_summary.log`: This has logs summary inputs from `api_gateway._get_portfolio_bundle()` for repo metadata and `api_gateway._get_repo_files` for file contents (readme and config)
+## Problem Statement
 
+- Current context input is overfed (~45k tokens for profile paths).
+- Output is under-constrained (`max_completion_tokens=6000`), causing truncation.
+- Raw README/config payloads are noisy for skill inference and increase latency.
 
-### Phase 1: Config Extraction Layer (Prep)
-1. Extend data_filter.py with extraction schemas
-    - Add CONFIG_EXTRACTION_SCHEMAS dict mapping file patterns to extraction functions
-    - Implement extractors for config types (prioritized by top repo language):
-        - Python: Extract dependency names only from requirements.txt, core fields from pyproject.toml
-        - Node/JS: Extract dependencies from package.json (extract top-level deps only)
-        - Java: Extract dependencies from pom.xml (<dependencies> section), build.gradle (dependencies block)
-        - Docker: Dockerfile extraction; extend for docker-compose.yml (services, images, volumes)
-        - Cloud/IaC: Extract resources from main.tf, pipeline stages from azure-pipelines.yml
-        - pattern repeated for other common languages
-    - Each extractor returns structured dict, not raw text (e.g., {"dependencies": [...], "scripts": {...}})
+Logs to baseline before/after:
+- `.github/plans/get_profile_summary.log`
+- `.github/plans/get_repo_summary.log`
 
-2. Modify cache_worker.py _cache_blob_file() function
-    - After downloading blob content, check if file matches extraction schema
-    - If match found, apply extractor and store only extracted data. discard raw content
-    - Store extracted data in new blob path: extracted/{fingerprint}/{repo_name}/{filename}.json
-    - Update discoverable paths table to track extraction status
+## Finalized Architecture Decisions
 
-3. Update cache_manager.py get_repo_files()
-    - Retrieve extracted config files
-    - skip if extraction not available
-    - Return structured dict: {"filename": str, "content": str, "extracted": dict | None}
+1. **Config storage strategy**: extracted-only for config files (no raw config blob persistence).
+2. **Micro-summary generation timing**: asynchronous in `cache_worker.py` (no additional queue initially).
+3. **Summary storage**: blob cache only (micro summaries + profile aggregate cache artifacts).
+4. **Missing summary behavior**: skip repo and continue for profile/query endpoints.
+5. **Primary objective**: reduce latency and truncation risk first, then iterate on richer extraction coverage.
 
-4. Update summary_manager.py chunking methods
-    - Modify chunk_config_file() to use extracted data when available
-    - Format extracted data compactly (e.g., dependency names as comma-separated list)
-    - Reduces config token budget usage by 60-80%
+## Non-Goals (Current Phase)
 
+- No immediate migration to Foundry/OpenAI host changes.
+- No new queue unless cache-worker latency breaches SLO.
+- No UI contract changes for existing endpoint response shapes.
 
-### Phase 2: Repo Summary Pipeline (Stage 1 Interpretation)
+## Phase 1 — Config Extraction Layer (Foundation)
 
-1. Add summary_manager.py method generate_repo_micro_summary()
-    - Input: Single repo context (README + metadata + extracted configs)
-    - Token budget: 10-12k input → 1-2k output
-    - Generates structured JSON summary (not HTML):
-        ```Json
-        {
-        "overview": "2-3 sentence description",
-        "key_features": ["bullet", "points"],
-        "tech_stack": {"languages": [...], "frameworks": [...], "tools": [...]},
-        "architecture_patterns": ["observed patterns with evidence"],
-        "skill_signals": [{"skill": str, "confidence": float, "evidence": str}]
-        }
-        ```
-    - Cache result in blob storage at summaries/{fingerprint}/{repo_name}/micro-summary.json
+### Scope
+1. Extend `foliohive_shared/ai/data_filter.py`:
+   - Add `CONFIG_EXTRACTION_SCHEMAS` mapping filename/pattern -> extractor function.
+   - Extractors return structured dicts only.
 
-2. Update cache_worker.py to generate micro-summaries
-    - After caching all blobs for a repo, trigger generate_repo_micro_summary() 
-    - Store summary alongside cached files (Consideration: caching blobs when summaries exist. possibilities for reusing blobs?)
-    - Mark repo as "summary_ready" in table_schema.py RepoSyncStatus table
+2. Initial extractor set (priority order):
+   - Python: `requirements.txt`, `pyproject.toml`
+   - Node/JS: `package.json` (top-level deps)
+   - Java: `pom.xml`, `build.gradle`
+   - Docker: `Dockerfile`, `docker-compose.yml`
+   - IaC/Cloud: `main.tf`, `azure-pipelines.yml`, `host.json`, `serverless.yml`
 
-3. Add ai_assistant.py prompt for micro-summary
-    - Strict output format constraints (JSON only, no markdown)
-    - Focus on signal extraction, not presentation
-    - Explicit token limit: "Output must not exceed 2000 tokens"
+3. Update `cache_worker.py`:
+   - During file cache step, run extractors for config candidates.
+   - Persist extracted JSON artifact under cache key namespace for extracted config.
+   - Persist extraction metadata in discovered-path records (success/failure + extractor type).
 
-### Phase 3: Profile Aggregation Pipeline (Stage 2 Interpretation)
-1. Add summary_manager.py method aggregate_profile_from_summaries()
-    - Input: Collection of repo micro-summaries (NOT raw content)
-    - Token budget: 5-8k input (compressed summaries) → 2-3k output
-    - Two-stage process:
-        - Stage 2a - Skill Aggregation: Deduplicate skills across repos, rank by confidence × frequency
-        - Stage 2b - Profile Evaluation: Assess code quality, patterns, strengths based on aggregated signals
-    - Generates structured profile data (JSON), not HTML yet
-2. Add summary_manager.py method format_profile_html()
-    - Input: Aggregated profile JSON from step 1
-    - Token budget: ~3k input → ~2k output (HTML only)
-    - Pure presentation layer - no new analysis
-    - Strict constraints in prompt: "Maximum 5 sections, 4 repos mentioned, 3 sentences per repo"
-3. Refactor api_gateway.py get_profile_summary()
-    - Check if all repos have cached micro-summaries
-    - If yes: Load summaries → aggregate → format HTML
-    - if no: skip repo for aggregated summary
-    - Cache final profile HTML separately for fast retrieval
+4. Update `cache_manager.py` retrieval API:
+   - `get_repo_files()` returns extracted config payloads.
+   - If extraction unavailable, skip config payload (do not fetch raw config fallback).
 
-### Phase 4: Query Pipeline (Stage 3 Query Evaluation)
-1. Add summary_manager.py method query_from_summaries()
-    - Input: User query + profile JSON (not HTML) + selected repo micro-summaries
-    - Token budget: 5-10k input → 1-2k output
-    - Filter relevant repos based on query keywords before loading summaries
-    - Return markdown answer with repo references
-2. Refactor api_gateway.py portfolio_query()
-    - Use cached profile aggregation + repo micro-summaries
-    - Avoid re-reading raw config files or READMEs
+### Acceptance Criteria
+- At least 80% of discovered config files in sampled repos return parseable extraction output.
+- Retrieval contract supports extracted config objects without breaking README retrieval.
 
+## Phase 2 — Repo Micro Summary Pipeline
 
-### Phase 5: Token Budget Optimization
-1. Update summary_manager.py TOKEN_BUDGETS
-    Rebalance budgets per stage:
-    Stage	Metadata	README	Config	Reserve	Total
-    Repo micro-summary	2k	8k	2k	1k	13k
-    Profile aggregation	1k	0	0	1k	2k (summaries only)
-    Profile HTML formatting	3k	0	0	500	3.5k
-    Query	2k	0	0	1k	3k (summaries only)
-2. Update ai_assistant.py output token limits
-    - Repo micro-summary: max_completion_tokens=2000
-    - Profile aggregation: max_completion_tokens=3000
-    - Profile HTML: max_completion_tokens=2500
-    - Query: max_completion_tokens=2000
-3. Add output constraints to prompts in ai_assistant.py
-    - Explicitly state token limits in system messages
-    - Add counting instructions: "Use bullet lists. Maximum 3 sentences per repository."
-    - Add truncation warnings: "If you approach token limit, prioritize overview and top skills."
+### Scope
+1. Add `summary_manager.py::generate_repo_micro_summary()`:
+   - Input: repo metadata + README + extracted config objects.
+   - Output: strict JSON structure (analysis-only; no HTML).
+   - Budget: ~10-12k input, <=2k output.
 
+2. Update `cache_worker.py`:
+   - After cache/extraction completes for a repo, generate/store micro summary.
+   - Mark status progression in `RepoSyncStatus` to include `summary_ready`.
 
+3. Add `ai_assistant.py` prompt builder for micro summaries:
+   - JSON-only output rules.
+   - Hard output constraints and truncation-safe behavior.
 
-- Output must be concise and fit within a short profile card.
-- Prefer summarization over completeness.
-- Never describe every repository individually unless critical.
-- The final HTML must not exceed 2000 tokens.
-- Limit project descriptions to 3–4 sentences per project.
-- Do not repeat information.
-- Be concise and structured.
-- Maximum total output length: 2500 tokens.
-- Maximum 5 sections.
-- Maximum 4 repositories mentioned.
-- Maximum 3 sentences per repository.
-- Use concise bullet lists when possible.
-- Do NOT repeat technologies.
-- Do NOT explain obvious concepts.
-- Do NOT restate input metadata.
-- Prefer aggregation over enumeration.
-- Only infer a skill if explicit evidence exists in the provided repository data.
-If uncertain, lower confidence.
-- Based strictly on provided data, list observed architecture patterns
+### Acceptance Criteria
+- Repo micro-summary artifact exists for successful repos.
+- Invalid JSON responses are rejected/retried once, then marked as failed with reason.
 
+## Phase 3 — Profile Aggregation Pipeline
+
+### Scope
+1. Add `summary_manager.py::aggregate_profile_from_summaries()`:
+   - Input: repo micro-summary collection (no raw files).
+   - Stage 2a: skill aggregation and scoring.
+   - Stage 2b: profile-level evaluation signals.
+   - Output: structured profile JSON.
+
+2. Add `summary_manager.py::format_profile_html()`:
+   - Pure rendering from aggregated profile JSON.
+   - Max 5 sections, capped repo mentions, concise per-repo text.
+
+3. Refactor `api_gateway.get_profile_summary()`:
+   - Load cached micro summaries.
+   - Skip repos without micro-summary.
+   - Cache final profile HTML separately.
+
+### Acceptance Criteria
+- `get_profile_summary()` no longer depends on raw config content path.
+- Profile output avoids truncation and maintains endpoint response shape.
+
+## Phase 4 — Query Pipeline from Summaries
+
+### Scope
+1. Add `summary_manager.py::query_from_summaries()`:
+   - Input: user query + aggregated profile JSON + selected micro summaries.
+   - Repo prefilter by query relevance before summary load.
+
+2. Refactor `api_gateway.portfolio_query()`:
+   - Use cached aggregated profile + micro summaries.
+   - Avoid re-reading raw README/config blobs for query context.
+
+### Acceptance Criteria
+- Query path executes with summary-first context.
+- Query latency decreases relative to baseline for same repo count.
+
+## Phase 5 — Budget and Prompt Hardening
+
+### Token Budget Targets
+
+| Stage | Metadata | README | Config | Reserve | Total |
+|---|---:|---:|---:|---:|---:|
+| Repo micro-summary | 2k | 8k | 2k | 1k | 13k |
+| Profile aggregation | 1k | 0 | 0 | 1k | 2k |
+| Profile HTML formatting | 3k | 0 | 0 | 500 | 3.5k |
+| Query from summaries | 2k | 0 | 0 | 1k | 3k |
+
+### Output Token Caps
+- Repo micro-summary: `max_completion_tokens=2000`
+- Profile aggregation: `max_completion_tokens=3000`
+- Profile HTML: `max_completion_tokens=2500`
+- Query: `max_completion_tokens=2000`
+
+### Prompt Constraints
+- Explicit token and structure constraints in all summary prompts.
+- Prioritization instruction when nearing token limit.
+- Enforced sentence/section caps for profile formatting stage.
+
+## Reliability, Migration, and Observability
+
+### Required Reliability Rules
+- All new generation steps must be idempotent by `username + repo + fingerprint`.
+- Failed extraction/summarization must not block job completion for other repos.
+- Endpoint fallback remains partial-but-successful when some repos are missing summaries.
+
+### Required Schema/Validation Updates
+- Add `summary_ready` to allowed `RepoSyncStatus` values.
+- Extend discovered-path metadata fields for extraction status.
+- Update related tests for status transitions and retrieval contracts.
+
+### Observability Requirements
+- Per-stage metrics: estimated input tokens, completion tokens, duration, retries, truncation warnings.
+- Counters: repos processed, repos skipped, summary-ready ratio.
+
+## Rollout Strategy
+
+1. Behind feature flags for extraction and summary-first query/profile paths.
+2. Canary with limited users/jobs.
+3. Validate SLOs and quality against baseline logs.
+4. Enable by default after thresholds are stable.
+
+## Priorities
+
+1. **Clean signal quality** from structured extraction and micro summaries.
+2. **Latency reduction** through smaller prompt contexts and cache reuse.
+3. **Low-risk migration** through compatibility-preserving endpoint behavior.

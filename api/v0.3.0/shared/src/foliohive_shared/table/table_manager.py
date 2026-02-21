@@ -181,6 +181,7 @@ class RepoDiscoveredPathsRow:
     discovered_paths: List[str] = field(default_factory=list)  # All discovered file paths
     readme_paths: List[str] = field(default_factory=list)  # Subset: readme files
     config_paths: List[str] = field(default_factory=list)  # Subset: config files
+    extraction_metadata: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -241,7 +242,7 @@ class UserProfileRow:
 
 
 _AZURE_META_FIELDS = {"etag", "odata.etag", "odata.metadata"}
-_REPO_STATUS_ALLOWED = {"pending", "synced", "cached", "failed"}
+_REPO_STATUS_ALLOWED = {"pending", "synced", "cached", "summary_ready", "failed"}
 
 
 def _utcnow_iso() -> str: 
@@ -904,6 +905,10 @@ class TableManager:
             "discovered_paths": _safe_json_dump(row.discovered_paths),
             "readme_paths": _safe_json_dump(row.readme_paths),
             "config_paths": _safe_json_dump(row.config_paths),
+            "extraction_metadata": _safe_json_dump_limited(
+                row.extraction_metadata,
+                label="RepoDiscoveredPaths.extraction_metadata",
+            ),
             "created_at": row.created_at or now,
             "updated_at": now,
         }
@@ -921,7 +926,8 @@ class TableManager:
             repo_name: Repository name
             
         Returns:
-            Dict with username, repo_name, fingerprint, discovered_paths, readme_paths, config_paths or None if not found
+            Dict with username, repo_name, fingerprint, discovered_paths, readme_paths,
+            config_paths, extraction_metadata or None if not found
         """
         table = self._get_table_client(self.table_names.repo_discovered_paths)
         if not table:
@@ -957,10 +963,66 @@ class TableManager:
             payload["config_paths"] = json.loads(payload.get("config_paths", "[]") or "[]")
         except (json.JSONDecodeError, TypeError):
             payload["config_paths"] = []
+
+        try:
+            extraction_metadata = json.loads(payload.get("extraction_metadata", "{}") or "{}")
+            payload["extraction_metadata"] = extraction_metadata if isinstance(extraction_metadata, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            payload["extraction_metadata"] = {}
         
         payload["created_at"] = _restore_iso_timestamp(payload.get("created_at"))
         payload["updated_at"] = _restore_iso_timestamp(payload.get("updated_at"))
         return payload
+
+    def update_repo_discovered_path_extraction_status(
+        self,
+        username: str,
+        repo_name: str,
+        file_path: str,
+        *,
+        extraction_status: str,
+        extractor_key: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """Update extraction status metadata for one discovered file path.
+
+        Valid statuses: pending | extracted | failed | skipped
+        """
+        allowed = {"pending", "extracted", "failed", "skipped"}
+        normalized = (extraction_status or "").strip().lower()
+        if normalized not in allowed:
+            raise ValueError(f"Invalid extraction_status '{extraction_status}'")
+
+        existing = self.get_repo_discovered_paths(username, repo_name)
+        if not existing:
+            raise ValueError(f"Discovered paths not found for {username}/{repo_name}")
+
+        metadata = existing.get("extraction_metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        row_payload = {
+            "extraction_status": normalized,
+        }
+        if extractor_key:
+            row_payload["extractor_key"] = extractor_key
+        if error:
+            row_payload["error"] = error
+
+        metadata[file_path] = row_payload
+
+        row = RepoDiscoveredPathsRow(
+            username=username,
+            repo_name=repo_name,
+            fingerprint=existing.get("fingerprint") or "",
+            discovered_paths=existing.get("discovered_paths") or [],
+            readme_paths=existing.get("readme_paths") or [],
+            config_paths=existing.get("config_paths") or [],
+            extraction_metadata=metadata,
+            created_at=existing.get("created_at"),
+            updated_at=existing.get("updated_at"),
+        )
+        self.upsert_repo_discovered_paths(row)
 
     # ------------------------------------------------------------------
     # Repo languages
@@ -1015,7 +1077,7 @@ class TableManager:
         
         logger.info("[TABLE_UPSERT_LANGUAGES] total=%d succeeded=%d", len(rows), success_count)
 
-    def discover_repo_file(self, job_id: str, repo_name: str) -> None:
+    def delete_repo_languages(self, job_id: str, repo_name: str) -> None:
         """Delete language entries for a repository within a specific job.
         
         Filters by PartitionKey (job_id) and repo_name field.

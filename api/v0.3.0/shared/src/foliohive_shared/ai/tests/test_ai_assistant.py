@@ -454,3 +454,66 @@ class TestOpenAISpecificBehavior:
         assert assistant.client is None
         assert assistant.openai_api_key == "test_key"
 
+
+class TestMicroSummaryPrompts:
+    """Test _build_repo_micro_summary_system() and user prompts."""
+
+    def test_system_prompt_enforces_json_output(self):
+        assistant = AIAssistant(username="test_user")
+        prompt = assistant._build_repo_micro_summary_system("repo1")
+        assert "json" in prompt.lower()
+        assert "do not return markdown" in prompt.lower()
+
+    def test_user_prompt_includes_readme_and_config(self):
+        assistant = AIAssistant(username="test_user")
+        context = {
+            "repo_name": "repo1",
+            "readme_chunk": "# README",
+            "config_chunks": [{"filename": "package.json", "content": {"dependencies": {"react": "18"}}}],
+        }
+        prompt = assistant._build_repo_micro_summary_user(context)
+        assert "README" in prompt
+        assert "package.json" in prompt
+
+    def test_prompt_includes_token_cap_instruction(self):
+        assistant = AIAssistant(username="test_user")
+        prompt = assistant._build_repo_micro_summary_system("repo1")
+        assert "2000" in prompt
+        assert "tokens" in prompt.lower()
+
+    def test_prompt_specifies_output_schema(self):
+        assistant = AIAssistant(username="test_user")
+        prompt = assistant._build_repo_micro_summary_system("repo1")
+        assert "overview" in prompt
+        assert "key_features" in prompt
+        assert "tech_stack" in prompt
+        assert "architecture_patterns" in prompt
+        assert "skill_signals" in prompt
+
+
+class TestProfileAggregationPrompts:
+    """Phase 3 prompt coverage."""
+
+    def test_profile_aggregation_system_prompt_is_json_only(self):
+        assistant = AIAssistant(username="test_user")
+        prompt = assistant._build_profile_aggregation_system("test_user")
+        assert "json" in prompt.lower()
+        assert "do not return markdown" in prompt.lower()
+        assert "skills" in prompt.lower()
+        assert "domains" in prompt.lower()
+
+    def test_profile_formatter_system_prompt_mentions_html_sections(self):
+        assistant = AIAssistant(username="test_user")
+        prompt = assistant._build_profile_formatter_system("test_user")
+        assert "html" in prompt.lower()
+        assert "overview" in prompt.lower()
+        assert "technical skills" in prompt.lower()
+        assert "recent activity" in prompt.lower()
+
+    def test_query_from_summaries_prompt_mentions_repo_evidence(self):
+        assistant = AIAssistant(username="test_user")
+        prompt = assistant._build_query_from_summaries_system("What backend systems has this candidate built?")
+        assert "repository" in prompt.lower()
+        assert "evidence" in prompt.lower()
+        assert "query" in prompt.lower()
+

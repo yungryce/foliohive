@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from foliohive_shared.ai import AIAssistant
+from foliohive_shared import cache_manager
 
 logger = logging.getLogger(__name__)
 
@@ -177,51 +178,40 @@ class SummaryManager:
         """
         start_time = time.time()
         summary_type = "profile"
-        
-        # Build context
-        token_budget = TOKEN_BUDGETS.get(summary_type, {})
-        
-        # Use provided repo files or empty dict
-        repo_files = repo_files or {}
-        
-        context = self.build_profile_context(
+
+        micro_summaries: List[Dict[str, Any]] = []
+        for repo in repo_rows:
+            repo_name = repo.get("repo_name") or repo.get("name")
+            fingerprint = repo.get("fingerprint")
+            if not repo_name or not fingerprint:
+                continue
+            cached = self.get_repo_micro_summary(repo_name, fingerprint)
+            if not cached:
+                continue
+            micro_summaries.append(
+                {
+                    "repo_name": repo_name,
+                    "fingerprint": fingerprint,
+                    "micro_summary": cached,
+                }
+            )
+
+        aggregate = self.aggregate_profile_from_summaries(
+            micro_summaries=micro_summaries,
             profile=profile,
-            repo_rows=repo_rows,
-            repo_files=repo_files,
             statistics=statistics,
-            token_budget=token_budget
         )
-        
-        # Generate summary via AIAssistant with appropriate model tier
-        model_tier = MODEL_ASSIGNMENTS.get(summary_type, "default")
-        summary_html = self.ai_assistant.summarize_profile_html(
-            profile_payload=context,
-            username=self.username,
-            model_tier=model_tier
-        )
+        summary_html = self.format_profile_html(aggregate)
 
         metadata = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "job_id": job_id,
             "summary_type": summary_type,
-            "tokens_estimated": context.get("tokens_estimated", 0),
-            "repos_included": len(repo_files),
+            "repos_included": len(micro_summaries),
+            "repos_total": len(repo_rows),
             "generation_time_ms": int((time.time() - start_time) * 1000),
         }
-
-        # Track metrics
-        self.track_generation_metrics(
-            summary_type,
-            start_time,
-            metadata["tokens_estimated"],
-            metadata["repos_included"],
-            cache_hit=False
-        )
-
-        return {
-            "summary_html": summary_html,
-            "metadata": metadata
-        }
+        return {"summary_html": summary_html, "metadata": metadata, "aggregate": aggregate}
 
     def get_or_generate_readme_summary(
         self,
@@ -314,52 +304,346 @@ class SummaryManager:
         start_time = time.time()
         summary_type = "query"
 
-        # Build query bundle context
-        token_budget = TOKEN_BUDGETS.get(summary_type, {})
-        context = self.build_query_bundle_context(
-            query=query,
-            repo_rows=repo_rows,
-            repo_files=repo_files,
-            token_budget=token_budget,
-        )
+        micro_summaries: List[Dict[str, Any]] = []
+        for repo in repo_rows:
+            repo_name = repo.get("repo_name") or repo.get("name")
+            fingerprint = repo.get("fingerprint")
+            if not repo_name or not fingerprint:
+                continue
+            cached = self.get_repo_micro_summary(repo_name, fingerprint)
+            if not cached:
+                continue
+            micro_summaries.append(
+                {
+                    "repo_name": repo_name,
+                    "fingerprint": fingerprint,
+                    "micro_summary": cached,
+                    "repo_metadata": repo,
+                }
+            )
 
-        # Generate response via AIAssistant with rich context and appropriate model tier
-        model_tier = MODEL_ASSIGNMENTS.get(summary_type, "default")
-        result = self.ai_assistant.summarize_query_html(
+        aggregate = self.aggregate_profile_from_summaries(micro_summaries=micro_summaries)
+        result = self.query_from_summaries(
             query=query,
-            bundle_context=context,
-            model_tier=model_tier
+            profile_aggregate=aggregate,
+            repo_micro_summaries=micro_summaries,
+            max_repos=get_file_budget("query").get("max_repos", 8),
         )
-
-        # Build metadata
-        repos_included = context.get("repositories", [])
-        metadata = {
+        result["metadata"] = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "job_id": job_id,
             "summary_type": summary_type,
-            "repositories_used": [
-                {"name": r["name"], "stars": r.get("stars", 0), "primary_language": r.get("primary_language")}
-                for r in repos_included
-            ],
-            "total_repositories": len(repo_rows),
-            "repos_in_context": len(repos_included),
-            "tokens_estimated": context.get("tokens_estimated", 0),
-            "files_included": sum(1 for r in repos_included if r.get("readme_summary")),
             "generation_time_ms": int((time.time() - start_time) * 1000),
         }
-        
-        # Track metrics
-        self.track_generation_metrics(
-            summary_type,
-            start_time,
-            metadata["tokens_estimated"],
-            metadata["files_included"],
-            cache_hit=False
+        return result
+
+    def build_profile_aggregate_cache_key(self, fingerprint: str) -> str:
+        safe = str(fingerprint).replace("/", "_").replace(" ", "_")
+        return f"profile_aggregate:{self.username}:{safe}"
+
+    def build_profile_html_cache_key(self, fingerprint: str) -> str:
+        safe = str(fingerprint).replace("/", "_").replace(" ", "_")
+        return f"profile_html:{self.username}:{safe}"
+
+    def build_query_response_cache_key(self, query_fingerprint: str) -> str:
+        safe = str(query_fingerprint).replace("/", "_").replace(" ", "_")
+        return f"query_response:{self.username}:{safe}"
+
+    def calculate_fingerprint(self, summary_type: str, inputs: List[Dict[str, Any]]) -> str:
+        """Calculate stable fingerprint from structured inputs for cache invalidation."""
+        normalized_inputs: List[Dict[str, Any]] = []
+        for item in inputs or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("fingerprint"):
+                normalized_inputs.append({"fingerprint": str(item.get("fingerprint"))})
+                continue
+            normalized_inputs.append(item)
+        payload = {
+            "summary_type": summary_type,
+            "username": self.username,
+            "inputs": normalized_inputs,
+        }
+        blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+    def aggregate_profile_from_summaries(
+        self,
+        *,
+        micro_summaries: List[Dict[str, Any]],
+        profile: Optional[Dict[str, Any]] = None,
+        statistics: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Aggregate repo micro-summaries into profile-level JSON."""
+        skills: Dict[str, Dict[str, Any]] = {}
+        domains: Dict[str, int] = {}
+        architecture_counts: Dict[str, int] = {}
+        included_repos: List[str] = []
+
+        for item in micro_summaries:
+            repo_name = item.get("repo_name")
+            micro = item.get("micro_summary")
+            if not repo_name or not isinstance(micro, dict):
+                continue
+            included_repos.append(repo_name)
+
+            for pattern in micro.get("architecture_patterns", []) or []:
+                if not pattern:
+                    continue
+                key = str(pattern).strip().lower()
+                architecture_counts[key] = architecture_counts.get(key, 0) + 1
+
+            tech_stack = micro.get("tech_stack") or {}
+            for domain_key in ("languages", "frameworks", "tools"):
+                for value in tech_stack.get(domain_key, []) or []:
+                    normalized = str(value).strip().lower()
+                    if not normalized:
+                        continue
+                    domains[normalized] = domains.get(normalized, 0) + 1
+
+            for signal in micro.get("skill_signals", []) or []:
+                if not isinstance(signal, dict):
+                    continue
+                skill_name = str(signal.get("skill") or "").strip().lower()
+                if not skill_name:
+                    continue
+                confidence = signal.get("confidence")
+                try:
+                    conf = float(confidence)
+                except (TypeError, ValueError):
+                    conf = 0.0
+                evidence = str(signal.get("evidence") or "").strip()
+                entry = skills.setdefault(
+                    skill_name,
+                    {"skill": skill_name, "count": 0, "confidence_sum": 0.0, "evidence": []},
+                )
+                entry["count"] += 1
+                entry["confidence_sum"] += max(0.0, min(conf, 1.0))
+                if evidence and evidence not in entry["evidence"]:
+                    entry["evidence"].append(evidence)
+
+        skill_list = []
+        for value in skills.values():
+            count = value["count"]
+            avg_conf = value["confidence_sum"] / max(count, 1)
+            score = round(count * avg_conf, 3)
+            skill_list.append(
+                {
+                    "skill": value["skill"],
+                    "frequency": count,
+                    "avg_confidence": round(avg_conf, 3),
+                    "score": score,
+                    "evidence": value["evidence"][:3],
+                }
+            )
+        skill_list.sort(key=lambda item: (item["score"], item["frequency"]), reverse=True)
+
+        domain_list = [
+            {"domain": key, "count": count}
+            for key, count in sorted(domains.items(), key=lambda pair: pair[1], reverse=True)
+        ]
+        architecture_list = [
+            {"pattern": key, "count": count}
+            for key, count in sorted(architecture_counts.items(), key=lambda pair: pair[1], reverse=True)
+        ]
+
+        aggregate = {
+            "username": self.username,
+            "repos_included": included_repos,
+            "skills": skill_list,
+            "domains": domain_list,
+            "experience_signals": {
+                "architecture_patterns": architecture_list,
+                "repo_count": len(included_repos),
+            },
+            "profile": profile or {},
+            "statistics": statistics or {},
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        fingerprint = self.calculate_fingerprint("profile_aggregate", micro_summaries)
+        cache_manager.save(self.build_profile_aggregate_cache_key(fingerprint), aggregate)
+        return aggregate
+
+    def format_profile_html(self, aggregate_profile: Dict[str, Any]) -> str:
+        """Render HTML from profile aggregate JSON only (no AI call)."""
+        if not aggregate_profile:
+            return "<p>No profile aggregate available.</p>"
+
+        profile = aggregate_profile.get("profile") or {}
+        name = profile.get("name") or self.username
+        skills = aggregate_profile.get("skills") or []
+        domains = aggregate_profile.get("domains") or []
+        patterns = (aggregate_profile.get("experience_signals") or {}).get("architecture_patterns", [])
+
+        def _list_items(items: List[str]) -> str:
+            if not items:
+                return "<li>No data available.</li>"
+            return "".join(f"<li>{item}</li>" for item in items)
+
+        top_skills = [
+            f"<strong>{item.get('skill')}</strong> (freq: {item.get('frequency')}, score: {item.get('score')})"
+            for item in skills[:8]
+        ]
+        top_domains = [f"{item.get('domain')} ({item.get('count')})" for item in domains[:8]]
+        top_patterns = [f"{item.get('pattern')} ({item.get('count')})" for item in patterns[:8]]
+
+        html = (
+            f"<h2>Overview</h2><p>{name} has evidence across {len(aggregate_profile.get('repos_included', []))} repositories.</p>"
+            f"<h3>Skills</h3><ul>{_list_items(top_skills)}</ul>"
+            f"<h3>Domains</h3><ul>{_list_items(top_domains)}</ul>"
+            f"<h3>Experience Signals</h3><ul>{_list_items(top_patterns)}</ul>"
         )
 
+        fingerprint = self.calculate_fingerprint("profile_html", [aggregate_profile])
+        cache_manager.save(self.build_profile_html_cache_key(fingerprint), {"summary_html": html})
+        return html
+
+    def query_from_summaries(
+        self,
+        *,
+        query: str,
+        profile_aggregate: Dict[str, Any],
+        repo_micro_summaries: List[Dict[str, Any]],
+        max_repos: int = 5,
+    ) -> Dict[str, Any]:
+        """Answer query using only aggregate profile + repo micro-summaries."""
+        query_tokens = {token for token in (query or "").lower().split() if token}
+
+        ranked: List[Dict[str, Any]] = []
+        for item in repo_micro_summaries:
+            micro = item.get("micro_summary") or {}
+            haystack_parts: List[str] = []
+            for key in ("overview",):
+                value = micro.get(key)
+                if isinstance(value, str):
+                    haystack_parts.append(value.lower())
+            for section in ("key_features", "architecture_patterns"):
+                for value in micro.get(section, []) or []:
+                    haystack_parts.append(str(value).lower())
+            tech = micro.get("tech_stack") or {}
+            for section in ("languages", "frameworks", "tools"):
+                for value in tech.get(section, []) or []:
+                    haystack_parts.append(str(value).lower())
+            haystack = " ".join(haystack_parts)
+            score = sum(1 for token in query_tokens if token in haystack)
+            ranked.append({**item, "relevance": score})
+
+        ranked.sort(key=lambda row: row.get("relevance", 0), reverse=True)
+        selected = [row for row in ranked if row.get("relevance", 0) > 0][:max_repos]
+        if not selected:
+            selected = ranked[:max_repos]
+
+        highlights = []
+        for row in selected:
+            repo_name = row.get("repo_name")
+            micro = row.get("micro_summary") or {}
+            overview = str(micro.get("overview") or "No overview available.")
+            highlights.append(f"- **{repo_name}**: {overview}")
+
+        top_skills = [item.get("skill") for item in (profile_aggregate.get("skills") or [])[:6] if item.get("skill")]
+        response_text = (
+            f"Query: {query}\n\n"
+            f"Top profile skills: {', '.join(top_skills) if top_skills else 'No skills aggregated yet.'}\n\n"
+            "Relevant repositories:\n"
+            + ("\n".join(highlights) if highlights else "- No matching repository summaries available.")
+        )
+
+        query_fingerprint = self.calculate_fingerprint(
+            "query",
+            [{"query": query}, profile_aggregate, {"repos": [row.get("repo_name") for row in selected]}],
+        )
+        response_payload = {
+            "response": response_text,
+            "repositories_used": [
+                {"name": row.get("repo_name"), "relevance": row.get("relevance", 0)} for row in selected
+            ],
+            "total_repositories": len(repo_micro_summaries),
+            "query": query,
+        }
+        cache_manager.save(self.build_query_response_cache_key(query_fingerprint), response_payload)
+        return response_payload
+
+    def build_repo_micro_summary_cache_key(self, repo_name: str, fingerprint: str) -> str:
+        safe_repo = str(repo_name).replace("/", "_").replace(" ", "_")
+        safe_fingerprint = str(fingerprint).replace("/", "_").replace(" ", "_")
+        return f"repo_micro_summary:{self.username}:{safe_repo}:{safe_fingerprint}"
+
+    def get_repo_micro_summary(self, repo_name: str, fingerprint: str) -> Optional[Dict[str, Any]]:
+        key = self.build_repo_micro_summary_cache_key(repo_name, fingerprint)
+        cached = cache_manager.get(key)
+        if cached.get("status") == "valid":
+            data = cached.get("data")
+            return data if isinstance(data, dict) else None
+        return None
+
+    def _validate_micro_summary_schema(self, payload: Dict[str, Any]) -> bool:
+        required = {"overview", "key_features", "tech_stack", "architecture_patterns", "skill_signals"}
+        if not isinstance(payload, dict):
+            return False
+        if not required.issubset(set(payload.keys())):
+            return False
+        if not isinstance(payload.get("overview"), str):
+            return False
+        if not isinstance(payload.get("key_features"), list):
+            return False
+        if not isinstance(payload.get("tech_stack"), dict):
+            return False
+        if not isinstance(payload.get("architecture_patterns"), list):
+            return False
+        if not isinstance(payload.get("skill_signals"), list):
+            return False
+        return True
+
+    def generate_repo_micro_summary(
+        self,
+        *,
+        repo_name: str,
+        repo_metadata: Dict[str, Any],
+        readme_content: Optional[str],
+        config_files: Optional[Dict[str, Any]],
+        fingerprint: str,
+    ) -> Dict[str, Any]:
+        """Generate and cache JSON micro-summary for one repository."""
+        cached = self.get_repo_micro_summary(repo_name, fingerprint)
+        if cached:
+            return {"cache_hit": True, "summary": cached}
+
+        token_budget = {
+            "metadata": 2000,
+            "readme": 8000,
+            "config": 2000,
+            "reserve": 1000,
+        }
+        context = self.build_repo_context(
+            repo_metadata=repo_metadata,
+            readme_content=readme_content,
+            config_files=config_files or {},
+            token_budget=token_budget,
+        )
+
+        attempts = 2
+        last_error = None
+        for _ in range(attempts):
+            summary = self.ai_assistant.summarize_repo_micro_summary_json(
+                repo_name=repo_name,
+                repo_context=context,
+                model_tier=MODEL_ASSIGNMENTS.get("readme", "default"),
+            )
+            if isinstance(summary, dict) and self._validate_micro_summary_schema(summary):
+                key = self.build_repo_micro_summary_cache_key(repo_name, fingerprint)
+                cache_manager.save(key, summary)
+                return {
+                    "cache_hit": False,
+                    "summary": summary,
+                    "tokens_estimated": context.get("tokens_estimated", 0),
+                }
+            last_error = summary.get("error") if isinstance(summary, dict) else "invalid_response"
+
         return {
-            **result,
-            "metadata": metadata
+            "error": "micro_summary_generation_failed",
+            "reason": last_error or "schema_validation_failed",
+            "tokens_estimated": context.get("tokens_estimated", 0),
         }
 
     # ---------------------------------------------------------------------------

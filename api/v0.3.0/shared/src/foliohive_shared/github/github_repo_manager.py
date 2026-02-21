@@ -2,7 +2,11 @@ import logging
 import os
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
-from ..ai.data_filter import get_standard_config_file_candidates
+from ..ai.data_filter import (
+    extract_config_content,
+    get_config_extractor,
+    get_standard_config_file_candidates,
+)
 from ..cache.cache_manager import cache_manager
 from .api_usage import ApiUsageTracker
 from .github_api import GitHubAPI
@@ -475,6 +479,132 @@ class GitHubRepoManager:
             readme_exists,
         )
         return result
+
+    def persist_discovered_paths(
+        self,
+        *,
+        table_manager_obj: Any,
+        username: Optional[str],
+        repo: str,
+        fingerprint: str,
+        config_files: Dict[str, str],
+        readme_files: Dict[str, str],
+        extraction_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> None:
+        """Persist discovered readme/config paths for a repository.
+
+        This helper centralizes discovered-path persistence for cache workflows.
+        """
+        resolved_username = username or self.username
+        if not resolved_username:
+            raise ValueError(USERNAME_REQUIRED_ERROR)
+
+        from ..table.table_manager import RepoDiscoveredPathsRow
+
+        readme_paths = list(readme_files.keys())
+        config_paths = list(config_files.keys())
+        discovered_paths = readme_paths + config_paths
+
+        row = RepoDiscoveredPathsRow(
+            username=resolved_username,
+            repo_name=repo,
+            fingerprint=fingerprint,
+            discovered_paths=discovered_paths,
+            readme_paths=readme_paths,
+            config_paths=config_paths,
+            extraction_metadata=extraction_metadata or {},
+        )
+        table_manager_obj.upsert_repo_discovered_paths(row)
+
+    def extract_config_payloads(
+        self,
+        config_files: Dict[str, str],
+    ) -> tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
+        """Extract structured payloads from raw config file contents."""
+        extracted_config_files: Dict[str, Any] = {}
+        extraction_metadata: Dict[str, Dict[str, Any]] = {}
+
+        for filename, content in config_files.items():
+            extractor = get_config_extractor(filename)
+            extractor_key = getattr(extractor, "__name__", None) if extractor else None
+            if extractor is None:
+                extraction_metadata[filename] = {
+                    "extractor_key": None,
+                    "extraction_status": "skipped",
+                    "error": "no_extractor",
+                }
+                continue
+
+            extracted = extract_config_content(filename, content)
+            if extracted is None:
+                extraction_metadata[filename] = {
+                    "extractor_key": extractor_key,
+                    "extraction_status": "skipped",
+                    "error": "extractor_returned_none",
+                }
+                continue
+
+            extracted_config_files[filename] = extracted
+            status = "failed" if isinstance(extracted, dict) and extracted.get("error") else "extracted"
+            extraction_metadata[filename] = {
+                "extractor_key": extractor_key,
+                "extraction_status": status,
+            }
+            if status == "failed":
+                extraction_metadata[filename]["error"] = str(extracted.get("error"))
+
+        return extracted_config_files, extraction_metadata
+
+    def cache_extracted_config_files(
+        self,
+        *,
+        cache_manager_obj: Any,
+        username: Optional[str],
+        repo: str,
+        extracted_config_files: Dict[str, Any],
+    ) -> int:
+        """Persist extracted config artifacts using the cache manager."""
+        resolved_username = username or self.username
+        if not resolved_username:
+            raise ValueError(USERNAME_REQUIRED_ERROR)
+
+        cached_count = 0
+        for filename, payload in extracted_config_files.items():
+            key = cache_manager_obj.generate_cache_key(
+                username=resolved_username,
+                repo=repo,
+                file_type="config",
+                filename=filename,
+            )
+            cache_manager_obj.save(key, payload)
+            cached_count += 1
+        return cached_count
+
+    def persist_extraction_statuses(
+        self,
+        *,
+        table_manager_obj: Any,
+        username: Optional[str],
+        repo: str,
+        extraction_metadata: Dict[str, Dict[str, Any]],
+    ) -> None:
+        """Persist per-file extraction statuses to discovered-path metadata."""
+        resolved_username = username or self.username
+        if not resolved_username:
+            raise ValueError(USERNAME_REQUIRED_ERROR)
+
+        for file_path, metadata in extraction_metadata.items():
+            status = metadata.get("extraction_status")
+            if not status:
+                continue
+            table_manager_obj.update_repo_discovered_path_extraction_status(
+                resolved_username,
+                repo,
+                file_path,
+                extraction_status=str(status),
+                extractor_key=metadata.get("extractor_key"),
+                error=metadata.get("error"),
+            )
 
     @staticmethod
     def _build_directory_levels(paths: Iterable[str]) -> Dict[int, Set[str]]:

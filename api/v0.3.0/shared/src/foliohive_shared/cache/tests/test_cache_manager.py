@@ -1,249 +1,125 @@
-"""(Stale tests removed. See main test plan for new/updated tests.)"""
-        assert cache.use_cache is False
+"""Unit tests for cache_manager.py aligned to current file-cache API."""
 
-    @patch("foliohive_shared.cache.cache_manager.BlobServiceClient")
-    @patch("foliohive_shared.cache.cache_manager.DefaultAzureCredential")
-    def test_ensure_initialized_uses_managed_identity(self, mock_credential, mock_blob_client, mock_env_vars):
-        service_client = MagicMock()
-        mock_blob_client.return_value = service_client
+from unittest.mock import Mock
 
-        cache = CacheManager()
-        cache._ensure_initialized()
+import pytest
 
-        mock_credential.assert_called_once()
-        mock_blob_client.assert_called_once_with(
-            account_url=mock_env_vars["BLOB_SERVICE_URI"],
-            credential=mock_credential.return_value,
+from foliohive_shared.cache.cache_manager import CacheManager
+
+
+class TestCacheKeyGeneration:
+    def test_file_cache_key_generation(self):
+        key = CacheManager.generate_cache_key(
+            username="alice",
+            repo="my/repo",
+            file_type="config",
+            filename="infra/main.tf",
         )
-        service_client.create_container.assert_called_once_with("github-cache")
-        assert cache._initialized is True
+        assert key == "file_alice_my_repo_config_infra_main.tf"
 
-    @patch("foliohive_shared.cache.cache_manager.BlobServiceClient")
-    @patch("foliohive_shared.cache.cache_manager.DefaultAzureCredential", side_effect=Exception("MI unavailable"))
-    def test_ensure_initialized_falls_back_to_connection_string(
-        self,
-        _mock_credential,
-        mock_blob_client,
-        mock_env_vars,
-        monkeypatch,
-    ):
-        service_client = MagicMock()
-        mock_blob_client.from_connection_string.return_value = service_client
-        monkeypatch.delenv("BLOB_SERVICE_URI", raising=False)
-        monkeypatch.delenv("AzureWebJobsStorage__blobServiceUri", raising=False)
-
-        cache = CacheManager()
-        cache._ensure_initialized()
-
-        mock_blob_client.from_connection_string.assert_called_once_with(mock_env_vars["AzureWebJobsStorage"])
-        service_client.create_container.assert_called_once_with("github-cache")
-        assert cache._initialized is True
-
-    def test_ensure_initialized_handles_missing_configuration(self, monkeypatch):
-        monkeypatch.delenv("BLOB_SERVICE_URI", raising=False)
-        monkeypatch.delenv("AzureWebJobsStorage__blobServiceUri", raising=False)
-        monkeypatch.delenv("AzureWebJobsStorage", raising=False)
-
-        cache = CacheManager()
-        cache._ensure_initialized()
-
-        assert cache._blob_service_client is None
-        assert cache._initialized is False
-        assert cache._init_failed is True
-
-
-class TestCacheManagerGet:
-    def _set_blob_client(self, cache: CacheManager) -> MagicMock:
-        service_client = MagicMock()
-        cache._blob_service_client = service_client
-        cache._initialized = True
-        return service_client
-
-    def test_get_when_disabled(self):
-        cache = CacheManager(use_cache=False)
-
-        result = cache.get("any")
-
-        assert result == {"status": "disabled", "data": None}
-
-    def test_get_missing_entry(self):
-        cache = CacheManager()
-        service_client = self._set_blob_client(cache)
-        blob_client = MagicMock()
-        blob_client.exists.return_value = False
-        service_client.get_blob_client.return_value = blob_client
-
-        result = cache.get("missing")
-
-        assert result == {"status": "missing", "data": None}
-        service_client.get_blob_client.assert_called_once_with("github-cache", "missing")
-
-    def test_get_valid_entry(self):
-        cache = CacheManager()
-        service_client = self._set_blob_client(cache)
-        blob_client = MagicMock()
-        service_client.get_blob_client.return_value = blob_client
-        blob_client.exists.return_value = True
-
-        properties = MagicMock()
-        properties.metadata = {}
-        properties.last_modified = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
-        properties.size = 1024
-        blob_client.get_blob_properties.return_value = properties
-        blob_client.download_blob.return_value.readall.return_value = json.dumps({"data": {"k": "v"}}).encode()
-
-        result = cache.get("key")
-
-        assert result["status"] == "valid"
-        assert result["data"] == {"k": "v"}
-        assert result["size_bytes"] == 1024
-
-    def test_get_expired_entry(self):
-        cache = CacheManager()
-        service_client = self._set_blob_client(cache)
-        blob_client = MagicMock()
-        service_client.get_blob_client.return_value = blob_client
-        blob_client.exists.return_value = True
-
-        expired_at = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-        properties = MagicMock()
-        properties.metadata = {"expires_at": expired_at}
-        properties.last_modified = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
-        properties.size = 2048
-        blob_client.get_blob_properties.return_value = properties
-
-        result = cache.get("expired")
-
-        assert result["status"] == "expired"
-        blob_client.delete_blob.assert_called_once_with()
-        assert result["size_bytes"] == 2048
-
-    def test_get_handles_exceptions(self):
-        cache = CacheManager()
-        service_client = self._set_blob_client(cache)
-        blob_client = MagicMock()
-        service_client.get_blob_client.return_value = blob_client
-        blob_client.exists.side_effect = RuntimeError("boom")
-
-        result = cache.get("key")
-
-        assert result == {"status": "error", "data": None}
-
-
-class TestCacheManagerSave:
-    def _prepare_blob(self, cache: CacheManager) -> MagicMock:
-        service_client = MagicMock()
-        blob_client = MagicMock()
-        service_client.get_blob_client.return_value = blob_client
-        cache._blob_service_client = service_client
-        cache._initialized = True
-        return blob_client
-
-    def test_save_disabled(self):
-        cache = CacheManager(use_cache=False)
-
-        assert cache.save("key", {"value": 1}) is False
-
-    def test_save_persists_payload(self):
-        cache = CacheManager()
-        blob_client = self._prepare_blob(cache)
-
-        assert cache.save("key", {"value": 1}, ttl=60) is True
-
-        upload_kwargs = blob_client.upload_blob.call_args.kwargs
-        metadata = upload_kwargs["metadata"]
-        assert "expires_at" in metadata
-
-    def test_save_handles_errors(self):
-        cache = CacheManager()
-        blob_client = self._prepare_blob(cache)
-        blob_client.upload_blob.side_effect = RuntimeError("nope")
-
-        assert cache.save("key", {"value": 1}) is False
-
-
-class TestCacheManagerDelete:
-    def _prepare_blob(self, cache: CacheManager) -> MagicMock:
-        service_client = MagicMock()
-        blob_client = MagicMock()
-        service_client.get_blob_client.return_value = blob_client
-        cache._blob_service_client = service_client
-        cache._initialized = True
-        return blob_client
-
-    def test_delete_disabled(self):
-        cache = CacheManager(use_cache=False)
-
-        assert cache.delete("key") is False
-
-    def test_delete_existing_entry(self):
-        cache = CacheManager()
-        blob_client = self._prepare_blob(cache)
-        blob_client.exists.return_value = True
-
-        assert cache.delete("key") is True
-        blob_client.delete_blob.assert_called_once_with()
-
-    def test_delete_missing_entry(self):
-        cache = CacheManager()
-        blob_client = self._prepare_blob(cache)
-        blob_client.exists.return_value = False
-
-        assert cache.delete("missing") is True
-        blob_client.delete_blob.assert_not_called()
-
-    def test_delete_handles_errors(self):
-        cache = CacheManager()
-        blob_client = self._prepare_blob(cache)
-        blob_client.exists.side_effect = RuntimeError("fail")
-
-        assert cache.delete("key") is False
-
-
-
-class TestCacheManagerCacheKeyGeneration:
-    def test_bundle_key(self):
-        assert CacheManager.generate_cache_key(kind="bundle", username="user") == "repos_bundle_context_user"
-
-    def test_repo_key(self):
-        assert CacheManager.generate_cache_key(kind="repo", username="user", repo="my-repo") == "repo_level_bundle_user_my-repo"
-
-    def test_model_key(self):
-        assert CacheManager.generate_cache_key(kind="model", fingerprint="abc") == "model_abc"
-
-    def test_model_metadata_key(self):
-        assert CacheManager.generate_cache_key(kind="model") == "fine_tuned_model_metadata"
-
-    def test_missing_username_raises(self):
+    def test_generate_cache_key_missing_required_fields(self):
         with pytest.raises(ValueError):
-            CacheManager.generate_cache_key(kind="bundle")
-
-    def test_repo_missing_username_raises(self):
-        with pytest.raises(ValueError):
-            CacheManager.generate_cache_key(kind="repo", repo="repo")
-
-    def test_repo_name_sanitization(self):
-        key = CacheManager.generate_cache_key(kind="repo", username="user", repo="my/repo name")
-        assert key == "repo_level_bundle_user_my_repo_name"
+            CacheManager.generate_cache_key(username="alice", repo="repo", file_type="readme")
 
 
-@pytest.mark.parametrize(
-    "kind,username,repo,fingerprint,expected_prefix",
-    [
-        ("bundle", "user1", None, None, "repos_bundle_context_"),
-        ("repo", "user2", "test-repo", None, "repo_level_bundle_"),
-        ("model", None, None, "abc123", "model_"),
-    ],
-)
-def test_generate_cache_key_parametrized(kind: str, username: str, repo: str, fingerprint: str, expected_prefix: str):
-    kwargs: dict[str, Any] = {"kind": kind}
-    if username:
-        kwargs["username"] = username
-    if repo:
-        kwargs["repo"] = repo
-    if fingerprint:
-        kwargs["fingerprint"] = fingerprint
+class TestGetRepoFiles:
+    """Test get_repo_files() with extracted config payload behavior."""
 
-    key = CacheManager.generate_cache_key(**kwargs)
-    assert key.startswith(expected_prefix)
-    
+    def test_returns_readme_and_extracted_configs(self):
+        cache = CacheManager(use_cache=False)
+        cache.get_primary_readme = Mock(return_value="# Root")
+        cache.get_readme_files = Mock(return_value={"docs/README.md": "# Docs"})
+        cache.get_config_files = Mock(
+            return_value={
+                "package.json": {"dependencies": {"react": "18"}},
+                "pyproject.toml": {"project_dependencies": ["fastapi"]},
+            }
+        )
+
+        result = cache.get_repo_files(
+            username="alice",
+            repo="sample",
+            discovered_paths=["docs/README.md", "package.json", "pyproject.toml"],
+            readme_candidates=["README.md"],
+        )
+
+        assert result["repo_name"] == "sample"
+        assert result["readme_content"] == "# Root"
+        assert "docs/README.md" in result["readme_files"]
+        assert "package.json" in result["config_files"]
+        assert "pyproject.toml" in result["config_files"]
+
+    def test_skips_missing_extractions_gracefully(self):
+        cache = CacheManager(use_cache=False)
+        cache.get_primary_readme = Mock(return_value="# Root")
+        cache.get_readme_files = Mock(return_value={})
+        cache.get_config_files = Mock(return_value={"package.json": {"dependencies": {"react": "18"}}})
+
+        result = cache.get_repo_files(
+            username="alice",
+            repo="sample",
+            discovered_paths=["package.json", "pyproject.toml"],
+            readme_candidates=["README.md"],
+        )
+
+        assert list(result["config_files"].keys()) == ["package.json"]
+
+    def test_missing_readme_returns_empty_readme_section(self):
+        cache = CacheManager(use_cache=False)
+        cache.get_primary_readme = Mock(return_value=None)
+        cache.get_readme_files = Mock(return_value={})
+        cache.get_config_files = Mock(return_value={"package.json": {"dependencies": {"react": "18"}}})
+
+        result = cache.get_repo_files(
+            username="alice",
+            repo="sample",
+            discovered_paths=["package.json"],
+            readme_candidates=["README.md"],
+        )
+
+        assert result["readme_content"] is None
+        assert result["readme_files"] == {}
+        assert "package.json" in result["config_files"]
+
+    def test_respects_max_config_files_limit(self):
+        cache = CacheManager(use_cache=False)
+        cache.get_primary_readme = Mock(return_value="# Root")
+        cache.get_readme_files = Mock(return_value={})
+        cache.get_config_files = Mock(return_value={})
+
+        discovered_paths = [
+            "a/package.json",
+            "b/pyproject.toml",
+            "c/main.tf",
+            "d/docker-compose.yml",
+            "e/pom.xml",
+        ]
+
+        cache.get_repo_files(
+            username="alice",
+            repo="sample",
+            discovered_paths=discovered_paths,
+            readme_candidates=["README.md"],
+            max_config_files=3,
+        )
+
+        cache.get_config_files.assert_called_once_with(
+            "alice",
+            "sample",
+            ["a/package.json", "b/pyproject.toml", "c/main.tf"],
+        )
+
+    def test_extraction_failure_marked_in_result(self):
+        cache = CacheManager(use_cache=False)
+        cache.get_primary_readme = Mock(return_value="# Root")
+        cache.get_readme_files = Mock(return_value={})
+        cache.get_config_files = Mock(return_value={"package.json": {"error": "invalid_json"}})
+
+        result = cache.get_repo_files(
+            username="alice",
+            repo="sample",
+            discovered_paths=["package.json"],
+            readme_candidates=["README.md"],
+        )
+
+        assert result["config_files"]["package.json"]["error"] == "invalid_json"

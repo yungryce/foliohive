@@ -136,35 +136,6 @@ class TestFingerprinting:
         assert len(fp) == 12
 
 
-class TestCacheKeys:
-    """Test cache key generation."""
-
-    def test_cache_key_includes_components(self):
-        """Test cache key includes all required components."""
-        manager = SummaryManager("test_user")
-        
-        key = manager.build_cache_key("profile", "job123", "fp456")
-        
-        assert "summary" in key
-        assert "profile" in key
-        assert "test_user" in key
-        assert "job123" in key
-        assert "fp456" in key
-
-    def test_cache_key_with_extras(self):
-        """Test cache key includes extra identifiers."""
-        manager = SummaryManager("test_user")
-        
-        key = manager.build_cache_key(
-            "readme",
-            "job123",
-            "fp456",
-            repo_name="myrepo"
-        )
-        
-        assert "myrepo" in key
-
-
 class TestContextBuilding:
     """Test context building methods."""
 
@@ -200,187 +171,169 @@ class TestContextBuilding:
         assert context["config_chunks"][0]["filename"] == "requirements.txt"
         assert "tokens_estimated" in context
 
-    def test_build_profile_context(self):
-        """Test building profile context with multiple repos."""
+
+class TestRepoMicroSummaryGeneration:
+    """Test generate_repo_micro_summary() pipeline."""
+
+    def test_builds_context_from_readme_and_configs(self):
         manager = SummaryManager("test_user")
-        
-        profile = {
-            "name": "Test User",
-            "bio": "Software developer",
-            "location": "San Francisco",
-            "public_repos": 10,
-            "followers": 50
-        }
-        
-        top_repos = [
-            {
-                "name": "repo1",
-                "description": "First repo",
-                "primary_language": "Python",
-                "languages": ["Python"],
-                "topics": ["api"],
-                "stats": {"stars": 10, "forks": 2}
+        manager.ai_assistant.summarize_repo_micro_summary_json = Mock(
+            return_value={
+                "overview": "A repo",
+                "key_features": ["api"],
+                "tech_stack": {"languages": ["Python"], "frameworks": [], "tools": []},
+                "architecture_patterns": ["layered"],
+                "skill_signals": [{"skill": "python", "confidence": 0.9, "evidence": "requirements"}],
             }
-        ]
-        
-        repo_files = {
-            "repo1": {
-                "readme_content": "# Repo 1",
-                "config_files": [{"filename": "setup.py", "content": "setup()"}]
-            }
-        }
-        
-        statistics = {
-            "repo_count": 10,
-            "stars_total": 50,
-            "forks_total": 10
-        }
-        
-        token_budget = {"metadata": 2000, "readme": 5000, "config": 3000}
-        
-        context = manager.build_profile_context(
-            profile=profile,
-            top_repos=top_repos,
-            repo_files=repo_files,
-            statistics=statistics,
-            token_budget=token_budget
         )
-        
-        assert context["username"] == "test_user"
-        assert context["profile"]["name"] == "Test User"
-        assert context["statistics"]["repo_count"] == 10
-        assert len(context["repositories"]) == 1
-        assert context["repositories"][0]["name"] == "repo1"
-        assert "readme_chunk" in context["repositories"][0]
-        assert "tokens_estimated" in context
 
+        mock_cache = Mock()
+        mock_cache.get.return_value = {"status": "missing", "data": None}
+        with patch("foliohive_shared.ai.summary_manager.cache_manager", mock_cache):
+            result = manager.generate_repo_micro_summary(
+                repo_name="repo1",
+                repo_metadata={"name": "repo1", "description": "desc"},
+                readme_content="# Repo\n\nREADME",
+                config_files={"requirements.txt": {"dependencies": ["fastapi"]}},
+                fingerprint="fp1",
+            )
 
-class TestRepoSelectionStrategies:
-    """Test repository selection strategies."""
+        assert "summary" in result
+        call_kwargs = manager.ai_assistant.summarize_repo_micro_summary_json.call_args.kwargs
+        repo_context = call_kwargs["repo_context"]
+        assert repo_context["readme_chunk"]
+        assert repo_context["config_chunks"]
 
-    def test_recent_strategy_sorts_by_update_date(self):
-        """Test recent strategy selects most recently updated repos."""
+    def test_enforces_token_budget(self):
         manager = SummaryManager("test_user")
-        
-        repos = [
-            {"repo_name": "old", "github_updated_at": "2023-01-01T00:00:00Z"},
-            {"repo_name": "newest", "github_updated_at": "2024-01-01T00:00:00Z"},
-            {"repo_name": "middle", "github_updated_at": "2023-06-01T00:00:00Z"}
-        ]
-        
-        selected = manager._select_repos_by_strategy(repos, "recent", 2)
-        
-        assert len(selected) == 2
-        assert selected[0]["repo_name"] == "newest"
-        assert selected[1]["repo_name"] == "middle"
-
-    def test_top_starred_strategy_sorts_by_stars(self):
-        """Test top_starred strategy selects most starred repos."""
-        manager = SummaryManager("test_user")
-        
-        repos = [
-            {"repo_name": "unpopular", "stars_count": 5},
-            {"repo_name": "popular", "stars_count": 100},
-            {"repo_name": "moderate", "stars_count": 50}
-        ]
-        
-        selected = manager._select_repos_by_strategy(repos, "top_starred", 2)
-        
-        assert len(selected) == 2
-        assert selected[0]["repo_name"] == "popular"
-        assert selected[1]["repo_name"] == "moderate"
-
-    @patch('random.sample')
-    def test_random_strategy_samples_repos(self, mock_sample):
-        """Test random strategy samples repos."""
-        manager = SummaryManager("test_user")
-        
-        repos = [
-            {"repo_name": "repo1"},
-            {"repo_name": "repo2"},
-            {"repo_name": "repo3"}
-        ]
-        
-        mock_sample.return_value = [repos[0], repos[2]]
-        selected = manager._select_repos_by_strategy(repos, "random", 2)
-        
-        mock_sample.assert_called_once()
-        assert len(selected) == 2
-
-    def test_unknown_strategy_defaults_to_recent(self):
-        """Test unknown strategy falls back to recent."""
-        manager = SummaryManager("test_user")
-        
-        repos = [
-            {"repo_name": "old", "github_updated_at": "2023-01-01T00:00:00Z"},
-            {"repo_name": "new", "github_updated_at": "2024-01-01T00:00:00Z"}
-        ]
-        
-        selected = manager._select_repos_by_strategy(repos, "invalid_strategy", 1)
-        
-        assert len(selected) == 1
-        assert selected[0]["repo_name"] == "new"
-
-    def test_max_repos_limits_selection(self):
-        """Test max_repos parameter limits results."""
-        manager = SummaryManager("test_user")
-        
-        repos = [{"repo_name": f"repo{i}", "stars_count": i} for i in range(10)]
-        
-        selected = manager._select_repos_by_strategy(repos, "top_starred", 3)
-        
-        assert len(selected) == 3
-
-
-class TestBundleContextBuilding:
-    """Test build_query_bundle_context method."""
-
-    def test_builds_bundle_with_repos(self):
-        """Test bundle context includes selected repos."""
-        manager = SummaryManager("test_user")
-        
-        repo_rows = [
-            {
-                "repo_name": "test-repo",
-                "description": "Test repository",
-                "primary_language": "Python",
-                "stars_count": 42,
-                "forks_count": 10,
-                "github_updated_at": "2024-01-01T00:00:00Z"
-            }
-        ]
-        
-        repo_files = {
-            "test-repo": {
-                "readme_content": "# Test README\n\nContent here",
-                "config_files": [
-                    {"filename": "requirements.txt", "content": "flask==2.0.0"}
-                ]
-            }
-        }
-        
-        token_budget = TOKEN_BUDGETS["query"]
-        context = manager.build_query_bundle_context(
-            query="What frameworks?",
-            repo_rows=repo_rows,
-            repo_files=repo_files,
-            token_budget=token_budget,
-            selection_strategy="recent",
-            max_repos=5
+        context = manager.build_repo_context(
+            repo_metadata={"name": "repo1", "description": "desc"},
+            readme_content="# Title\n" + ("x" * 120000),
+            config_files={"package.json": "{" + ("\"k\":\"v\"," * 5000) + "\"z\":\"q\"}"},
+            token_budget={"metadata": 2000, "readme": 8000, "config": 2000, "reserve": 1000},
         )
-        
-        assert context["query"] == "What frameworks?"
-        assert context["repos_included"] == 1
-        assert context["selection_strategy"] == "recent"
-        assert len(context["repositories"]) == 1
-        
-        repo = context["repositories"][0]
-        assert repo["name"] == "test-repo"
-        assert repo["description"] == "Test repository"
-        assert repo["primary_language"] == "Python"
-        assert repo["stars"] == 42
-        assert "readme_summary" in repo
-        assert "config_summaries" in repo
+        assert context["tokens_estimated"] <= 13000
+
+    def test_returns_structured_json_output(self):
+        manager = SummaryManager("test_user")
+        manager.ai_assistant.summarize_repo_micro_summary_json = Mock(
+            return_value={
+                "overview": "A repo",
+                "key_features": ["api"],
+                "tech_stack": {"languages": ["Python"], "frameworks": [], "tools": []},
+                "architecture_patterns": ["layered"],
+                "skill_signals": [{"skill": "python", "confidence": 0.9, "evidence": "requirements"}],
+            }
+        )
+        mock_cache = Mock()
+        mock_cache.get.return_value = {"status": "missing", "data": None}
+        with patch("foliohive_shared.ai.summary_manager.cache_manager", mock_cache):
+            result = manager.generate_repo_micro_summary(
+                repo_name="repo1",
+                repo_metadata={"name": "repo1"},
+                readme_content="readme",
+                config_files={},
+                fingerprint="fp1",
+            )
+        assert set(result["summary"].keys()) == {
+            "overview",
+            "key_features",
+            "tech_stack",
+            "architecture_patterns",
+            "skill_signals",
+        }
+
+    def test_validates_json_schema_before_caching(self):
+        manager = SummaryManager("test_user")
+        manager.ai_assistant.summarize_repo_micro_summary_json = Mock(return_value={"overview": "missing fields"})
+        mock_cache = Mock()
+        mock_cache.get.return_value = {"status": "missing", "data": None}
+        with patch("foliohive_shared.ai.summary_manager.cache_manager", mock_cache):
+            result = manager.generate_repo_micro_summary(
+                repo_name="repo1",
+                repo_metadata={"name": "repo1"},
+                readme_content="readme",
+                config_files={},
+                fingerprint="fp1",
+            )
+        assert result["error"] == "micro_summary_generation_failed"
+        mock_cache.save.assert_not_called()
+
+    def test_caches_successful_micro_summary(self):
+        manager = SummaryManager("test_user")
+        manager.ai_assistant.summarize_repo_micro_summary_json = Mock(
+            return_value={
+                "overview": "A repo",
+                "key_features": ["api"],
+                "tech_stack": {"languages": ["Python"], "frameworks": [], "tools": []},
+                "architecture_patterns": ["layered"],
+                "skill_signals": [{"skill": "python", "confidence": 0.9, "evidence": "requirements"}],
+            }
+        )
+        mock_cache = Mock()
+        mock_cache.get.return_value = {"status": "missing", "data": None}
+        with patch("foliohive_shared.ai.summary_manager.cache_manager", mock_cache):
+            manager.generate_repo_micro_summary(
+                repo_name="repo1",
+                repo_metadata={"name": "repo1"},
+                readme_content="readme",
+                config_files={},
+                fingerprint="fp1",
+            )
+        mock_cache.save.assert_called_once()
+
+    def test_handles_api_errors_gracefully(self):
+        manager = SummaryManager("test_user")
+        manager.ai_assistant.summarize_repo_micro_summary_json = Mock(return_value={"error": "api_failure"})
+        mock_cache = Mock()
+        mock_cache.get.return_value = {"status": "missing", "data": None}
+        with patch("foliohive_shared.ai.summary_manager.cache_manager", mock_cache):
+            result = manager.generate_repo_micro_summary(
+                repo_name="repo1",
+                repo_metadata={"name": "repo1"},
+                readme_content="readme",
+                config_files={},
+                fingerprint="fp1",
+            )
+        assert result["error"] == "micro_summary_generation_failed"
+
+
+class TestRepoMicroSummaryCaching:
+    """Test micro-summary cache operations."""
+
+    def test_cache_key_includes_repo_fingerprint(self):
+        manager = SummaryManager("test_user")
+        key = manager.build_repo_micro_summary_cache_key("repo-1", "fp123")
+        assert "repo_micro_summary" in key
+        assert "test_user" in key
+        assert "repo-1" in key
+        assert "fp123" in key
+
+    def test_retrieves_cached_micro_summary(self):
+        manager = SummaryManager("test_user")
+        mock_cache = Mock()
+        mock_cache.get.return_value = {
+            "status": "valid",
+            "data": {
+                "overview": "cached",
+                "key_features": [],
+                "tech_stack": {},
+                "architecture_patterns": [],
+                "skill_signals": [],
+            },
+        }
+        with patch("foliohive_shared.ai.summary_manager.cache_manager", mock_cache):
+            result = manager.get_repo_micro_summary("repo1", "fp1")
+        assert result is not None
+        assert result["overview"] == "cached"
+
+    def test_cache_miss_returns_none(self):
+        manager = SummaryManager("test_user")
+        mock_cache = Mock()
+        mock_cache.get.return_value = {"status": "missing", "data": None}
+        with patch("foliohive_shared.ai.summary_manager.cache_manager", mock_cache):
+            result = manager.get_repo_micro_summary("repo1", "fp1")
+        assert result is None
 
     def test_bundle_respects_token_budget(self):
         """Test bundle context stays within token budget."""
@@ -398,7 +351,6 @@ class TestBundleContextBuilding:
             repo_rows=repo_rows,
             repo_files=repo_files,
             token_budget=token_budget,
-            max_repos=1
         )
         
         # Check total tokens (updated to new 36k query budget)
@@ -427,77 +379,12 @@ class TestBundleContextBuilding:
             repo_rows=repo_rows,
             repo_files=repo_files,
             token_budget=token_budget,
-            max_repos=5
         )
         
         assert context["repos_included"] == 5
         assert len(context["repositories"]) == 5
         # Each repo should get roughly equal budget (updated to new 36k query budget)
         assert context["tokens_estimated"] <= 36000
-
-
-class TestCacheManagement:
-    """Test cache operations."""
-
-    def test_get_cached_summary_hit(self):
-        """Test cache hit returns cached summary."""
-        manager = SummaryManager("test_user")
-        
-        with patch('foliohive_shared.ai.summary_manager.cache_manager.get') as mock_get:
-            cached_data = {
-                "summary_html": "<h2>Cached</h2>",
-                "metadata": {
-                    "fingerprint": "abc123",
-                    "tokens_estimated": 1000
-                }
-            }
-            mock_get.return_value = {"status": "valid", "data": cached_data}
-            
-            result = manager.get_cached_summary("cache_key", "abc123")
-            
-            assert result is not None
-            assert result["summary_html"] == "<h2>Cached</h2>"
-
-    def test_get_cached_summary_miss(self):
-        """Test cache miss returns None."""
-        manager = SummaryManager("test_user")
-        
-        with patch('foliohive_shared.ai.summary_manager.cache_manager.get') as mock_get:
-            mock_get.return_value = {"status": "missing"}
-            
-            result = manager.get_cached_summary("cache_key", "abc123")
-            
-            assert result is None
-
-    def test_get_cached_summary_fingerprint_mismatch(self):
-        """Test fingerprint mismatch invalidates cache."""
-        manager = SummaryManager("test_user")
-        
-        with patch('foliohive_shared.ai.summary_manager.cache_manager.get') as mock_get:
-            cached_data = {
-                "summary_html": "<h2>Cached</h2>",
-                "metadata": {"fingerprint": "old_fingerprint"}
-            }
-            mock_get.return_value = {"status": "valid", "data": cached_data}
-            
-            result = manager.get_cached_summary("cache_key", "new_fingerprint")
-            
-            assert result is None
-
-    def test_cache_summary(self):
-        """Test caching summary."""
-        manager = SummaryManager("test_user", cache_ttl=3600)
-        
-        with patch('foliohive_shared.ai.summary_manager.cache_manager.save') as mock_save:
-            metadata = {"fingerprint": "abc123", "tokens": 1000}
-            manager.cache_summary("cache_key", "<h2>Summary</h2>", metadata)
-            
-            mock_save.assert_called_once()
-            call_args = mock_save.call_args
-            assert call_args[1]["cache_key"] == "cache_key"
-            assert call_args[1]["ttl"] == manager.cache_ttl
-            assert call_args[1]["fingerprint"] == metadata["fingerprint"]
-            assert call_args[1]["data"]["summary_html"] == "<h2>Summary</h2>"
 
 
 class TestFingerprintGeneration:
@@ -539,128 +426,6 @@ class TestFingerprintGeneration:
         assert fp1 != fp2
 
 
-class TestCacheKeyBuilding:
-    """Test cache key generation."""
-
-    def test_cache_key_format(self):
-        """Test cache key follows expected format."""
-        manager = SummaryManager("test_user")
-        
-        key = manager.build_cache_key("profile", "job123", "abc123")
-        
-        assert key.startswith("summary_profile_test_user_job123_abc123")
-
-    def test_cache_key_with_extra_params(self):
-        """Test cache key includes extra parameters."""
-        manager = SummaryManager("test_user")
-        
-        key = manager.build_cache_key(
-            "query",
-            "job123",
-            "abc123",
-            query_hash="qh123",
-            strategy="recent"
-        )
-        
-        assert "qh123" in key
-        assert "recent" in key
-
-    def test_cache_key_unique_per_strategy(self):
-        """Test different strategies produce different cache keys."""
-        manager = SummaryManager("test_user")
-        
-        key1 = manager.build_cache_key("query", "job123", "abc123", strategy="recent")
-        key2 = manager.build_cache_key("query", "job123", "abc123", strategy="random")
-        
-        assert key1 != key2
-
-
-class TestHighLevelAPIMethods:
-    """Test high-level summary generation methods."""
-
-    @patch('foliohive_shared.ai.summary_manager.AIAssistant')
-    def test_get_or_generate_profile_summary(self, mock_assistant_class):
-        """Test profile summary generation."""
-        mock_assistant = MagicMock()
-        mock_assistant.summarize_profile_html.return_value = "<h2>Profile</h2>"
-        mock_assistant_class.return_value = mock_assistant
-
-        profile = {"name": "Test User", "bio": "Developer"}
-        repo_rows = [{"name": "repo1", "stars_count": 10}]
-        languages = {"repo1": [{"language": "Python", "percentage": 100}]}
-        statistics = {"repo_count": 1}
-
-        with patch.object(SummaryManager, "get_cached_summary", return_value=None), \
-             patch('foliohive_shared.ai.summary_manager.cache_manager.save') as mock_save:
-            manager = SummaryManager("test_user")
-
-            result = manager.get_or_generate_profile_summary(
-                job_id="job123",
-                profile=profile,
-                repo_rows=repo_rows,
-                languages_by_repo=languages,
-                statistics=statistics
-            )
-
-            assert result["summary_html"] == "<h2>Profile</h2>"
-            assert "metadata" in result
-            assert result["metadata"]["job_id"] == "job123"
-            mock_save.assert_called_once()
-
-    def test_get_or_generate_readme_summary_cache_hit(self):
-        """Test README summary with cache hit."""
-        cached_data = {
-            "summary_html": "<h2>Cached README</h2>",
-            "metadata": {
-                "cache_hit": True
-            }
-        }
-
-        with patch.object(SummaryManager, "get_cached_summary", return_value=cached_data):
-            manager = SummaryManager("test_user")
-            result = manager.get_or_generate_readme_summary(
-                job_id="job123",
-                repo_name="test-repo",
-                readme_content="# README",
-                repo_metadata={"name": "test-repo"}
-            )
-
-            assert result["summary_html"] == "<h2>Cached README</h2>"
-            assert result["metadata"]["cache_hit"] is True
-
-    @patch('foliohive_shared.ai.summary_manager.AIAssistant')
-    def test_get_or_generate_query_response(self, mock_assistant_class):
-        """Test query response generation."""
-        mock_assistant = MagicMock()
-        mock_assistant.summarize_query_html.return_value = {
-            "response": "Answer here",
-            "repositories_used": [{"name": "repo1"}],
-            "total_repositories": 1,
-            "query": "test query"
-        }
-        mock_assistant_class.return_value = mock_assistant
-
-        repo_rows = [{"repo_name": "repo1", "github_updated_at": "2024-01-01T00:00:00Z"}]
-        repo_files = {"repo1": {"readme_content": "# README", "config_files": []}}
-
-        with patch.object(SummaryManager, "get_cached_summary", return_value=None), \
-             patch('foliohive_shared.ai.summary_manager.cache_manager.save') as mock_save:
-            manager = SummaryManager("test_user")
-
-            result = manager.get_or_generate_query_response(
-                job_id="job123",
-                query="test query",
-                repo_rows=repo_rows,
-                repo_files=repo_files,
-                selection_strategy="recent",
-                max_repos=5
-            )
-
-            assert result["response"] == "Answer here"
-            assert result["repositories_used"][0]["name"] == "repo1"
-            mock_save.assert_called_once()
-
-
 class TestTokenBudgetConfiguration:
     """Test token budget configurations."""
 
@@ -689,6 +454,112 @@ class TestTokenBudgetConfiguration:
         assert "recent" in REPO_SELECTION_STRATEGIES
         assert "random" in REPO_SELECTION_STRATEGIES
         assert "top_starred" in REPO_SELECTION_STRATEGIES
+
+
+class TestProfileAggregation:
+    """Phase 3: aggregate profile JSON from micro-summaries."""
+
+    @patch('foliohive_shared.ai.summary_manager.cache_manager.save')
+    def test_aggregate_profile_from_summaries_deduplicates_and_scores(self, mock_save):
+        manager = SummaryManager("test_user")
+        micro_summaries = [
+            {
+                "repo_name": "repo1",
+                "micro_summary": {
+                    "architecture_patterns": ["microservices"],
+                    "tech_stack": {"languages": ["Python"], "frameworks": ["FastAPI"], "tools": ["Docker"]},
+                    "skill_signals": [
+                        {"skill": "python", "confidence": 0.9, "evidence": "API implementation"},
+                        {"skill": "testing", "confidence": 0.7, "evidence": "unit tests"},
+                    ],
+                },
+            },
+            {
+                "repo_name": "repo2",
+                "micro_summary": {
+                    "architecture_patterns": ["event-driven"],
+                    "tech_stack": {"languages": ["Python"], "frameworks": ["Flask"], "tools": ["Docker"]},
+                    "skill_signals": [
+                        {"skill": "python", "confidence": 0.8, "evidence": "service code"},
+                    ],
+                },
+            },
+        ]
+
+        aggregate = manager.aggregate_profile_from_summaries(micro_summaries=micro_summaries)
+
+        assert aggregate["username"] == "test_user"
+        assert len(aggregate["repos_included"]) == 2
+        assert aggregate["skills"][0]["skill"] == "python"
+        assert aggregate["skills"][0]["frequency"] == 2
+        assert any(item["pattern"] == "microservices" for item in aggregate["experience_signals"]["architecture_patterns"])
+        mock_save.assert_called_once()
+
+
+class TestProfileHTMLFormatting:
+    """Phase 3: format profile HTML from aggregate JSON."""
+
+    @patch('foliohive_shared.ai.summary_manager.cache_manager.save')
+    def test_format_profile_html_outputs_required_sections(self, mock_save):
+        manager = SummaryManager("test_user")
+        aggregate = {
+            "profile": {"name": "Test User"},
+            "repos_included": ["repo1"],
+            "skills": [{"skill": "python", "frequency": 2, "score": 1.7}],
+            "domains": [{"domain": "python", "count": 2}],
+            "experience_signals": {"architecture_patterns": [{"pattern": "microservices", "count": 1}]},
+        }
+
+        html = manager.format_profile_html(aggregate)
+
+        assert "<h2>Overview</h2>" in html
+        assert "<h3>Skills</h3>" in html
+        assert "<h3>Domains</h3>" in html
+        assert "<h3>Experience Signals</h3>" in html
+        mock_save.assert_called_once()
+
+
+class TestQueryFromSummaries:
+    """Phase 4: query responses from aggregate + repo micro-summaries."""
+
+    @patch('foliohive_shared.ai.summary_manager.cache_manager.save')
+    def test_query_from_summaries_filters_relevant_repos(self, mock_save):
+        manager = SummaryManager("test_user")
+        aggregate = {
+            "skills": [{"skill": "python"}],
+        }
+        repo_micro_summaries = [
+            {
+                "repo_name": "api-service",
+                "micro_summary": {
+                    "overview": "Python API service",
+                    "key_features": ["REST API"],
+                    "tech_stack": {"languages": ["Python"], "frameworks": ["FastAPI"], "tools": []},
+                    "architecture_patterns": ["microservices"],
+                },
+            },
+            {
+                "repo_name": "frontend-app",
+                "micro_summary": {
+                    "overview": "React frontend app",
+                    "key_features": ["UI"],
+                    "tech_stack": {"languages": ["TypeScript"], "frameworks": ["React"], "tools": []},
+                    "architecture_patterns": ["spa"],
+                },
+            },
+        ]
+
+        result = manager.query_from_summaries(
+            query="python api",
+            profile_aggregate=aggregate,
+            repo_micro_summaries=repo_micro_summaries,
+            max_repos=1,
+        )
+
+        assert "Query: python api" in result["response"]
+        assert len(result["repositories_used"]) == 1
+        assert result["repositories_used"][0]["name"] == "api-service"
+        mock_save.assert_called_once()
 
 
 if __name__ == "__main__":
