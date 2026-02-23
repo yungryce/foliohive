@@ -889,14 +889,12 @@ class SummaryManager:
         context = {
             "repo_name": repo_metadata.get("name", "Unknown"),
             "description": repo_metadata.get("description", ""),
-            "primary_language": repo_metadata.get("primary_language"),
             "languages": repo_metadata.get("languages", []),
             "topics": repo_metadata.get("topics", []),
             "stats": repo_metadata.get("stats", {}),
             "readme_chunk": "",
             "config_chunks": [],
         }
-        logger.info("[Context] %s", context)
 
         tokens_used = self.estimate_tokens(json.dumps(context))
         
@@ -905,6 +903,7 @@ class SummaryManager:
             readme_budget = token_budget["readme"]
             context["readme_chunk"] = self.chunk_readme(readme_content, readme_budget)
             tokens_used += self.estimate_tokens(context["readme_chunk"])
+            logger.info(f"Chunked README for {context['repo_name']} to fit {readme_budget} tokens, estimated tokens used: {self.estimate_tokens(context['readme_chunk'])}")
         
         # Chunk config files within budget
         if config_files and token_budget.get("config", 0) > 0:
@@ -918,8 +917,10 @@ class SummaryManager:
                     "content": chunked
                 })
                 tokens_used += self.estimate_tokens(chunked)
+                logger.info(f"Chunked config file {filename} for {context['repo_name']} to fit {config_budget_per_file} tokens, estimated tokens used: {self.estimate_tokens(chunked)}")
         
         context["tokens_estimated"] = tokens_used
+        logger.info("[Context] %s", context)
         return context
 
     def build_profile_context(

@@ -98,12 +98,32 @@ class _FakeTableClient:
             return None
         return filter_str[start_val:end_val]
 
+    @staticmethod
+    def _extract_ge_value(filter_str: str, field: str) -> str | None:
+        token = f"{field} ge '"
+        idx = filter_str.find(token)
+        if idx == -1:
+            return None
+        start_val = idx + len(token)
+        end_val = filter_str.find("'", start_val)
+        if end_val == -1:
+            return None
+        return filter_str[start_val:end_val]
+
     def _matches_filter(self, entity: dict, filter_str: str) -> bool:
         if not filter_str:
             return True
 
         partition_values = self._extract_eq_values(filter_str, "PartitionKey")
         if partition_values and entity.get("PartitionKey") not in partition_values:
+            return False
+
+        partition_ge = self._extract_ge_value(filter_str, "PartitionKey")
+        if partition_ge and str(entity.get("PartitionKey") or "") < partition_ge:
+            return False
+
+        partition_lt = self._extract_lt_value(filter_str, "PartitionKey")
+        if partition_lt and str(entity.get("PartitionKey") or "") >= partition_lt:
             return False
 
         row_key_values = self._extract_eq_values(filter_str, "RowKey")
@@ -312,7 +332,6 @@ def test_repo_languages_query_delete_and_cleanup(table_manager: TableManager) ->
     table_manager.upsert_repo_languages(
         RepoLanguagesRow(
             job_id=job_id,
-            repo_language_key="api|Python",
             repo_name="api",
             language="Python",
             bytes_count=5000,
@@ -323,7 +342,6 @@ def test_repo_languages_query_delete_and_cleanup(table_manager: TableManager) ->
     table_manager.upsert_repo_languages(
         RepoLanguagesRow(
             job_id=job_id,
-            repo_language_key="api|TypeScript",
             repo_name="api",
             language="TypeScript",
             bytes_count=1500,
@@ -336,6 +354,10 @@ def test_repo_languages_query_delete_and_cleanup(table_manager: TableManager) ->
     assert "api" in by_repo
     assert len(by_repo["api"]) == 2
 
+    single_repo = table_manager.get_repo_languages(job_id, "api")
+    assert len(single_repo) == 2
+    assert sorted(lang["language"] for lang in single_repo) == ["Python", "TypeScript"]
+
     table_manager.delete_repo_languages(job_id, "api")
     assert table_manager.query_repo_languages(job_id).get("api") is None
 
@@ -343,7 +365,6 @@ def test_repo_languages_query_delete_and_cleanup(table_manager: TableManager) ->
     table_manager.upsert_repo_languages(
         RepoLanguagesRow(
             job_id=job_id,
-            repo_language_key="web|Python",
             repo_name="web",
             language="Python",
             bytes_count=1,
@@ -353,7 +374,6 @@ def test_repo_languages_query_delete_and_cleanup(table_manager: TableManager) ->
     table_manager.upsert_repo_languages(
         RepoLanguagesRow(
             job_id=job_id,
-            repo_language_key="web|Go",
             repo_name="web",
             language="Go",
             bytes_count=1,
@@ -363,7 +383,6 @@ def test_repo_languages_query_delete_and_cleanup(table_manager: TableManager) ->
     table_manager.upsert_repo_languages(
         RepoLanguagesRow(
             job_id=job_id,
-            repo_language_key="web|Rust",
             repo_name="web",
             language="Rust",
             bytes_count=1,
@@ -381,7 +400,6 @@ def test_repo_languages_timestamp_restore(table_manager: TableManager) -> None:
     table_manager.upsert_repo_languages(
         RepoLanguagesRow(
             job_id="job-3",
-            repo_language_key="api|Python",
             repo_name="api",
             language="Python",
             bytes_count=100,
@@ -389,7 +407,7 @@ def test_repo_languages_timestamp_restore(table_manager: TableManager) -> None:
         )
     )
 
-    raw = table_manager._get_table_client(table_manager.table_names.repo_languages).entities[("job-3", "api|Python")]
+    raw = table_manager._get_table_client(table_manager.table_names.repo_languages).entities[("job-3|api", "Python")]
     assert ":" not in raw["created_at"]
     assert "+" not in raw["created_at"]
 

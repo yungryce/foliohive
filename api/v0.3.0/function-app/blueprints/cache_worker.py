@@ -18,8 +18,6 @@ from typing import Any, Dict, Optional
 import azure.functions as func
 
 from foliohive_shared import (
-    cache_manager,
-    FingerprintManager,
     GitHubAPI,
     GitHubRepoManager,
     SummaryManager,
@@ -255,24 +253,26 @@ def _update_cache_progress(
     
     # Transition: metadata_ready → caching_started when first repo generates summary
     if len(summary_ready_list) > 0 and current_status == "metadata_ready":
-        table_manager.update_job_metadata(username, job_id, {"status": "caching_started"})
         logger.info(
             "[JOB_CACHING_STARTED] job=%s - First micro-summary generated (%d/%d), caching in progress",
             job_id,
             len(summary_ready_list),
             total_repos,
         )
+        table_manager.update_job_metadata(username, job_id, {"status": "caching_started"})
+
     
     # Transition: caching_started → completed when all repos have summary or failed
     completed_count = len(summary_ready_list) + len(failed_list)
     if completed_count == total_repos and current_status == "caching_started":
-        table_manager.update_job_metadata(username, job_id, {"status": "completed"})
         logger.info(
             "[JOB_COMPLETED] job=%s - All micro-summaries processed (%d summary_ready, %d failed)",
             job_id,
             len(summary_ready_list),
             len(failed_list),
         )
+        table_manager.update_job_metadata(username, job_id, {"status": "completed"})
+
 
 
 @bp.queue_trigger(arg_name="msg", queue_name="github-cache", connection="AzureWebJobsStorage")
@@ -319,21 +319,66 @@ def process_cache_job(msg: func.QueueMessage) -> None:
 
         # Fetch files and extract signals (in-memory only)
         fetch_result = _fetch_file_content(username, repo_name, job_id=job_id, ref=branch_ref)
+        logger.info(
+            "[FETCH_RESULT] repo=%s api_usage=%s readme_length=%d config_files=%s",
+            repo_name,
+            fetch_result.get("api_usage"),
+            len(fetch_result.get("readme_content", "")),
+            list(fetch_result.get("config_files", {}).keys()),
+        )
+
+        logger.info(
+            "[FETCH_RESULT_DETAIL] repo=%s readme_content=%s",
+            repo_name,
+            fetch_result.get("readme_content", "")[:100] if fetch_result.get("readme_content") else "<empty>",
+        )
+
+        # Log extracted config content
+        extracted_config_files = fetch_result.get("config_files", {})
+        for config_name, config_payload in extracted_config_files.items():
+            logger.info(
+                "[EXTRACTED_CONFIG] repo=%s config=%s payload=%s",
+                repo_name,
+                config_name,
+                json.dumps(config_payload, indent=2) if isinstance(config_payload, dict) else str(config_payload),
+            )
 
         summary_ready = False
         try:
             summary_manager = SummaryManager(username=username)
             metadata_row = table_manager.get_repo_github_metadata(username, repo_name) or {}
+            repo_languages_raw = table_manager.get_repo_languages(job_id, repo_name)
+            repo_languages = [
+                lang for lang in repo_languages_raw
+                if lang.get("repo_name") == repo_name
+            ]
+            if len(repo_languages) != len(repo_languages_raw):
+                logger.warning(
+                    "[REPO_LANGUAGES_FILTERED] repo=%s requested=%d retained=%d",
+                    repo_name,
+                    len(repo_languages_raw),
+                    len(repo_languages),
+                )
+            languages_tuples = [
+                (lang.get("language"), lang.get("percentage")) 
+                for lang in sorted(repo_languages, key=lambda x: x.get("percentage", 0), reverse=True)
+            ][:5]  # Top 5 languages
             
-            # Generate and cache micro-summary only
+            logger.info(
+                "[REPO_LANGUAGES] repo=%s language_count=%d top_languages=%s",
+                repo_name,
+                len(repo_languages),
+                languages_tuples,
+            )
+
             summary_result = summary_manager.generate_repo_micro_summary(
                 repo_name=repo_name,
                 fingerprint=fingerprint,
                 repo_metadata={
                     "name": repo_name,
                     "description": metadata_row.get("description") or "",
-                    "primary_language": metadata_row.get("primary_language"),
                     "topics": metadata_row.get("topics") or [],
+                    "languages": languages_tuples,
                     "stats": {
                         "stars": metadata_row.get("stars_count", 0),
                         "forks": metadata_row.get("forks_count", 0),

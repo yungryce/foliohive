@@ -208,7 +208,6 @@ def _persist_repo_metadata(
             lang_rows.append(
                 RepoLanguagesRow(
                     job_id=job_id,
-                    repo_language_key=f"{repo_name}|{lang}",
                     repo_name=repo_name,
                     language=lang,
                     bytes_count=int(byte_count),
@@ -221,7 +220,7 @@ def _persist_repo_metadata(
                 repo_name,
                 len(lang_rows),
                 job_id,
-                [(r.repo_language_key, r.language, r.bytes_count, r.percentage) for r in lang_rows]
+                [(f"{r.repo_name}|{r.language}", r.language, r.bytes_count, r.percentage) for r in lang_rows]
             )
             
             # Atomic batch operation for this job

@@ -89,12 +89,11 @@ class JobMetadataRow:
 class RepoLanguagesRow:
     """Per-repo language statistics - normalized from RepoMetadata.languages.
     
-    PartitionKey: job_id (lifecycle of operation)
-    RowKey: repo_language_key format "{repo_name}|{language}"
+    PartitionKey: "{job_id}|{repo_name}"
+    RowKey: language
     """
 
-    job_id: str  # PartitionKey
-    repo_language_key: str  # RowKey
+    job_id: str
     repo_name: str
     language: str
     bytes_count: int
@@ -1031,17 +1030,19 @@ class TableManager:
     def upsert_repo_languages(self, row: RepoLanguagesRow) -> None:
         """Store language statistics for a repository.
         
-        PartitionKey: job_id
-        RowKey: "{repo_name}|{language}"
+        PartitionKey: "{job_id}|{repo_name}"
+        RowKey: language
         Required fields: job_id, repo_name, language, bytes_count
         """
         table = self._get_table_client(self.table_names.repo_languages)
         if not table:
             return
         now = _azure_safe_timestamp()
+        partition_key = f"{row.job_id}|{row.repo_name}"
         entity: Dict[str, Any] = {
-            "PartitionKey": row.job_id,
-            "RowKey": f"{row.repo_name}|{row.language}",
+            "PartitionKey": partition_key,
+            "RowKey": row.language,
+            "job_id": row.job_id,
             "repo_name": row.repo_name,
             "language": row.language,
             "bytes_count": int(row.bytes_count or 0),
@@ -1081,13 +1082,14 @@ class TableManager:
     def delete_repo_languages(self, job_id: str, repo_name: str) -> None:
         """Delete language entries for a repository within a specific job.
         
-        Filters by PartitionKey (job_id) and repo_name field.
+        PartitionKey: "{job_id}|{repo_name}".
         """
         table = self._get_table_client(self.table_names.repo_languages)
         if not table:
             return
-        
-        filter_str = f"PartitionKey eq '{job_id}' and repo_name eq '{repo_name}'"
+
+        partition_key = f"{job_id}|{repo_name}"
+        filter_str = f"PartitionKey eq '{partition_key}'"
         existing = list(table.list_entities(filter=filter_str))
         
         if existing:
@@ -1110,8 +1112,11 @@ class TableManager:
         table = self._get_table_client(self.table_names.repo_languages)
         if not table:
             return {}
-        
-        filter_str = f"PartitionKey eq '{job_id}'"
+
+        # PartitionKey format is "{job_id}|{repo_name}", so query the job prefix range.
+        lower_bound = f"{job_id}|"
+        upper_bound = f"{job_id}}}"
+        filter_str = f"PartitionKey ge '{lower_bound}' and PartitionKey lt '{upper_bound}'"
         entities = list(table.list_entities(filter=filter_str))
         
         by_repo: Dict[str, List[Dict[str, Any]]] = {}
@@ -1122,6 +1127,70 @@ class TableManager:
                 by_repo.setdefault(repo_name, []).append(deserialized)
         
         return by_repo
+
+    def get_repo_languages(self, job_id: str, repo_name: str) -> List[Dict[str, Any]]:
+        """Query language statistics for a specific repo in a job.
+
+        PartitionKey: "{job_id}|{repo_name}".
+        
+        Args:
+            job_id: Job ID (PartitionKey)
+            repo_name: Repository name to filter on
+            
+        Returns:
+            List of language dicts for the repo, empty list if none found
+        """
+        table = self._get_table_client(self.table_names.repo_languages)
+        if not table:
+            return []
+
+        partition_key = f"{job_id}|{repo_name}"
+        safe_partition_key = partition_key.replace("'", "''")
+        filter_str = f"PartitionKey eq '{safe_partition_key}'"
+
+        entities = list(table.list_entities(filter=filter_str))
+        logger.info(
+            "[GET_REPO_LANGUAGES] job=%s repo=%s partition_key=%s filtered_count=%d",
+            job_id, repo_name, partition_key, len(entities)
+        )
+
+        languages = []
+        for entity in entities:
+            deserialized = self._deserialize_repo_languages(entity)
+            languages.append(deserialized)
+        
+        return languages
+
+
+    def _deserialize_repo_languages(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(entity)
+        for meta_key in _AZURE_META_FIELDS:
+            payload.pop(meta_key, None)
+
+        partition_key = payload.pop("PartitionKey", None)
+        row_key = payload.pop("RowKey", None)
+
+        parsed_job_id = None
+        parsed_repo_name = None
+        if partition_key and "|" in partition_key:
+            parsed_job_id, parsed_repo_name = partition_key.split("|", 1)
+
+        job_id = payload.get("job_id") or parsed_job_id
+        repo_name = payload.get("repo_name") or parsed_repo_name
+        language = payload.get("language") or row_key
+
+        payload["job_id"] = job_id
+        payload["repo_name"] = repo_name
+        payload["language"] = language
+        payload["repo_language_key"] = f"{repo_name}|{language}" if repo_name and language else row_key
+        payload["created_at"] = _restore_iso_timestamp(payload.get("created_at"))
+        payload["updated_at"] = _restore_iso_timestamp(payload.get("updated_at"))
+        return payload
+
+
+    # -------------------------------------------------------------------
+    # Cleanup operations
+    # -------------------------------------------------------------------
 
     def cleanup_old_repo_languages(self, older_than_iso: str) -> int:
         """Cleanup RepoLanguages entries older than a specific timestamp.
@@ -1225,8 +1294,10 @@ class TableManager:
                     lang_table = self._get_table_client(self.table_names.repo_languages)
                     if lang_table:
                         try:
+                            lower_bound = f"{job_id}|"
+                            upper_bound = f"{job_id}}}"
                             lang_entities = list(lang_table.query_entities(
-                                f"PartitionKey eq '{job_id}'",
+                                f"PartitionKey ge '{lower_bound}' and PartitionKey lt '{upper_bound}'",
                                 select=["PartitionKey", "RowKey"]
                             ))
                             for lang_e in lang_entities:
@@ -1339,89 +1410,80 @@ class TableManager:
         
         return count
 
-    def cleanup_old_discovered_paths(self, older_than_iso: str) -> int:
-        """Cleanup stale RepoDiscoveredPaths entries.
+    # def cleanup_old_discovered_paths(self, older_than_iso: str) -> int:
+    #     """Cleanup stale RepoDiscoveredPaths entries.
         
-        Fingerprint-based cleanup pattern: Removes cached blob path references not recently accessed.
-        Cross-checks with RepoGitHubMetadata to detect orphaned or mismatched fingerprints.
+    #     Fingerprint-based cleanup pattern: Removes cached blob path references not recently accessed.
+    #     Cross-checks with RepoGitHubMetadata to detect orphaned or mismatched fingerprints.
         
-        Args:
-            older_than_iso: ISO timestamp cutoff (paths older than this are candidates for deletion)
+    #     Args:
+    #         older_than_iso: ISO timestamp cutoff (paths older than this are candidates for deletion)
             
-        Returns:
-            Number of discovered path rows deleted
-        """
-        paths_table = self._get_table_client(self.table_names.repo_discovered_paths)
-        if not paths_table:
-            return 0
+    #     Returns:
+    #         Number of discovered path rows deleted
+    #     """
+    #     paths_table = self._get_table_client(self.table_names.repo_discovered_paths)
+    #     if not paths_table:
+    #         return 0
         
-        safe_ts = _azure_safe_timestamp(older_than_iso)
-        filter_str = f"updated_at lt '{safe_ts}'"
+    #     safe_ts = _azure_safe_timestamp(older_than_iso)
+    #     filter_str = f"updated_at lt '{safe_ts}'"
         
-        count = 0
-        try:
-            # Query old discovered path entries
-            old_paths = list(paths_table.list_entities(
-                filter=filter_str,
-                select=["PartitionKey", "RowKey", "fingerprint"]
-            ))
+    #     count = 0
+    #     try:
+    #         # Query old discovered path entries
+    #         old_paths = list(paths_table.list_entities(
+    #             filter=filter_str,
+    #             select=["PartitionKey", "RowKey", "fingerprint"]
+    #         ))
             
-            logger.info("[CLEANUP_DISCOVERED_PATHS] Found %d stale path entries", len(old_paths))
+    #         logger.info("[CLEANUP_DISCOVERED_PATHS] Found %d stale path entries", len(old_paths))
             
-            metadata_table = self._get_table_client(self.table_names.repo_github_metadata)
+    #         metadata_table = self._get_table_client(self.table_names.repo_github_metadata)
             
-            for path_entity in old_paths:
-                username = path_entity.get("PartitionKey")
-                repo_name = path_entity.get("RowKey")
-                path_fingerprint = path_entity.get("fingerprint")
+    #         for path_entity in old_paths:
+    #             username = path_entity.get("PartitionKey")
+    #             repo_name = path_entity.get("RowKey")
+    #             path_fingerprint = path_entity.get("fingerprint")
                 
-                should_delete = False
+    #             should_delete = False
                 
-                # Check if corresponding RepoGitHubMetadata exists with matching fingerprint
-                if metadata_table:
-                    try:
-                        metadata = metadata_table.get_entity(username, repo_name)
-                        metadata_fingerprint = metadata.get("fingerprint")
+    #             # Check if corresponding RepoGitHubMetadata exists with matching fingerprint
+    #             if metadata_table:
+    #                 try:
+    #                     metadata = metadata_table.get_entity(username, repo_name)
+    #                     metadata_fingerprint = metadata.get("fingerprint")
                         
-                        # Delete if fingerprints mismatch (stale blobs)
-                        if path_fingerprint and metadata_fingerprint != path_fingerprint:
-                            should_delete = True
-                            logger.info(
-                                "[CLEANUP_PATHS] Fingerprint mismatch %s/%s: path=%s metadata=%s",
-                                username, repo_name, path_fingerprint, metadata_fingerprint
-                            )
-                    except ResourceNotFoundError:
-                        # Orphaned paths (no metadata) should be deleted
-                        should_delete = True
-                        logger.info("[CLEANUP_PATHS] Orphaned path entry: %s/%s", username, repo_name)
-                    except Exception:
-                        # If we can't verify, delete old entries
-                        should_delete = True
-                else:
-                    # No metadata table means we can't verify - delete old entries
-                    should_delete = True
+    #                     # Delete if fingerprints mismatch (stale blobs)
+    #                     if path_fingerprint and metadata_fingerprint != path_fingerprint:
+    #                         should_delete = True
+    #                         logger.info(
+    #                             "[CLEANUP_PATHS] Fingerprint mismatch %s/%s: path=%s metadata=%s",
+    #                             username, repo_name, path_fingerprint, metadata_fingerprint
+    #                         )
+    #                 except ResourceNotFoundError:
+    #                     # Orphaned paths (no metadata) should be deleted
+    #                     should_delete = True
+    #                     logger.info("[CLEANUP_PATHS] Orphaned path entry: %s/%s", username, repo_name)
+    #                 except Exception:
+    #                     # If we can't verify, delete old entries
+    #                     should_delete = True
+    #             else:
+    #                 # No metadata table means we can't verify - delete old entries
+    #                 should_delete = True
                 
-                if should_delete:
-                    try:
-                        paths_table.delete_entity(username, repo_name)
-                        count += 1
-                    except Exception as del_exc:
-                        logger.warning("[CLEANUP_PATHS] Failed to delete %s/%s: %s", username, repo_name, del_exc)
+    #             if should_delete:
+    #                 try:
+    #                     paths_table.delete_entity(username, repo_name)
+    #                     count += 1
+    #                 except Exception as del_exc:
+    #                     logger.warning("[CLEANUP_PATHS] Failed to delete %s/%s: %s", username, repo_name, del_exc)
             
-        except Exception as exc:
-            logger.error("[CLEANUP_DISCOVERED_PATHS] Failed: %s", exc)
+    #     except Exception as exc:
+    #         logger.error("[CLEANUP_DISCOVERED_PATHS] Failed: %s", exc)
         
-        return count
+    #     return count
 
-    def _deserialize_repo_languages(self, entity: Dict[str, Any]) -> Dict[str, Any]:
-        payload = dict(entity)
-        for meta_key in _AZURE_META_FIELDS:
-            payload.pop(meta_key, None)
-        payload["job_id"] = payload.pop("PartitionKey", None)
-        payload["repo_language_key"] = payload.pop("RowKey", None)
-        payload["created_at"] = _restore_iso_timestamp(payload.get("created_at"))
-        payload["updated_at"] = _restore_iso_timestamp(payload.get("updated_at"))
-        return payload
 
     # ------------------------------------------------------------------
     # Repo API usage tracking
