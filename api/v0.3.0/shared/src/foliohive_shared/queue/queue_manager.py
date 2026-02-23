@@ -205,6 +205,7 @@ class QueueManager:
         fingerprint: str,
         *,
         trace_id: Optional[str] = None,
+        default_branch: Optional[str] = None,
     ) -> bool:
         """Enqueue a cache job to fetch and cache file contents asynchronously.
         
@@ -214,6 +215,7 @@ class QueueManager:
             repo_name: Repository name
             fingerprint: fingerprint for cache validation
             trace_id: Optional trace ID for logging correlation
+            default_branch: Git branch ref for tree API (avoids redundant metadata fetch)
             
         Returns:
             bool: True if message was enqueued successfully
@@ -229,6 +231,7 @@ class QueueManager:
             "repo_name": repo_name,
             "fingerprint": fingerprint,
             "trace_id": trace_id,
+            "default_branch": default_branch,
             "queued_at": datetime.now(timezone.utc).isoformat(),
         }
         

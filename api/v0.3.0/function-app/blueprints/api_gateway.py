@@ -502,7 +502,7 @@ def _query_repo_rows(
             status_rows = table_manager.list_repo_statuses(job_id)
             target_repo_names = [
                 row["repo_name"] for row in status_rows
-                if row.get("status") in ("synced", "cached") and row.get("repo_name")
+                if row.get("status") in ("synced", "summary_ready") and row.get("repo_name")
             ]
         
         # Single query for all repos (avoids duplication)
@@ -557,6 +557,11 @@ def _build_repo_detail_entry(
     elif isinstance(repo_names, list):
         target_names = [name for name in repo_names if name]
 
+    logger.info(
+        "Preparing to build repo detail entry: username=%s job_id=%s repo_count=%d requested_repos=%s",
+        ctx.username, ctx.job_id, len(target_names) if target_names else 0, target_names or "all"
+    )
+
     repo_rows: List[Dict[str, Any]] = []
     if target_names:
         repo_rows = _query_repo_rows(ctx.username, job_id=ctx.job_id, repo_names=target_names)
@@ -566,6 +571,11 @@ def _build_repo_detail_entry(
 
     if not target_names:
         return {"job_id": ctx.job_id, "repo_entry": {}, "entries": []}
+
+    logger.info(
+        "Building repo detail entry: username=%s job_id=%s repos=%d",
+        ctx.username, ctx.job_id, len(target_names)
+    )
 
     # Single query for metadata and languages (if job-scoped)
     languages_by_repo = table_manager.query_repo_languages(ctx.job_id) if ctx.job_id else {}
@@ -766,12 +776,12 @@ def _compute_repo_status_summary(job_id: str) -> Dict[str, Any]:
     for row in statuses:
         status = row.get("status")
         repo_name = row.get("repo_name")
-        if status in ("pending", "synced", "cached", "failed") and repo_name:
+        if status in ("pending", "synced", "summary_ready", "failed") and repo_name:
             status_counts[status] += 1
             status_lists[status].append(repo_name)
     
-    # Completed = cached files + failed (terminal states)
-    completed = status_counts["cached"] + status_counts["failed"]
+    # Completed = synced metadata + summary_ready + failed (terminal states)
+    completed = status_counts["synced"] + status_counts["summary_ready"] + status_counts["failed"]
     percentage = int((completed / total * 100) if total else 0)
     
     return {
@@ -1142,8 +1152,12 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
 def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
     """Poll job progress and status.
     
-    Returns real-time progress tracking for a specific job. Uses job-level status
-    from JobMetadata table with detailed repo-level progress from RepoSyncStatus.
+    Returns real-time status for a specific job from JobMetadata table.
+    Job state is tracked via status field: queued → syncing → metadata_ready → 
+    caching_started → completed (or failed at any stage).
+    
+    RepoSyncStatus is used only for backend operation coordination and is not
+    exposed to clients.
     
     Query parameters:
         job_id (required): Job ID to check status for
@@ -1157,29 +1171,14 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
         {
             "job_id": str,
             "username": str,
-            "status": str,  // "queued" | "syncing" | "metadata_ready" | "completed" | "failed"
-            "metadata_ready": bool,  // True when first repo cached (can display metadata)
-            "files_ready": bool,     // True when all files cached (can display README)
-            "progress": {
-                "total": int,
-                "completed": int,       // cached + failed
-                "percentage": int,
-                "pending": int,         // Waiting to sync
-                "synced": int,          // Metadata synced, files pending
-                "cached": int,          // Files cached (ready)
-                "failed": int           // Terminal failure state
-            },
-            "created_at": str,
-            "repo_details": {
-                "pending": [str...],    // First 10 repos
-                "synced": [str...],
-                "cached": [str...],
-                "failed": [str...]
-            }
+            "status": str,  // "queued" | "syncing" | "metadata_ready" | "caching_started" | "completed" | "failed"
+            "metadata_ready": bool,  // True when metadata available (metadata_ready or later)
+            "summary_ready": bool,   // True when summaries generated (completed)
+            "created_at": str
         }
     
     Status progression:
-        queued → syncing → metadata_ready → completed
+        queued → syncing → metadata_ready → caching_started → completed
                ↘ failed (terminal)
     
     Cache-Control: no-cache (always fetch fresh status)
@@ -1197,34 +1196,20 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
 
     job_status = job.get("status", "unknown")
 
-    # Compute detailed progress from RepoSyncStatus using shared function
-    status_summary = _compute_repo_status_summary(job_id)
-    counts = status_summary["counts"]
-    lists = status_summary["lists"]
-
     payload = {
         "job_id": job_id,
         "username": username,
         "status": job_status,
-        "metadata_ready": job_status in ("metadata_ready", "completed"),
-        "files_ready": job_status == "completed",
-        "progress": {
-            "total": status_summary["total"],
-            "completed": status_summary["completed"],
-            "percentage": status_summary["percentage"],
-            "pending": counts.get("pending", 0),
-            "synced": counts.get("synced", 0),  # Metadata synced, files pending
-            "cached": counts.get("cached", 0),  # Files cached (ready)
-            "failed": counts.get("failed", 0),
-        },
+        "metadata_ready": job_status in ("metadata_ready", "caching_started", "completed"),
+        "summary_ready": job_status == "completed",
         "created_at": job.get("created_at"),
-        "repo_details": {
-            "pending": lists.get("pending", [])[:10],  # First 10 for UI
-            "synced": lists.get("synced", [])[:10],
-            "cached": lists.get("cached", [])[:10],
-            "failed": lists.get("failed", [])[:10],
-        },
     }
+
+    logger.info(
+        "Job status response: job_id=%s, username=%s, status=%s, metadata_ready=%s, summary_ready=%s",
+        job_id, username, job_status,
+        payload["metadata_ready"], payload["summary_ready"]
+    )
 
     return _create_success_response(payload, cache_control="no-cache")
 
@@ -1259,9 +1244,54 @@ def get_candidate_repos_metadata(req: func.HttpRequest) -> func.HttpResponse:
 
     ctx = _prepare_candidate_context(req, username)
 
+    logger.info("Fetching candidate metadata: username=%s job_id=%s", username, ctx.job_id)
+
     # Try table storage first (most recent data)
     if ctx.job_id:
         job = ctx.job or {}
+        
+        # Validation: log table state before building repo detail entries
+        # Diagnose data loss between RepoSyncStatus and RepoGitHubMetadata
+        try:
+            # Count total repos in RepoGitHubMetadata for this user
+            logger.info("Validating table state for candidate metadata: username=%s job_id=%s", username, ctx.job_id)
+
+            all_github_metadata = table_manager.query_repo_github_metadata(username)
+            total_github_metadata_count = len(all_github_metadata) if all_github_metadata else 0
+            
+            # Count repos with synced/cached status for this job
+            status_rows = table_manager.list_repo_statuses(ctx.job_id)
+            synced_repos = [
+                row.get("repo_name") for row in status_rows
+                if row.get("status") in ("synced", "cached") and row.get("repo_name")
+            ]
+            cached_repos = [row.get("repo_name") for row in status_rows
+                if row.get("status") == "cached" and row.get("repo_name")]
+            
+            synced_count = len(synced_repos)
+            cached_count = len(cached_repos)
+            
+            # Count how many of the synced/cached repos have metadata
+            synced_cached_with_metadata = sum(
+                1 for repo_name in synced_repos
+                if any(m.get("repo_name") == repo_name for m in all_github_metadata)
+            )
+            
+            logger.info(
+                "[TABLE_VALIDATION] username=%s job_id=%s github_metadata_total=%d synced_count=%d cached_count=%d synced_cached_with_metadata=%d",
+                username, ctx.job_id, total_github_metadata_count, synced_count, cached_count, synced_cached_with_metadata
+            )
+            
+            if synced_count > synced_cached_with_metadata:
+                logger.warning(
+                    "[TABLE_DATA_GAP] username=%s job_id=%s missing_metadata_count=%d gaps=%s",
+                    username, ctx.job_id,
+                    synced_count - synced_cached_with_metadata,
+                    [r for r in synced_repos if not any(m.get("repo_name") == r for m in all_github_metadata)][:10]
+                )
+        except Exception as exc:
+            logger.warning("Failed to validate table state: %s", exc, exc_info=True)
+        
         detail_bundle = _build_repo_detail_entry([], ctx=ctx)
         entries = detail_bundle.get("entries", [])
         
@@ -1273,8 +1303,12 @@ def get_candidate_repos_metadata(req: func.HttpRequest) -> func.HttpResponse:
             "status": job.get("status"),
             "data": entries,
         }
+        logger.info("Candidate metadata fetched from tables: username=%s job_id=%s repos=%d",
+                    ctx.username, ctx.job_id, len(entries))
 
         if payload.get("data"):
+            logger.info("Returning candidate metadata from tables: username=%s job_id=%s repos=%d",
+                        ctx.username, ctx.job_id, len(entries))
             return _create_success_response(payload, request_id=ctx.trace.get("request_id"))
 
         # Job exists but no repo data yet
@@ -1387,6 +1421,7 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     bundle = _get_portfolio_bundle(username, job_id=ctx.job_id)
     logger.info("Fetched portfolio bundle for summary generation: repos=%d, languages=%d, stats=%s",
                 len(bundle["repo_rows"]), len(bundle["languages_by_repo"]), bundle["statistics"])
+    logger.info("**** [Bundle Debug] *** /n %s", json.dumps(bundle, indent=2, default=str))
     
     if not bundle["repo_rows"]:
         return _create_error_response(
@@ -1445,7 +1480,11 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
 
 @bp.route(route="candidate/{username}/{repo}/readme-summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
-    """Generate an AI summary for a repository README (HTML output)."""
+    """Generate an AI summary for a repository by expanding cached micro-summary.
+    
+    This endpoint uses the cached micro-summary to generate a detailed HTML summary
+    for the single-repo detail view. No raw file blobs are fetched.
+    """
     username = req.route_params.get("username")
     repo = req.route_params.get("repo")
     if not username or not repo:
@@ -1461,37 +1500,55 @@ def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
     # Get repo metadata for context
     detail = _build_repo_detail_entry(repo, ctx=ctx)
     repo_entry = detail.get("repo_entry", {})
+    fingerprint = repo_entry.get("fingerprint")
 
-    # SummaryManager with File Budgeting and Caching
+    if not fingerprint:
+        return _create_error_response(
+            "Repository fingerprint not available",
+            status_code=400,
+            error_code="MISSING_FINGERPRINT",
+            request_id=_get_trace_context(req).get("request_id"),
+        )
+
+    # Load cached micro-summary
     manager = SummaryManager(username=username)
-    file_budget = get_file_budget("readme")
+    micro_summary = manager.get_repo_micro_summary(repo, fingerprint)
 
-    # Build repo files dict with budget-aware limits and include primary readme
-    repo_files = _get_repo_files(
-        username,
-        [{"repo_name": repo}],
-        max_additional_readmes=file_budget["max_readme_files"],
-        max_config_files=file_budget["max_config_files"],
-        include_readme=True,  # Always include primary readme for repo summary
-    )
+    if not micro_summary:
+        return _create_error_response(
+            "Repository micro-summary not ready. Please trigger a refresh first.",
+            status_code=202,
+            error_code="SUMMARY_NOT_READY",
+            request_id=_get_trace_context(req).get("request_id"),
+        )
 
-    logger.info("repo files for summary generation (limited): %s", repo_files.get(repo, {}))
-    logger.info("Generated repo metadata for repo summary: %s", repo_entry)
+    logger.info("Loaded micro-summary for repo: %s fingerprint: %s", repo, fingerprint)
 
-    result = manager.get_or_generate_readme_summary(
-        job_id=ctx.job_id or "default",
-        repo_name=repo,
-        repo_metadata=repo_entry,
-        repo_files=repo_files.get(repo, {}),
-    )
+    # Expand micro-summary into detailed HTML
+    try:
+        result = manager.expand_repo_micro_summary(
+            repo_name=repo,
+            micro_summary=micro_summary,
+            repo_metadata=repo_entry,
+            fingerprint=fingerprint,
+        )
+    except Exception as e:
+        logger.error("Failed to expand micro-summary for %s/%s: %s", username, repo, str(e))
+        return _create_error_response(
+            "Failed to generate detailed summary",
+            status_code=500,
+            error_code="EXPANSION_FAILED",
+            request_id=_get_trace_context(req).get("request_id"),
+        )
 
     payload = {
         "username": username,
         "repo": repo,
         "job_id": ctx.job_id,
         "repo_entry": repo_entry,
-        "readme_summary_html": result["summary_html"],
-        "cache_metadata": result.get("metadata", {})
+        "summary_html": result["summary_html"],
+        "cache_metadata": result.get("metadata", {}),
+        "cache_hit": result.get("cache_hit", False),
     }
 
     return _create_success_response(payload, cache_control="no-cache")

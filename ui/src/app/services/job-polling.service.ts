@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
-import { Observable, timer, throwError, EMPTY } from 'rxjs';
-import { switchMap, takeWhile, finalize, shareReplay } from 'rxjs/operators';
+import { Observable, timer, throwError, EMPTY, Subject } from 'rxjs';
+import { switchMap, takeWhile, finalize, shareReplay, takeUntil } from 'rxjs/operators';
 import { RepoBundleService, JobStatusResponse } from './repo-bundle.service';
 
 export interface PollOptions {
@@ -20,6 +20,7 @@ export interface PollOptions {
 @Injectable({ providedIn: 'root' })
 export class JobPollingService {
   private repoBundleService = inject(RepoBundleService);
+  private stop$ = new Subject<void>();  // Signal to stop polling early
 
   /**
    * Poll job status until completed or failed.
@@ -44,32 +45,46 @@ export class JobPollingService {
     let attempts = 0;
     let timedOut = false;
 
+    console.log(`[pollJobStatus] starting: username=${username}, jobId=${jobId}, intervalMs=${intervalMs}, maxAttempts=${maxAttempts}`);
+
     // Set timeout to stop polling
     const timeoutHandle = setTimeout(() => {
       timedOut = true;
+      console.warn(`[pollJobStatus] timeout: exceeded ${timeoutMs}ms`);
     }, timeoutMs);
 
     return timer(0, intervalMs).pipe(
+      takeUntil(this.stop$),  // Stop polling when child methods signal completion
       switchMap(() => {
         if (timedOut) {
+          console.log(`[pollJobStatus] stopping: timeout flag set`);
           return EMPTY; // Stop emitting
         }
 
         attempts++;
         if (attempts > maxAttempts) {
+          console.warn(`[pollJobStatus] stopping: exceeded ${maxAttempts} attempts`);
           return EMPTY; // Stop emitting
         }
 
+        console.debug(`[pollJobStatus] poll attempt ${attempts}/${maxAttempts}`);
         return this.repoBundleService.getJobStatus(username, jobId);
       }),
       takeWhile((status) => {
-        if (!status) return false;
+        if (!status) {
+          console.warn(`[pollJobStatus] received null status`);
+          return false;
+        }
         
         // Continue polling until completed or failed
         const isActive = status.status !== 'completed' && status.status !== 'failed';
+        console.debug(`[pollJobStatus] status=${status.status}, metadata_ready=${status.metadata_ready}, files_ready=${status.files_ready}, isActive=${isActive}`);
         return isActive;
       }, true), // inclusive=true to emit final completed/failed status
-      finalize(() => clearTimeout(timeoutHandle)),
+      finalize(() => {
+        clearTimeout(timeoutHandle);
+        console.log(`[pollJobStatus] complete after ${attempts} attempts`);
+      }),
       shareReplay(1) // Share the same observable for multiple subscribers
     );
   }
@@ -90,15 +105,21 @@ export class JobPollingService {
   ): Observable<JobStatusResponse> {
     return this.pollJobStatus(username, jobId, options).pipe(
       takeWhile((status) => {
-        if (!status) return false;
+        if (!status) {
+          console.warn(`[waitForMetadataReady] null status`);
+          return false;
+        }
         
-        // Complete when metadata is ready or job completed/failed
-        if (status.metadata_ready || status.status === 'completed') {
+        // Complete when metadata_ready flag is true or job failed
+        if (status.metadata_ready) {
+          this.stop$.next();  // Signal root polling to stop
           return false; // Stop and emit this final value
         }
         if (status.status === 'failed') {
+          this.stop$.next();  // Signal root polling to stop
           return false;
         }
+        console.debug(`[waitForMetadataReady] waiting: status=${status.status}, metadata_ready=${status.metadata_ready}, progress=${status.progress?.cached}/${status.progress?.total}`);
         return true; // Continue polling
       }, true) // inclusive=true to emit the ready status
     );
@@ -120,15 +141,21 @@ export class JobPollingService {
   ): Observable<JobStatusResponse> {
     return this.pollJobStatus(username, jobId, options).pipe(
       takeWhile((status) => {
-        if (!status) return false;
+        if (!status) {
+          console.warn(`[waitForFilesReady] null status`);
+          return false;
+        }
         
-        // Complete when files are ready or job completed/failed
-        if (status.files_ready || status.status === 'completed') {
+        // Complete when files_ready flag is true or job failed
+        if (status.files_ready) {
+          this.stop$.next();  // Signal root polling to stop
           return false; // Stop and emit this final value
         }
         if (status.status === 'failed') {
+          this.stop$.next();  // Signal root polling to stop
           return false;
         }
+        console.debug(`[waitForFilesReady] waiting: status=${status.status}, files_ready=${status.files_ready}, progress=${status.progress?.cached}/${status.progress?.total}`);
         return true; // Continue polling
       }, true) // inclusive=true to emit the ready status
     );

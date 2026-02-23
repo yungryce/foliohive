@@ -75,7 +75,7 @@ class JobMetadataRow:
 
     username: str  # PartitionKey
     job_id: str  # RowKey
-    status: str = "queued" # "queued" | "syncing" | "metadata_ready" | "completed" | "failed"
+    status: str = "queued" # queued | syncing | metadata_ready | caching_started | completed | failed
     bundle_fingerprint: Optional[str] = None
     force_refresh: bool = False
     last_requeue_at: Optional[str] = None
@@ -131,6 +131,7 @@ class RepoGitHubMetadataRow:
     github_created_at: Optional[str] = None
     github_updated_at: Optional[str] = None
     github_pushed_at: Optional[str] = None
+    default_branch: Optional[str] = None  # Avoid redundant API calls in downstream workers
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     last_accessed_at: Optional[str] = None  # Track read operations for cleanup
@@ -141,7 +142,7 @@ class RepoSyncStatusRow:
     """Per-repository pipeline status for a given job.
     
     Tracks progress through: sync (metadata) → cache (files) → merge (bundle).
-    Status transitions: pending → synced → cached → merged (or failed at any stage).
+    Status transitions: pending → synced → cached → summary_ready (or failed at any stage).
 
     PartitionKey: job_id (groups all repos for a job)
     RowKey: repo_name (unique repo within job)
@@ -150,7 +151,7 @@ class RepoSyncStatusRow:
     job_id: str  # PartitionKey
     repo_name: str  # RowKey
     username: str
-    status: str  # pending | synced | cached | failed
+    status: str  # pending | synced | summary_ready | failed
     sync_message_id: Optional[str] = None  # Queue message ID for sync job
     cache_message_id: Optional[str] = None  # Queue message ID for cache job
     error: Optional[str] = None
@@ -242,7 +243,7 @@ class UserProfileRow:
 
 
 _AZURE_META_FIELDS = {"etag", "odata.etag", "odata.metadata"}
-_REPO_STATUS_ALLOWED = {"pending", "synced", "cached", "summary_ready", "failed"}
+_REPO_STATUS_ALLOWED = {"pending", "synced", "summary_ready", "failed"}
 
 
 def _utcnow_iso() -> str: 
@@ -1385,14 +1386,14 @@ class TableManager:
                         # Delete if fingerprints mismatch (stale blobs)
                         if path_fingerprint and metadata_fingerprint != path_fingerprint:
                             should_delete = True
-                            logger.debug(
+                            logger.info(
                                 "[CLEANUP_PATHS] Fingerprint mismatch %s/%s: path=%s metadata=%s",
                                 username, repo_name, path_fingerprint, metadata_fingerprint
                             )
                     except ResourceNotFoundError:
                         # Orphaned paths (no metadata) should be deleted
                         should_delete = True
-                        logger.debug("[CLEANUP_PATHS] Orphaned path entry: %s/%s", username, repo_name)
+                        logger.info("[CLEANUP_PATHS] Orphaned path entry: %s/%s", username, repo_name)
                     except Exception:
                         # If we can't verify, delete old entries
                         should_delete = True
@@ -1452,7 +1453,7 @@ class TableManager:
             "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
         }
         
-        logger.debug(
+        logger.info(
             "[TABLE_UPSERT_API_USAGE_ENTITY] PartitionKey=%s RowKey=%s operation=%s job_id=%s repo_name=%s",
             entity.get("PartitionKey"),
             entity.get("RowKey"),
@@ -1460,7 +1461,7 @@ class TableManager:
             entity.get("job_id"),
             entity.get("repo_name"),
         )
-        logger.debug(
+        logger.info(
             "[TABLE_UPSERT_API_USAGE_ENTITY_FULL] %s",
             entity,
         )

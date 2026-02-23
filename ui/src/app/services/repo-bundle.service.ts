@@ -122,12 +122,18 @@ export class RepoBundleService {
   getJobStatus(username: string, jobId: string): Observable<JobStatusResponse> {
     const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/status`;
     const params = new HttpParams().set('job_id', jobId);
+    console.log(`[getJobStatus] polling: username=${username}, jobId=${jobId}`);
     return this.http.get<any>(url, { params }).pipe(
       map(res => {
-        if (res?.status === 'success' && res?.data) return res.data as JobStatusResponse;
-        return res as JobStatusResponse;
+        const payload = (res?.status === 'success' && res?.data) ? res.data : res;
+        const jobStatus = payload as JobStatusResponse;
+        console.log(
+          `[getJobStatus] response: status=${jobStatus?.status}, metadata_ready=${jobStatus?.metadata_ready}, files_ready=${jobStatus?.files_ready}, progress=${jobStatus?.progress?.completed}/${jobStatus?.progress?.total}`
+        );
+        return jobStatus;
       }),
       catchError(err => {
+        console.error(`[getJobStatus] error:`, err);
         return of(null as any);
       })
     );
@@ -192,23 +198,23 @@ export class RepoBundleService {
     );
   }
 
-    /**
-     * Gets summary query for a candidate.
-     * Throws error for caller to handle (e.g., polling logic).
-     */
-    getReadmeSummary(username: string, repo: string): Observable<ReadmeSummaryResponse> {
-      const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/${encodeURIComponent(repo)}/readme-summary`;
-      return this.http.get<any>(url).pipe(
-        map(res => {
-          if (res?.status === 'success' && res?.data) return res.data as ReadmeSummaryResponse;
-          return res as ReadmeSummaryResponse;
-        }),
-        catchError(err => {
-          // Re-throw error for caller to handle (e.g., polling logic)
-          return throwError(() => err);
-        })
-      );
-    }
+  /**
+   * Gets summary query for a candidate.
+   * Throws error for caller to handle (e.g., polling logic).
+   */
+  getReadmeSummary(username: string, repo: string): Observable<ReadmeSummaryResponse> {
+    const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/${encodeURIComponent(repo)}/readme-summary`;
+    return this.http.get<any>(url).pipe(
+      map(res => {
+        if (res?.status === 'success' && res?.data) return res.data as ReadmeSummaryResponse;
+        return res as ReadmeSummaryResponse;
+      }),
+      catchError(err => {
+        // Re-throw error for caller to handle (e.g., polling logic)
+        return throwError(() => err);
+      })
+    );
+  }
 
   /**
    * List usernames recently viewed in this session.

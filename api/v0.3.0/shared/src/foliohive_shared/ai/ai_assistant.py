@@ -372,6 +372,52 @@ class AIAssistant:
             "query": query,
         }
 
+    def expand_micro_summary_to_html(
+        self,
+        *,
+        repo_name: str,
+        micro_summary: Dict[str, Any],
+        repo_metadata: Dict[str, Any],
+        model_tier: str = "default",
+    ) -> str:
+        """Expand concise micro-summary into detailed HTML summary for repo detail view.
+        
+        Takes a structured micro-summary and enriches it with deeper analysis
+        and recruiting insights for a richer single-repo view.
+        
+        Args:
+            repo_name: Repository name
+            micro_summary: Cached micro-summary dict with structured signals
+            repo_metadata: Repository metadata (name, description, language, etc.)
+            model_tier: Model tier for AI call
+            
+        Returns:
+            HTML string (detailed repo summary)
+        """
+        if not self.client:
+            return "<p>AI service not configured.</p>"
+
+        system_message = self._build_expand_micro_summary_system(repo_name)
+        payload = {
+            "repo_name": repo_name,
+            "micro_summary": micro_summary,
+            "repo_metadata": repo_metadata,
+        }
+        request_id = f"expand-micro-{int(time.time())}"
+        
+        result = self.call_ai_api(
+            system_message,
+            json.dumps(payload, ensure_ascii=False),
+            request_id,
+            model_tier=model_tier,
+            max_completion_tokens=3000,
+        )
+
+        # Result should be HTML; validate basic structure
+        if not result or result.startswith("{"):
+            return "<p>Failed to generate expanded summary.</p>"
+        
+        return result
 
     # ---------------------------------------------------------------------------
     # Helper methods to build system prompts for different tasks
@@ -574,4 +620,36 @@ class AIAssistant:
             "- Cite repository names for evidence.\n"
             "- Mention uncertainty if evidence is missing.\n"
             "- Return concise markdown suitable for recruiter UI.\n"
+        )
+
+    def _build_expand_micro_summary_system(self, repo_name: Optional[str] = None) -> str:
+        """Build system prompt for expanding micro-summary into detailed HTML.
+        
+        Takes a concise micro-summary and enriches it with deeper analysis
+        and recruiting insights for single-repo view.
+        """
+        repo_label = repo_name or "this repository"
+        return (
+            f"You are expanding a concise micro-summary of {repo_label} into a detailed, recruiting-focused HTML analysis.\n\n"
+            "Input: A structured micro-summary with keys: overview, key_features, tech_stack, architecture_patterns, skill_signals.\n\n"
+            "Your task:\n"
+            "1. Expand the overview with deeper context about the project's purpose and scope.\n"
+            "2. Elaborate on key features with technical depth and design decisions.\n"
+            "3. Analyze the tech stack for depth, breadth, and technology choices.\n"
+            "4. Provide recruiting insights about the architecture patterns and engineering practices.\n"
+            "5. Translate skill signals into specific developer competencies and expertise areas.\n"
+            "6. Suggest what team roles or project types this developer would be well-suited for.\n\n"
+            "Output rules:\n"
+            "- Return ONLY valid HTML (no Markdown, no code fences).\n"
+            "- Do not include <html>, <head>, or <body> tags.\n"
+            "- Use semantic tags: <h2>, <h3>, <p>, <ul>, <li>, <strong>, <code>, <a>.\n"
+            "- Keep it professional and concise (2000-3000 tokens max).\n"
+            "- Avoid speculation; use only information from the input micro-summary.\n\n"
+            "Structure:\n"
+            "- <h2>Overview</h2> with 1-2 paragraphs expanding on the project scope\n"
+            "- <h3>Technical Architecture</h3> with bullet analysis of design patterns and decisions\n"
+            "- <h3>Technology Stack</h3> with categorized list (languages, frameworks, tools)\n"
+            "- <h3>Developer Competencies</h3> with bullet list of inferred skills and expertise\n"
+            "- <h3>Engineering Practices</h3> with bullet observations about code organization, patterns\n"
+            "- <h3>Best Fit Roles</h3> with bullet list of team types and project types this developer excels in\n"
         )

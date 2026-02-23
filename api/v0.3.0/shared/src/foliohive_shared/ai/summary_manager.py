@@ -599,12 +599,15 @@ class SummaryManager:
         self,
         *,
         repo_name: str,
+        fingerprint: str,
         repo_metadata: Dict[str, Any],
         readme_content: Optional[str],
         config_files: Optional[Dict[str, Any]],
-        fingerprint: str,
     ) -> Dict[str, Any]:
         """Generate and cache JSON micro-summary for one repository."""
+
+        logger.info(f"Generating micro-summary for {repo_name} (fingerprint: {fingerprint}) with metadata: {repo_metadata.keys()} and readme length: {len(readme_content) if readme_content else 0} and config files: {list(config_files.keys()) if config_files else []}")
+
         cached = self.get_repo_micro_summary(repo_name, fingerprint)
         if cached:
             return {"cache_hit": True, "summary": cached}
@@ -615,6 +618,7 @@ class SummaryManager:
             "config": 2000,
             "reserve": 1000,
         }
+
         context = self.build_repo_context(
             repo_metadata=repo_metadata,
             readme_content=readme_content,
@@ -633,17 +637,86 @@ class SummaryManager:
             if isinstance(summary, dict) and self._validate_micro_summary_schema(summary):
                 key = self.build_repo_micro_summary_cache_key(repo_name, fingerprint)
                 cache_manager.save(key, summary)
-                return {
+                summary_response = {
                     "cache_hit": False,
                     "summary": summary,
                     "tokens_estimated": context.get("tokens_estimated", 0),
                 }
+                logger.info("[Count] %s : [Summary] %s", _, summary)
+                return summary_response
+            
             last_error = summary.get("error") if isinstance(summary, dict) else "invalid_response"
+            logger.info(f"Micro-summary generation attempt failed for {repo_name} (fingerprint: {fingerprint}): {last_error}")
 
         return {
             "error": "micro_summary_generation_failed",
             "reason": last_error or "schema_validation_failed",
             "tokens_estimated": context.get("tokens_estimated", 0),
+        }
+
+    def build_expanded_summary_cache_key(self, repo_name: str, fingerprint: str) -> str:
+        """Build cache key for expanded repo summary HTML."""
+        safe_repo = str(repo_name).replace("/", "_").replace(" ", "_")
+        safe_fingerprint = str(fingerprint).replace("/", "_").replace(" ", "_")
+        return f"repo_expanded_summary:{self.username}:{safe_repo}:{safe_fingerprint}"
+
+    def expand_repo_micro_summary(
+        self,
+        *,
+        repo_name: str,
+        micro_summary: Dict[str, Any],
+        repo_metadata: Dict[str, Any],
+        fingerprint: str,
+    ) -> Dict[str, Any]:
+        """Expand micro-summary into detailed HTML summary for repo detail view.
+        
+        This takes a concise micro-summary and enriches it with deeper analysis
+        and recruiting insights for the single-repo view.
+        
+        Args:
+            repo_name: Repository name
+            micro_summary: Cached micro-summary dict
+            repo_metadata: Repository metadata (name, description, language, etc.)
+            fingerprint: Repo fingerprint for cache invalidation
+            
+        Returns:
+            Dict with summary_html (cached) and metadata
+        """
+        cache_key = self.build_expanded_summary_cache_key(repo_name, fingerprint)
+        cached = cache_manager.get(cache_key)
+        if cached.get("status") == "valid":
+            cached_html = cached.get("data", {})
+            return {
+                "cache_hit": True,
+                "summary_html": cached_html.get("summary_html", ""),
+                "metadata": {"generated_at": cached_html.get("generated_at")},
+            }
+
+        # AI call to expand micro-summary into detailed HTML
+        start_time = time.time()
+        expanded_html = self.ai_assistant.expand_micro_summary_to_html(
+            repo_name=repo_name,
+            micro_summary=micro_summary,
+            repo_metadata=repo_metadata,
+            model_tier=MODEL_ASSIGNMENTS.get("readme", "default"),
+        )
+
+        # Cache the expanded summary
+        generated_at = datetime.now(timezone.utc).isoformat()
+        cache_payload = {
+            "summary_html": expanded_html,
+            "generated_at": generated_at,
+            "micro_summary_fingerprint": fingerprint,
+        }
+        cache_manager.save(cache_key, cache_payload)
+
+        return {
+            "cache_hit": False,
+            "summary_html": expanded_html,
+            "metadata": {
+                "generated_at": generated_at,
+                "generation_time_ms": int((time.time() - start_time) * 1000),
+            },
         }
 
     # ---------------------------------------------------------------------------
@@ -823,7 +896,8 @@ class SummaryManager:
             "readme_chunk": "",
             "config_chunks": [],
         }
-        
+        logger.info("[Context] %s", context)
+
         tokens_used = self.estimate_tokens(json.dumps(context))
         
         # Chunk README within budget

@@ -126,7 +126,10 @@ def _extract_requirements_txt(raw_content: str) -> dict:
         if text.startswith(("-", "--")):
             constraints.append(text)
             continue
-        dependencies.append(text)
+        # Extract package name only, strip version specifiers (==, >=, <=, ~=, !=, >, <)
+        package_name = re.split(r'[=!<>~]', text)[0].strip()
+        if package_name:
+            dependencies.append(package_name)
 
     return {
         "dependencies": dependencies,
@@ -147,16 +150,23 @@ def _extract_pyproject_toml(raw_content: str) -> dict:
     if isinstance(project, dict):
         deps = project.get("dependencies")
         if isinstance(deps, list):
-            project_deps = [str(dep) for dep in deps]
+            # Extract package names only, strip version specifiers
+            for dep in deps:
+                dep_str = str(dep)
+                package_name = re.split(r'[=!<>~\[;]', dep_str)[0].strip()
+                if package_name:
+                    project_deps.append(package_name)
 
-    poetry_deps: dict[str, str] = {}
+    poetry_deps: list[str] = []
     tool = parsed.get("tool") if isinstance(parsed, dict) else None
     if isinstance(tool, dict):
         poetry = tool.get("poetry")
         if isinstance(poetry, dict):
             deps = poetry.get("dependencies")
             if isinstance(deps, dict):
-                poetry_deps = {str(key): str(value) for key, value in deps.items()}
+                # Extract only package names, ignore version values
+                for key in deps.keys():
+                    poetry_deps.append(str(key))
 
     return {
         "project_dependencies": project_deps,
@@ -173,9 +183,10 @@ def _extract_package_json(raw_content: str) -> dict:
     if not isinstance(parsed, dict):
         return _error_payload(raw_content, "invalid_json_root")
 
-    dependencies = parsed.get("dependencies") if isinstance(parsed.get("dependencies"), dict) else {}
-    dev_dependencies = parsed.get("devDependencies") if isinstance(parsed.get("devDependencies"), dict) else {}
-    scripts = parsed.get("scripts") if isinstance(parsed.get("scripts"), dict) else {}
+    # Extract only package names, not version values
+    dependencies = list(parsed.get("dependencies", {}).keys()) if isinstance(parsed.get("dependencies"), dict) else []
+    dev_dependencies = list(parsed.get("devDependencies", {}).keys()) if isinstance(parsed.get("devDependencies"), dict) else []
+    scripts = list(parsed.get("scripts", {}).keys()) if isinstance(parsed.get("scripts"), dict) else []
 
     return {
         "dependencies": dependencies,
@@ -335,9 +346,3 @@ def get_config_extractor(file_path: str):
 
     return None
 
-
-def extract_config_content(file_path: str, raw_content: str) -> dict | None:
-    extractor = get_config_extractor(file_path)
-    if extractor is None:
-        return None
-    return extractor(raw_content or "")

@@ -43,7 +43,7 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
     try:
         return datetime.fromisoformat(text)
     except ValueError:
-        logger.debug("cache-manager: unable to parse iso timestamp %s", value)
+        logger.info("cache-manager: unable to parse iso timestamp %s", value)
         return None
 
 
@@ -194,7 +194,7 @@ class CacheManager:
                 try:
                     blob_client.delete_blob()
                 except Exception:  # pragma: no cover - fire-and-forget
-                    logger.debug("cache-manager: failed to delete expired key %s", cache_key)
+                    logger.info("cache-manager: failed to delete expired key %s", cache_key)
                 return {
                     "status": "expired",
                     "data": None,
@@ -373,7 +373,7 @@ class CacheManager:
                 if content:
                     display_name = path.split("/")[-1]
                     results[display_name] = content
-                    logger.debug(
+                    logger.info(
                         "Retrieved config from cache: repo=%s path=%s",
                         repo, path
                     )

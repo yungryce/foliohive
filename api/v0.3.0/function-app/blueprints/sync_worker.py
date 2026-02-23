@@ -138,7 +138,7 @@ def _fetch_repo_metadata(
     Does NOT fetch file contents (readme/config). Use _fetch_and_cache_files for that.
     
     Returns:
-        Dict with 'fingerprint' and 'api_usage' keys
+        Dict with 'fingerprint', 'api_usage', and 'default_branch' keys
     """
     logger.info(
         "[METADATA_FETCH_START] repo=%s - Fetching metadata (no file contents)",
@@ -161,15 +161,17 @@ def _fetch_repo_metadata(
         raise
 
     resolved_fingerprint = fingerprint or FingerprintManager.generate_metadata_fingerprint(repo_metadata)
+    default_branch = repo_metadata.get("default_branch")
 
     # Persist to table storage (metadata only)
-    _persist_repo_metadata(username, repo_name, repo_metadata, resolved_fingerprint, job_id)
-    logger.info("[METADATA_PERSISTED] repo=%s fingerprint=%s", repo_name, resolved_fingerprint)
+    _persist_repo_metadata(username, repo_name, repo_metadata, resolved_fingerprint, job_id, default_branch)
+    logger.info("[METADATA_PERSISTED] repo=%s fingerprint=%s default_branch=%s", repo_name, resolved_fingerprint, default_branch)
 
-    # Return both fingerprint and API usage for tracking
+    # Return fingerprint, api_usage, and default_branch to avoid redundant API calls downstream
     return {
         "fingerprint": resolved_fingerprint,
         "api_usage": usage_tracker.to_dict(),
+        "default_branch": default_branch,
     }
 
 
@@ -179,12 +181,13 @@ def _persist_repo_metadata(
     repo_metadata: Dict[str, Any],
     fingerprint: str,
     job_id: Optional[str] = None,
+    default_branch: Optional[str] = None,
 ) -> None:
     """Persist repo metadata to normalized tables.
     
     Persists to table_manager:
     - RepoLanguages: language statistics (partitioned by job_id)
-    - RepoGitHubMetadata: GitHub API fields + fingerprint
+    - RepoGitHubMetadata: GitHub API fields + fingerprint + default_branch
     
     File contents are handled separately by cache_worker._fetch_and_cache_files.
     """
@@ -225,7 +228,7 @@ def _persist_repo_metadata(
             table_manager.batch_upsert_repo_languages(lang_rows)
             logger.info("[PERSIST_LANGUAGES] repo=%s languages=%d job=%s", repo_name, len(lang_rows), job_id)
 
-    # 2. Persist GitHub metadata to normalized table (includes fingerprint)
+    # 2. Persist GitHub metadata to normalized table (includes fingerprint and default_branch)
     github_row = RepoGitHubMetadataRow(
         username=username,
         repo_name=repo_name,
@@ -245,9 +248,10 @@ def _persist_repo_metadata(
         github_created_at=repo_metadata.get("created_at"),
         github_updated_at=repo_metadata.get("updated_at"),
         github_pushed_at=repo_metadata.get("pushed_at"),
+        default_branch=default_branch,
     )
     table_manager.upsert_repo_github_metadata(github_row)
-    logger.info("[PERSIST_GITHUB_METADATA] repo=%s fingerprint=%s", repo_name, fingerprint)
+    logger.info("[PERSIST_GITHUB_METADATA] repo=%s fingerprint=%s default_branch=%s", repo_name, fingerprint, default_branch)
 
 
 def _update_job_progress(
@@ -263,6 +267,9 @@ def _update_job_progress(
     
     Status transitions: pending → synced (or failed).
     Cached status updated by cache_worker.
+    
+    Tracks all valid repo states (pending, synced, cached, summary_ready, failed)
+    to provide accurate job-level progress regardless of which worker transitions repos first.
     """
 
     status_value = "failed" if sync_failed else "synced"
@@ -274,6 +281,15 @@ def _update_job_progress(
         "sync_message_id": message_id,
         "synced_at": now if not sync_failed else None,
     }
+    logger.info(
+        "[JOB_PROGRESS_UPDATE] job=%s repo=%s user=%s status=%s message_id=%s",
+        job_id,
+        repo_name,
+        username,
+        status_value,
+        message_id or "<none>",
+    )
+
     if error:
         update_dict["error"] = error
     
@@ -283,37 +299,49 @@ def _update_job_progress(
         update_dict
     )
 
-    # Query RepoSyncStatus to calculate progress
+    # Query RepoSyncStatus to calculate progress (control source for total repo count)
     statuses = table_manager.list_repo_statuses(job_id)
+    total_repos = len(statuses)  # Complete job manifest
     
-    # Single pass to count and collect repo names
+    logger.info(
+        "[JOB_STATUS_QUERY] job=%s user=%s total_repos=%d",
+        job_id,
+        username,
+        total_repos,
+    )
+    logger.info(
+        "[JOB_STATUS_DETAILS] job=%s user=%s statuses=%s",
+        job_id,
+        username,
+        [{ "repo_name": s.get("repo_name"), "status": s.get("status") } for s in statuses],
+    )
+    
+    # Single pass: count all valid states
     status_counts = defaultdict(int)
     status_lists = defaultdict(list)
     
     for row in statuses:
         status = row.get("status")
-        if status in ("synced", "failed", "pending"):
-            status_counts[status] += 1
-            status_lists[status].append(row["repo_name"])
-    
-    synced_list = sorted(status_lists["synced"])
-    failed_list = sorted(status_lists["failed"])
-    pending_list = sorted(status_lists["pending"])
-    synced = bool(status_lists["synced"])  # For job status logic below
-    failed = bool(status_lists["failed"])  # For job status logic below
-    completed = status_counts["synced"]
+        repo = row.get("repo_name")
 
+        if status in ("synced", "summary_ready", "failed", "pending"):
+            status_counts[status] += 1
+            status_lists[status].append(repo)
+    
+    # Organize states by completion stage
+    synced_list = sorted(status_lists.get("synced", []))
+    failed_list = sorted(status_lists.get("failed", []))
+    pending_list = sorted(status_lists.get("pending", []))
+    
     logger.info(
-        "[JOB_PROGRESS_COMPUTED] job=%s user=%s completed=%d synced=%d failed=%d pending=%d",
+        "[JOB_PROGRESS_COMPUTED] job=%s user=%s total=%d synced=%d failed=%d pending=%d",
         job_id,
         username,
-        completed,
+        total_repos,
         len(synced_list),
         len(failed_list),
         len(pending_list),
     )
-
-    has_synced_repos = status_counts["synced"] > 0
 
     logger.info(
         "[JOB_PROGRESS] job=%s synced=%d failed=%d pending=%d",
@@ -322,6 +350,7 @@ def _update_job_progress(
         len(failed_list),
         len(pending_list),
     )
+    
     if failed_list:
         logger.warning(
             "[JOB_FAILURES] job=%s - %d repos failed to sync: %s",
@@ -342,21 +371,26 @@ def _update_job_progress(
     job = table_manager.get_job_metadata(username, job_id)
     current_status = job.get("status") if job else "queued"
     
-    # Set syncing status when first repo completes sync (transition from queued)
-    if has_synced_repos and current_status == "queued":
+    # Transition: queued → syncing when first repo completes sync
+    if len(synced_list) > 0 and current_status == "queued":
         table_manager.update_job_metadata(username, job_id, {"status": "syncing"})
-        logger.info("[JOB_SYNCING] job=%s - First metadata synced, job in progress", job_id)
+        logger.info(
+            "[JOB_SYNCING] job=%s - First repo completed (%d/%d), job in progress",
+            job_id,
+            len(synced_list),
+            total_repos,
+        )
     
-    # Update job-level status when all metadata synced. Investigate failures.
-    if not pending_list:
-        if synced:
-            # All repos synced metadata - files being cached in background
-            table_manager.update_job_metadata(username, job_id, {"status": "syncing"})
-            logger.info("[JOB_SYNCED] job=%s - All metadata synced, files caching in background", job_id)
-        elif failed:
-            # All failed - mark job as failed
-            table_manager.update_job_metadata(username, job_id, {"status": "failed"})
-            logger.error("[JOB_FAILED] job=%s - All repos failed", job_id)
+    completed_count = len(synced_list) + len(failed_list)
+    # Transition: syncing → metadata_ready when metadata synced (independent of files/summary)
+    if completed_count == total_repos and current_status == "syncing":
+        table_manager.update_job_metadata(username, job_id, {"status": "metadata_ready"})
+        logger.info(
+            "[JOB_METADATA_READY] job=%s - failed=%d - Metadata synced (%d repos), immediately available for display",
+            job_id,
+            len(failed_list),
+            len(synced_list),
+        )
 
 
 @bp.queue_trigger(arg_name="msg", queue_name="github-sync", connection="AzureWebJobsStorage")
@@ -413,12 +447,14 @@ def process_sync_job(msg: func.QueueMessage) -> None:
         
         # Enqueue file caching job (async background task)
         logger.info("[CACHE] Enqueuing file cache for job=%s repo=%s", job_id, repo_name)
+        default_branch = fetch_result.get("default_branch")
         enqueued = queue_manager.enqueue_cache(
             username=username,
             job_id=job_id,
             repo_name=repo_name,
             trace_id=trace_id,
-            fingerprint=fingerprint
+            fingerprint=fingerprint,
+            default_branch=default_branch,
         )
         if enqueued:
             logger.info("[CACHE_ENQUEUED] job=%s repo=%s - File caching job enqueued", job_id, repo_name)
