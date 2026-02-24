@@ -88,6 +88,13 @@ def _fetch_file_content(
         Dict with api_usage, readme_content (in-memory), and config_files (in-memory)
     """
 
+    logger.info(
+        "[FETCH_START] repo=%s job=%s ref=%s",
+        repo_name,
+        job_id or "<unknown>",
+        ref or "<default_branch>",
+    )
+
     repo_manager = _get_repo_manager(username)
 
     mode = "rest"
@@ -96,7 +103,7 @@ def _fetch_file_content(
 
     # Fetch files from GitHub (in-memory only)
     # Use default_branch from queue message to avoid redundant metadata API call
-    discovery = repo_manager.discover_repo_files(
+    discovery = repo_manager.get_repo_blob_files(
         username=username,
         repo=repo_name,
         mode=mode,
@@ -107,8 +114,40 @@ def _fetch_file_content(
     )
     
     config_files = discovery.get("config_files", {})
+    readme_files = discovery.get("readme_files", {})
     primary_readme = discovery.get("primary_readme", "")
     api_usage = discovery.get("api_usage", {})
+    paths_discovered = discovery.get("paths_discovered", 0)
+    
+    # Check for repos with no paths discovered at all
+    if paths_discovered == 0:
+        logger.error(
+            "[NO_PATHS_DISCOVERED] repo=%s/%s - no config/readme files could be discovered from path index or candidates",
+            username, repo_name
+        )
+    else:
+        logger.info(
+            "[PATHS_DISCOVERED] repo=%s/%s discovered=%d",
+            username, repo_name, paths_discovered
+        )
+    
+    # Validate file fetch completeness (only if paths were discovered)
+    total_discovered = len(config_files) + len(readme_files)
+    file_targets = api_usage.get("file_targets", {})
+    requested_count = len([ft for ft in file_targets.values() if ft.get("selected")])
+    missing_count = max(0, requested_count - total_discovered) if requested_count > 0 else 0
+    
+    if paths_discovered > 0:  # Only validate fetch if paths were discovered
+        if missing_count > 0 or requested_count != total_discovered:
+            logger.warning(
+                "[FILE_FETCH_VALIDATION] repo=%s mode=%s discovered=%d requested=%d returned=%d missing=%d readme_found=%s",
+                repo_name, mode, paths_discovered, requested_count, total_discovered, missing_count, bool(primary_readme)
+            )
+        else:
+            logger.info(
+                "[FILE_FETCH_VALIDATION] repo=%s mode=%s discovered=%d requested=%d returned=%d complete=True readme_found=%s",
+                repo_name, mode, paths_discovered, requested_count, total_discovered, bool(primary_readme)
+            )
     
     # Extract config signals (in-memory only, no blob persistence)
     extracted_config_files= repo_manager.extract_config_payloads(config_files)
@@ -123,6 +162,42 @@ def _fetch_file_content(
     if job_id and api_usage:
         _record_api_usage_for_file_cache(username, job_id, repo_name, api_usage)
     
+    # Log if proceeding with partial data
+    has_readme = bool(primary_readme)
+    config_count = len(extracted_config_files)
+    expected_configs = len(config_files)  # Pre-extraction count
+    
+    # Categorize the data quality
+    if paths_discovered == 0:
+        data_quality = "no_paths"
+    elif not has_readme and config_count == 0:
+        data_quality = "metadata_only"
+    elif not has_readme:
+        data_quality = "partial_no_readme"
+    elif config_count < expected_configs:
+        data_quality = "partial_incomplete_configs"
+    elif missing_count > 0:
+        data_quality = "fetch_failures"
+    else:
+        data_quality = "complete"
+    
+    if data_quality != "complete":
+        logger.warning(
+            "[DATA_QUALITY] repo=%s quality=%s discovered=%d readme=%s configs=%d/%d missing_files=%d",
+            repo_name, data_quality, paths_discovered, has_readme, config_count, expected_configs, missing_count
+        )
+    
+    logger.info(
+        "[FETCH_COMPLETE] repo=%s readme_length=%d extracted_configs=%s api_usage_summary=%s",
+        repo_name,
+        len(primary_readme),
+        list(extracted_config_files.keys()),
+        {
+            "total_requests": api_usage.get("totals", {}).get("requests", 0),
+            "cache_hits": sum(ft.get("cache_hits", 0) for ft in api_usage.get("file_targets", {}).values())
+        },
+    )
+
     return {
         "readme_content": primary_readme,
         "config_files": extracted_config_files,
@@ -320,14 +395,6 @@ def process_cache_job(msg: func.QueueMessage) -> None:
         # Fetch files and extract signals (in-memory only)
         fetch_result = _fetch_file_content(username, repo_name, job_id=job_id, ref=branch_ref)
         logger.info(
-            "[FETCH_RESULT] repo=%s api_usage=%s readme_length=%d config_files=%s",
-            repo_name,
-            fetch_result.get("api_usage"),
-            len(fetch_result.get("readme_content", "")),
-            list(fetch_result.get("config_files", {}).keys()),
-        )
-
-        logger.info(
             "[FETCH_RESULT_DETAIL] repo=%s readme_content=%s",
             repo_name,
             fetch_result.get("readme_content", "")[:100] if fetch_result.get("readme_content") else "<empty>",
@@ -370,6 +437,22 @@ def process_cache_job(msg: func.QueueMessage) -> None:
                 len(repo_languages),
                 languages_tuples,
             )
+
+            # Check if we have complete file data
+            has_readme = bool(fetch_result.get("readme_content"))
+            has_configs = bool(fetch_result.get("config_files"))
+            file_data_complete = has_readme or has_configs
+            
+            if not file_data_complete:
+                logger.warning(
+                    "[SUMMARY_GENERATION_LIMITED] repo=%s/%s generating_with=metadata_only readme=%s configs=%s",
+                    username, repo_name, has_readme, has_configs
+                )
+            elif not has_readme:
+                logger.info(
+                    "[SUMMARY_GENERATION_PARTIAL] repo=%s/%s generating_without_readme configs=%d",
+                    username, repo_name, len(fetch_result.get("config_files", {}))
+                )
 
             summary_result = summary_manager.generate_repo_micro_summary(
                 repo_name=repo_name,

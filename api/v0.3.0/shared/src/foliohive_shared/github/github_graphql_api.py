@@ -102,18 +102,51 @@ class GitHubGraphQLAPI:
         )
 
         if not isinstance(payload, dict):
+            logger.warning(
+                "[GRAPHQL_FETCH_FAILED] repo=%s/%s paths=%d reason=invalid_payload",
+                owner, repo, len(paths)
+            )
             return {path: None for path in paths}
+
+        # Check for GraphQL errors in response
+        errors = payload.get("errors")
+        if errors and isinstance(errors, list):
+            error_messages = [e.get("message", str(e)) for e in errors[:3]]
+            logger.warning(
+                "[GRAPHQL_PARTIAL_ERRORS] repo=%s/%s paths=%d error_count=%d sample_errors=%s",
+                owner, repo, len(paths), len(errors), error_messages
+            )
 
         repo_data = payload.get("data", {}).get("repository")
         if not isinstance(repo_data, dict):
+            logger.warning(
+                "[GRAPHQL_FETCH_FAILED] repo=%s/%s paths=%d reason=invalid_repository_data",
+                owner, repo, len(paths)
+            )
             return {path: None for path in paths}
 
         results: Dict[str, Optional[str]] = {}
+        none_count = 0
         for alias, path in alias_map.items():
             node = repo_data.get(alias)
             if not isinstance(node, dict) or node.get("isBinary"):
                 results[path] = None
+                none_count += 1
+                if not isinstance(node, dict):
+                    logger.info("[GRAPHQL_BLOB_NULL] repo=%s/%s path=%s reason=null_node", owner, repo, path)
+                elif node.get("isBinary"):
+                    logger.info("[GRAPHQL_BLOB_BINARY] repo=%s/%s path=%s", owner, repo, path)
                 continue
             text = node.get("text")
             results[path] = text if isinstance(text, str) else None
+            if text is None:
+                none_count += 1
+                logger.info("[GRAPHQL_BLOB_NULL] repo=%s/%s path=%s reason=null_text", owner, repo, path)
+        
+        if none_count > 0:
+            logger.info(
+                "[GRAPHQL_FETCH_SUMMARY] repo=%s/%s requested=%d fetched=%d failed=%d",
+                owner, repo, len(paths), len(paths) - none_count, none_count
+            )
+        
         return results

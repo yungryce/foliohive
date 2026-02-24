@@ -99,4 +99,10 @@ Client has 4 views that retrives and displays data from the server. These views 
 - Query: `summary_manager.query_from_summaries()` filters micro-summaries by query relevance then builds context from profile aggregate + filtered summaries. No raw file access during query.
 
 
+### NOTES
+This project is currently at a proof-of-concept stage. 
+- Features are changing rapidly during this early stage, so formal test coverage is not yet a priority. The focus is on iterating quickly and validating end-to-end functionality via manual testing and inspection. As the system stabilizes, more formal unit and integration tests will be added.
+- Tests are mostly being done with one Candidate at a time and manually inspecting results in the UI, tables and blob containers.
+- Tables are purged between test runs to reset state. This is done via `table_manager.py` functions that delete all rows in `SessionCandidates`, `JobMetadata`, `RepoLanguages`, `RepoGitHubMetadata`, and `RepoSyncStatus`.
+- Blob containers are also purged between test runs to reset state. This is done via `cache_manager.py` functions that delete all blobs in the relevant containers.
 

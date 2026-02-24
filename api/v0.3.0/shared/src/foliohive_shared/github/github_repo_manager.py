@@ -243,16 +243,34 @@ class GitHubRepoManager:
             usage=usage,
         )
 
-        logger.info("Repo tree response for %s/%s %s: truncated=%s, tree_count=%d", 
-                username, repo, ref or "default branch", tree_data.get("truncated", False), 
-                len(tree_data.get("tree", [])) if isinstance(tree_data, dict) else 0)
-    
+        # Explicit check for API call failures
+        if tree_data is None:
+            logger.error(
+                "[TREE_REQUEST_FAILED] repo=%s/%s ref=%s - API call returned None (possible auth, rate limit, or network error)",
+                username, repo, ref or "default"
+            )
+            return []
+        
         if not isinstance(tree_data, dict):
+            logger.error(
+                "[TREE_REQUEST_INVALID] repo=%s/%s ref=%s - API response is not a dict: type=%s",
+                username, repo, ref or "default", type(tree_data).__name__
+            )
             return []
 
         tree_items = tree_data.get("tree", [])
         if not isinstance(tree_items, list):
+            logger.error(
+                "[TREE_ITEMS_INVALID] repo=%s/%s ref=%s - 'tree' field is not a list: type=%s",
+                username, repo, ref or "default", type(tree_items).__name__
+            )
             return []
+
+        logger.info(
+            "[TREE_RESPONSE] repo=%s/%s ref=%s truncated=%s tree_count=%d",
+            username, repo, ref or "default branch", tree_data.get("truncated", False),
+            len(tree_items)
+        )
 
         paths: Set[str] = set()
         for item in tree_items:
@@ -265,7 +283,10 @@ class GitHubRepoManager:
                 paths.add(path)
         
         result = sorted(paths)
-        logger.info("Sorted paths: %s", result)
+        logger.info(
+            "[TREE_PARSED] repo=%s/%s ref=%s extracted_paths=%d",
+            username, repo, ref or "default", len(result)
+        )
         return result
 
 
@@ -381,7 +402,7 @@ class GitHubRepoManager:
         return selected
 
 
-    def discover_repo_files(
+    def get_repo_blob_files(
         self,
         username: Optional[str],
         repo: str,
@@ -405,9 +426,16 @@ class GitHubRepoManager:
 
         path_index = self.get_repo_path_index(username=username, repo=repo, ref=ref, usage=usage)
         path_index_set = set(path_index) if path_index else set()
+        
         if not path_index_set:
-            logger.info("Empty path index for %s/%s; falling back to candidate probes.", username, repo)
-        logger.info("[Path Index] %s", path_index_set)
+            logger.warning(
+                "[EMPTY_PATH_INDEX] repo=%s/%s - path_index is empty (check logs for [TREE_REQUEST_FAILED] or [TREE_REQUEST_INVALID] to determine if API call failed)",
+                username, repo
+            )
+        else:
+            logger.info("[PATH_INDEX_SUCCESS] repo=%s/%s paths=%d", username, repo, len(path_index_set))
+        
+        logger.info("[Path Index] contains %d paths for %s/%s", len(path_index_set), username, repo)
 
         target_paths = self._discover_file_target_paths_by_level(
             path_index=path_index_set,
@@ -415,7 +443,19 @@ class GitHubRepoManager:
             readme_candidates=readme_candidates,
             limit=limit,
         )
-        logger.info("[Target Paths] %s", target_paths)
+        if not target_paths:
+            logger.warning(
+                "[NO_PATHS_DISCOVERED] repo=%s/%s path_index_size=%d - no config/readme files found after discovery",
+                username, repo, len(path_index_set)
+            )
+            return {
+                "config_files": {},
+                "readme_files": {},
+                "primary_readme": "",
+                "api_usage": usage.to_dict(),
+                "paths_discovered": 0,
+            }
+        logger.info("[Discovered Paths] %s", target_paths)
 
         config_files: Dict[str, str] = {}
         readme_files: Dict[str, str] = {}
@@ -425,7 +465,9 @@ class GitHubRepoManager:
             mode = "rest"
 
         if mode == "graphql":
+            logger.info("Using GraphQL API for blob fetch in %s/%s for %d paths", username, repo, len(target_paths))
             graphql_client = GitHubGraphQLAPI(token=self.api.token, session=self.api.session)
+            logger.info("[GraphQL Fetch] Fetching %d files for %s/%s using GraphQL", len(target_paths), username, repo)
             content_map = self._fetch_file_targets_graphql(
                 graphql_client,
                 owner=username,
@@ -434,14 +476,50 @@ class GitHubRepoManager:
                 usage=usage,
             )
         else:
+            logger.info("Using REST API for blob fetch in %s/%s for %d paths", username, repo, len(target_paths))
             content_map = {}
+            rest_errors = []
             for path in target_paths:
-                content = self.get_file_content(username=username, repo=repo, path=path, usage=usage)
-                content_map[path] = content
+                try:
+                    content = self.get_file_content(username=username, repo=repo, path=path, usage=usage)
+                    content_map[path] = content
+                    if content is None:
+                        rest_errors.append({"path": path, "reason": "fetch_failed"})
+                except Exception as exc:
+                    logger.warning("[REST_FETCH_ERROR] repo=%s path=%s error=%s", repo, path, exc)
+                    content_map[path] = None
+                    rest_errors.append({"path": path, "reason": f"exception: {exc}"})
+            
+            if rest_errors:
+                logger.warning(
+                    "[REST_FETCH_ERRORS] repo=%s/%s failed=%d/%d sample=%s",
+                    username, repo, len(rest_errors), len(target_paths), rest_errors[:3]
+                )
 
+        # Validate content_map has entries for all target_paths
+        if len(content_map) != len(target_paths):
+            missing = [p for p in target_paths if p not in content_map]
+            logger.error(
+                "[CONTENT_MAP_INCOMPLETE] repo=%s/%s mode=%s requested=%d returned=%d missing=%d sample_missing=%s",
+                username, repo, mode, len(target_paths), len(content_map), len(missing), missing[:5]
+            )
+            # Add missing paths to content_map as None
+            for path in missing:
+                content_map[path] = None
+
+        # Track fetch failures for detailed logging
+        fetch_failures: Dict[str, str] = {}
+        
         for path in target_paths:
             content = content_map.get(path)
             if not content:
+                # Categorize failure reason
+                if content is None:
+                    fetch_failures[path] = "fetch_failed_or_not_found"
+                elif content == "":
+                    fetch_failures[path] = "empty_content"
+                else:
+                    fetch_failures[path] = "unknown"
                 continue
             usage.mark_file_target_found(path, selected=True, bytes_returned=len(content))
             if os.path.basename(path).lower() in readme_set:
@@ -449,15 +527,36 @@ class GitHubRepoManager:
             else:
                 config_files[path] = content[:max_chars]
 
+        if fetch_failures:
+            # Log first 5 failures with details
+            sample_failures = list(fetch_failures.items())[:5]
+            logger.warning(
+                "[FILE_FETCH_FAILURES] repo=%s/%s mode=%s failed=%d/%d sample=%s",
+                username, repo, mode, len(fetch_failures), len(target_paths), sample_failures
+            )
+
         primary_readme = ""
         if readme_files:
             primary_readme = readme_files.get("README.md") or next(iter(readme_files.values()))
+
+        logger.info(
+            "Discovery complete for %s/%s mode=%s candidates=%d found=%d readme=%d config=%d primary_readme=%s",
+            username,
+            repo,
+            mode,
+            len(target_paths),
+            len(config_files) + len(readme_files),
+            len(readme_files),
+            len(config_files),
+            bool(primary_readme),
+        )
 
         return {
             "config_files": config_files,
             "readme_files": readme_files,
             "primary_readme": primary_readme,
             "api_usage": usage.to_dict(),
+            "paths_discovered": len(target_paths),
         }
 
     def get_standard_config_files(
@@ -665,6 +764,35 @@ class GitHubRepoManager:
     def _chunk_paths(paths: Sequence[str], chunk_size: int) -> List[List[str]]:
         return [list(paths[i : i + chunk_size]) for i in range(0, len(paths), chunk_size)]
 
+    @staticmethod
+    def categorize_fetch_failure(content: Optional[str], context: Optional[Dict[str, Any]] = None) -> str:
+        """Categorize why a file fetch might have failed.
+        
+        Args:
+            content: The content returned (None, empty string, or actual content)
+            context: Optional context dict with keys like 'status_code', 'rate_limited', etc.
+        
+        Returns:
+            Category string: "not_found" | "rate_limited" | "api_error" | "empty" | "success" | "unknown"
+        """
+        if context:
+            if context.get("rate_limited"):
+                return "rate_limited"
+            status_code = context.get("status_code")
+            if status_code == 404:
+                return "not_found"
+            if status_code and status_code >= 400:
+                return "api_error"
+        
+        if content is None:
+            return "not_found"
+        if content == "":
+            return "empty"
+        if isinstance(content, str) and len(content) > 0:
+            return "success"
+        
+        return "unknown"
+
     def _fetch_file_targets_graphql(
         self,
         graphql_client: GitHubGraphQLAPI,
@@ -676,16 +804,58 @@ class GitHubRepoManager:
         chunk_size: int = 50,
     ) -> Dict[str, Optional[str]]:
         results: Dict[str, Optional[str]] = {}
-        for chunk in self._chunk_paths(paths, chunk_size):
+        chunks = list(self._chunk_paths(paths, chunk_size))
+        total_chunks = len(chunks)
+        
+        logger.info("[GraphQL Fetch] Starting fetch for %d paths in %d chunks for %s/%s", len(paths), total_chunks, owner, repo)
+        for chunk_idx, chunk in enumerate(chunks):
             if usage.rate_limited:
+                remaining_chunks = total_chunks - chunk_idx
+                remaining_paths = sum(len(c) for c in chunks[chunk_idx:])
+                logger.warning(
+                    "[GRAPHQL_RATE_LIMITED] repo=%s/%s chunk=%d/%d remaining_chunks=%d remaining_paths=%d",
+                    owner, repo, chunk_idx + 1, total_chunks, remaining_chunks, remaining_paths
+                )
+                # Fill remaining paths with None to ensure complete result set
+                for remaining_chunk in chunks[chunk_idx:]:
+                    for path in remaining_chunk:
+                        results[path] = None
                 break
+            
+            logger.info(
+                "[GRAPHQL_FETCH_CHUNK] repo=%s/%s chunk=%d/%d paths_in_chunk=%d",
+                owner, repo, chunk_idx + 1, total_chunks, len(chunk)
+            )
+
             fetched = graphql_client.fetch_blobs(
                 owner=owner,
                 repo=repo,
                 paths=list(chunk),
                 usage=usage,
             )
+
+            logger.info(
+                "[GRAPHQL_FETCH_RESULT] repo=%s/%s chunk=%d/%d fetched=%d",
+                owner, repo, chunk_idx + 1, total_chunks, len(fetched)
+            )
+
             results.update(fetched)
-        logger.info("GraphQL fetch for %s/%s paths=%d fetched=%d", owner, repo, len(paths), len(results))
+        
+        # Validate that all input paths have results
+        missing_paths = [p for p in paths if p not in results]
+        if missing_paths:
+            logger.error(
+                "[GRAPHQL_MISSING_PATHS] repo=%s/%s requested=%d returned=%d missing=%d sample_missing=%s",
+                owner, repo, len(paths), len(results), len(missing_paths), missing_paths[:5]
+            )
+            # Add missing paths as None to ensure complete result set
+            for path in missing_paths:
+                results[path] = None
+        
+        success_count = sum(1 for v in results.values() if v is not None)
+        logger.info(
+            "GraphQL fetch for %s/%s paths=%d fetched=%d successful=%d failed=%d",
+            owner, repo, len(paths), len(results), success_count, len(results) - success_count
+        )
         return results
 
