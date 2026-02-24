@@ -113,6 +113,13 @@ def _fetch_file_content(
         readme_max_chars=READ_ME_EXCERPT_MAX_CHARS,
     )
     
+    logger.info(
+        "[FETCH_DISCOVERY] repo=%s mode=%s discovery_keys=%s",
+        repo_name,
+        mode,
+        sorted(discovery.keys()),
+    )
+
     config_files = discovery.get("config_files", {})
     readme_files = discovery.get("readme_files", {})
     primary_readme = discovery.get("primary_readme", "")
@@ -150,11 +157,23 @@ def _fetch_file_content(
             )
     
     # Extract config signals (in-memory only, no blob persistence)
-    extracted_config_files= repo_manager.extract_config_payloads(config_files)
+    extracted_config_content = repo_manager.extract_config_payloads(config_files)
+    
+    # Serialize extracted dicts to JSON strings for consistent token estimation
+    # build_repo_context() expects string values for accurate token counting
+    serialized_config_files = {}
+    for filename, payload in extracted_config_content.items():
+        if isinstance(payload, dict):
+            serialized_config_files[filename] = json.dumps(payload)
+        else:
+            # Fallback for non-dict payloads (shouldn't occur, but defensive)
+            serialized_config_files[filename] = str(payload)
+    extracted_config_content = serialized_config_files
+    
     logger.info(
         "[EXTRACTION_COMPLETE] repo=%s extracted=%d total_discovered=%d",
         repo_name,
-        len(extracted_config_files),
+        len(extracted_config_content),
         len(config_files),
     )
     
@@ -164,7 +183,7 @@ def _fetch_file_content(
     
     # Log if proceeding with partial data
     has_readme = bool(primary_readme)
-    config_count = len(extracted_config_files)
+    config_count = len(extracted_config_content)
     expected_configs = len(config_files)  # Pre-extraction count
     
     # Categorize the data quality
@@ -191,7 +210,7 @@ def _fetch_file_content(
         "[FETCH_COMPLETE] repo=%s readme_length=%d extracted_configs=%s api_usage_summary=%s",
         repo_name,
         len(primary_readme),
-        list(extracted_config_files.keys()),
+        list(extracted_config_content.keys()),
         {
             "total_requests": api_usage.get("totals", {}).get("requests", 0),
             "cache_hits": sum(ft.get("cache_hits", 0) for ft in api_usage.get("file_targets", {}).values())
@@ -200,7 +219,7 @@ def _fetch_file_content(
 
     return {
         "readme_content": primary_readme,
-        "config_files": extracted_config_files,
+        "config_content": extracted_config_content,
         "api_usage": api_usage,
     }
 
@@ -401,8 +420,8 @@ def process_cache_job(msg: func.QueueMessage) -> None:
         )
 
         # Log extracted config content
-        extracted_config_files = fetch_result.get("config_files", {})
-        for config_name, config_payload in extracted_config_files.items():
+        extracted_config_content = fetch_result.get("config_content", {})
+        for config_name, config_payload in extracted_config_content.items():
             logger.info(
                 "[EXTRACTED_CONFIG] repo=%s config=%s payload=%s",
                 repo_name,
@@ -413,15 +432,34 @@ def process_cache_job(msg: func.QueueMessage) -> None:
         summary_ready = False
         try:
             summary_manager = SummaryManager(username=username)
+
             metadata_row = table_manager.get_repo_github_metadata(username, repo_name) or {}
+            logger.info(
+                "[METADATA_ROW] repo=%s metadata_keys=%s",
+                repo_name,
+                sorted(metadata_row.keys()) if metadata_row else "<empty>"
+            )
+
             repo_languages_raw = table_manager.get_repo_languages(job_id, repo_name)
+            logger.info(
+                "[REPO_LANGUAGES_RAW] repo=%s languages_count=%d",
+                repo_name,
+                len(repo_languages_raw),
+            )
+
             repo_languages = [
                 lang for lang in repo_languages_raw
                 if lang.get("repo_name") == repo_name
             ]
+            logger.info(
+                "[REPO_LANGUAGES_FILTERED] repo=%s languages_count=%d",
+                repo_name,
+                len(repo_languages),
+            )
+
             if len(repo_languages) != len(repo_languages_raw):
                 logger.warning(
-                    "[REPO_LANGUAGES_FILTERED] repo=%s requested=%d retained=%d",
+                    "[REPO_LANGUAGES_FILTER] repo=%s requested=%d retained=%d",
                     repo_name,
                     len(repo_languages_raw),
                     len(repo_languages),
@@ -440,7 +478,7 @@ def process_cache_job(msg: func.QueueMessage) -> None:
 
             # Check if we have complete file data
             has_readme = bool(fetch_result.get("readme_content"))
-            has_configs = bool(fetch_result.get("config_files"))
+            has_configs = bool(fetch_result.get("config_content"))
             file_data_complete = has_readme or has_configs
             
             if not file_data_complete:
@@ -451,7 +489,7 @@ def process_cache_job(msg: func.QueueMessage) -> None:
             elif not has_readme:
                 logger.info(
                     "[SUMMARY_GENERATION_PARTIAL] repo=%s/%s generating_without_readme configs=%d",
-                    username, repo_name, len(fetch_result.get("config_files", {}))
+                    username, repo_name, len(fetch_result.get("config_content", {}))
                 )
 
             summary_result = summary_manager.generate_repo_micro_summary(
@@ -468,7 +506,7 @@ def process_cache_job(msg: func.QueueMessage) -> None:
                     },
                 },
                 readme_content=fetch_result.get("readme_content"),
-                config_files=fetch_result.get("config_files", {}),
+                config_content=fetch_result.get("config_content", {}),
             )
             logger.info("[MICRO_SUMMARY_RESULT] repo=%s result_keys=%s", repo_name, sorted(summary_result.keys()))
             

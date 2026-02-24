@@ -94,6 +94,7 @@ STANDARD_CONFIG_FILE_CANDIDATES: Sequence[str] = (
 
 def get_standard_config_file_candidates(*, limit: int = 40) -> List[str]:
     """Return a deterministic, bounded list of config file paths to try-fetch."""
+    logger.info("Generating standard config file candidates with limit=%d", limit)
     bounded = list(STANDARD_CONFIG_FILE_CANDIDATES)[: max(0, int(limit))]
     # De-dupe while preserving order
     seen = set()
@@ -104,6 +105,10 @@ def get_standard_config_file_candidates(*, limit: int = 40) -> List[str]:
         seen.add(path)
         result.append(path)
         logger.info("Added standard config file candidate: %s", path)
+    
+    logger.info("***********************cdcl.********************")
+    logger.info("Generated count=%d standard config file candidates", len(result))
+    
     return result
 
 

@@ -602,11 +602,23 @@ class SummaryManager:
         fingerprint: str,
         repo_metadata: Dict[str, Any],
         readme_content: Optional[str],
-        config_files: Optional[Dict[str, Any]],
+        config_content: Optional[Dict[str, str]],
     ) -> Dict[str, Any]:
-        """Generate and cache JSON micro-summary for one repository."""
+        """Generate and cache JSON micro-summary for one repository.
+        
+        Args:
+            repo_name: Repository name
+            fingerprint: Repo fingerprint for cache invalidation
+            repo_metadata: Repository metadata (name, description, languages, stats)
+            readme_content: README file content (string)
+            config_content: Dict of {filename: json_string} with extracted config payloads
+                           (values are JSON-serialized strings, not raw dicts)
+        
+        Returns:
+            Dict with cache_hit, summary, and optionally error/reason
+        """
 
-        logger.info(f"Generating micro-summary for {repo_name} (fingerprint: {fingerprint}) with metadata: {repo_metadata.keys()} and readme length: {len(readme_content) if readme_content else 0} and config files: {list(config_files.keys()) if config_files else []}")
+        logger.info(f"Generating micro-summary for {repo_name} (fingerprint: {fingerprint}) with metadata: {repo_metadata.keys()} and readme length: {len(readme_content) if readme_content else 0} and config files: {list(config_content.keys()) if config_content else []}")
 
         cached = self.get_repo_micro_summary(repo_name, fingerprint)
         if cached:
@@ -622,9 +634,12 @@ class SummaryManager:
         context = self.build_repo_context(
             repo_metadata=repo_metadata,
             readme_content=readme_content,
-            config_files=config_files or {},
+            config_files=config_content or {},
             token_budget=token_budget,
         )
+
+        logger.info("*********************dlnek*********************")
+        logger.info(f"Context built for {repo_name} (fingerprint: {fingerprint}): {context.keys()} with estimated tokens: {context.get('tokens_estimated', 0)}")
 
         attempts = 2
         last_error = None
@@ -730,10 +745,13 @@ class SummaryManager:
         """Estimate token count using char-based approximation.
         
         Args:
-            text: Input text to estimate
+            text: Input text to estimate (must be string)
             
         Returns:
             Estimated token count (1 token ≈ 4 chars)
+            
+        Note:
+            Returns 0 if text is empty or None. Assumes 1 token ≈ 4 characters.
         """
         if not text:
             return 0
@@ -781,11 +799,11 @@ class SummaryManager:
         
         Args:
             filename: Name of config file (used to detect type)
-            content: File content
+            content: File content (must be string, typically JSON-serialized from extracted dict)
             max_tokens: Maximum tokens allowed
             
         Returns:
-            Chunked content optimized per file type
+            Chunked content optimized per file type (string)
         """
         if not content:
             return ""
@@ -879,8 +897,10 @@ class SummaryManager:
         
         Args:
             repo_metadata: Repository metadata (name, description, languages, etc.)
-            readme_content: Full README content
-            config_files: Dict of {filename: content}
+            readme_content: Full README content (string)
+            config_files: Dict of {filename: content_string}. Values MUST be JSON strings
+                         (pre-serialized from extracted dicts). Token estimation depends on
+                         receiving strings, not dicts.
             token_budget: Token budget allocation dict
             
         Returns:
@@ -897,6 +917,7 @@ class SummaryManager:
         }
 
         tokens_used = self.estimate_tokens(json.dumps(context))
+        logger.info(f"Initial context for {context['repo_name']} estimated tokens: {tokens_used}")
         
         # Chunk README within budget
         if readme_content and token_budget.get("readme", 0) > 0:
@@ -912,6 +933,7 @@ class SummaryManager:
             
             for filename, content in config_files.items():
                 chunked = self.chunk_config_file(filename, content, config_budget_per_file)
+                logger.info(f"[Chunk] filename: {filename}, original length: {len(content)}, chunked length: {len(chunked)}, budget: {config_budget_per_file} tokens...")
                 context["config_chunks"].append({
                     "filename": filename,
                     "content": chunked

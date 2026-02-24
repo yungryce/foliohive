@@ -243,33 +243,22 @@ class GitHubRepoManager:
             usage=usage,
         )
 
-        # Explicit check for API call failures
-        if tree_data is None:
-            logger.error(
-                "[TREE_REQUEST_FAILED] repo=%s/%s ref=%s - API call returned None (possible auth, rate limit, or network error)",
-                username, repo, ref or "default"
-            )
-            return []
-        
-        if not isinstance(tree_data, dict):
-            logger.error(
-                "[TREE_REQUEST_INVALID] repo=%s/%s ref=%s - API response is not a dict: type=%s",
-                username, repo, ref or "default", type(tree_data).__name__
-            )
-            return []
+        logger.info("*******************ertyu*********************")
+        logger.info("[Tree Data] repo=%s/%s ref=%s data=%s", username, repo, ref or "default", tree_data)
 
         tree_items = tree_data.get("tree", [])
-        if not isinstance(tree_items, list):
-            logger.error(
-                "[TREE_ITEMS_INVALID] repo=%s/%s ref=%s - 'tree' field is not a list: type=%s",
-                username, repo, ref or "default", type(tree_items).__name__
-            )
+        if not isinstance(tree_data, dict) or tree_data is None or not isinstance(tree_items, list):
             return []
 
         logger.info(
             "[TREE_RESPONSE] repo=%s/%s ref=%s truncated=%s tree_count=%d",
             username, repo, ref or "default branch", tree_data.get("truncated", False),
             len(tree_items)
+        )
+
+        logger.info(
+            "[TREE_LOOP_START] repo=%s/%s tree_items_type=%s tree_items_count=%d",
+            username, repo, type(tree_items).__name__, len(tree_items) if isinstance(tree_items, list) else "N/A"
         )
 
         paths: Set[str] = set()
@@ -282,6 +271,11 @@ class GitHubRepoManager:
             if path:
                 paths.add(path)
         
+        logger.info(
+            "[TREE_LOOP_END] repo=%s/%s paths_collected=%d",
+            username, repo, len(paths)
+        )
+
         result = sorted(paths)
         logger.info(
             "[TREE_PARSED] repo=%s/%s ref=%s extracted_paths=%d",
@@ -419,9 +413,16 @@ class GitHubRepoManager:
             raise ValueError(USERNAME_REQUIRED_ERROR)
 
         usage = ApiUsageTracker(owner=username, repo=repo)
+        logger.info("****************************bnjbv*****************************")
+        logger.info("[Starting blob fetch] repo=%s/%s mode=%s ref=%s", username, repo, mode, ref or "default")
         file_candidates = get_standard_config_file_candidates(limit=limit)
+        logger.info("******************di88888d*******************")
+        logger.info("[File Candidates8888888888] repo=%s, candidates=%s", repo, file_candidates)
         readme_candidates = ["README.md", "README.rst", "README.txt", "readme.md"]
         readme_set = {name.lower() for name in readme_candidates}
+        logger.info("[Readme Candidates] repo=%s, candidates=%s", repo, readme_candidates)
+
+        logger.info("***************************feik*****************************")
         logger.info("[Candidates] repo=%s, readme=%s, files=%s", repo, readme_set, file_candidates)
 
         path_index = self.get_repo_path_index(username=username, repo=repo, ref=ref, usage=usage)
@@ -467,7 +468,7 @@ class GitHubRepoManager:
         if mode == "graphql":
             logger.info("Using GraphQL API for blob fetch in %s/%s for %d paths", username, repo, len(target_paths))
             graphql_client = GitHubGraphQLAPI(token=self.api.token, session=self.api.session)
-            logger.info("[GraphQL Fetch] Fetching %d files for %s/%s using GraphQL", len(target_paths), username, repo)
+            logger.info("[GraphQL Fetch--] Fetching %d files for %s/%s using GraphQL", len(target_paths), username, repo)
             content_map = self._fetch_file_targets_graphql(
                 graphql_client,
                 owner=username,

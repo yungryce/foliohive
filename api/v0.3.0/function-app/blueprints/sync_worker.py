@@ -302,19 +302,6 @@ def _update_job_progress(
     statuses = table_manager.list_repo_statuses(job_id)
     total_repos = len(statuses)  # Complete job manifest
     
-    logger.info(
-        "[JOB_STATUS_QUERY] job=%s user=%s total_repos=%d",
-        job_id,
-        username,
-        total_repos,
-    )
-    logger.info(
-        "[JOB_STATUS_DETAILS] job=%s user=%s statuses=%s",
-        job_id,
-        username,
-        [{ "repo_name": s.get("repo_name"), "status": s.get("status") } for s in statuses],
-    )
-    
     # Single pass: count all valid states
     status_counts = defaultdict(int)
     status_lists = defaultdict(list)
@@ -331,24 +318,6 @@ def _update_job_progress(
     synced_list = sorted(status_lists.get("synced", []))
     failed_list = sorted(status_lists.get("failed", []))
     pending_list = sorted(status_lists.get("pending", []))
-    
-    logger.info(
-        "[JOB_PROGRESS_COMPUTED] job=%s user=%s total=%d synced=%d failed=%d pending=%d",
-        job_id,
-        username,
-        total_repos,
-        len(synced_list),
-        len(failed_list),
-        len(pending_list),
-    )
-
-    logger.info(
-        "[JOB_PROGRESS] job=%s synced=%d failed=%d pending=%d",
-        job_id,
-        len(synced_list),
-        len(failed_list),
-        len(pending_list),
-    )
     
     if failed_list:
         logger.warning(

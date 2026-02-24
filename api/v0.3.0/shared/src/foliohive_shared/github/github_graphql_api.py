@@ -30,11 +30,24 @@ class GitHubGraphQLAPI:
     ) -> Optional[Dict[str, Any]]:
         headers = {"Authorization": f"bearer {self.token}"} if self.token else {}
         payload = {"query": query, "variables": variables or {}}
+
+        logger.info("[GITHUB_GRAPHQL_REQUEST] purpose=%s query=%s variables=%s", purpose, query[:500], variables)
+
         try:
+            logger.info("******************dudk*******************")
             response = self.session.post(self.GRAPHQL_URL, json=payload, headers=headers, timeout=30)
+            logger.info("[GITHUB_GRAPHQL_HTTP] purpose=%s status=%d", purpose, response.status_code)
         except requests.RequestException as exc:
+            logger.info("******************duedfdk*******************")
             logger.warning("[GITHUB_GRAPHQL_ERROR] Request failed: %s", exc)
             return None
+        except Exception as exc:
+            logger.info("******************duwefdk*******************")
+            logger.error("[GITHUB_GRAPHQL_ERROR] Unexpected error: %s", exc)
+            return None
+
+        logger.info("*******************cnkn********************")
+        logger.info("[GITHUB_GRAPHQL_RESPONSE] purpose=%s status=%d response_length=%d", purpose, response.status_code, len(response.content))
 
         rate_remaining = response.headers.get("X-RateLimit-Remaining")
         status = response.status_code
