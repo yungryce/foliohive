@@ -79,6 +79,8 @@ class GitHubAPI:
             method, endpoint, has_auth, params or {}
         )
 
+        # STEP 1: Make the HTTP request with specific exception handling
+        response = None
         try:
             response = self.session.request(
                 method=method,
@@ -88,62 +90,124 @@ class GitHubAPI:
                 json=data,
                 timeout=timeout,
             )
+        except requests.Timeout as exc:
+            logger.error("[GITHUB_API_TIMEOUT] %s %s (timeout=%s)", method, full_url, timeout)
+            return None
+        except requests.ConnectionError as exc:
+            logger.error("[GITHUB_API_CONNECTION_ERROR] %s %s (error=%s)", method, full_url, exc)
+            return None
         except requests.RequestException as exc:
-            logger.warning("[GITHUB_API_ERROR] Request failed: %s %s (%s)", method, full_url, exc)
+            logger.error("[GITHUB_API_REQUEST_ERROR] %s %s (error=%s)", method, full_url, exc)
             return None
-
-        # Log rate limit headers for every response
-        rate_limit = response.headers.get("X-RateLimit-Limit", "unknown")
-        rate_remaining = response.headers.get("X-RateLimit-Remaining", "unknown")
-        rate_reset = response.headers.get("X-RateLimit-Reset", "unknown")
         
-        logger.info(
-            "[GITHUB_API_RESPONSE] %s status=%d rate_limit=%s/%s reset=%s",
-            endpoint, response.status_code, rate_remaining, rate_limit, rate_reset
-        )
+        # STEP 2: Validate response object exists
+        if response is None:
+            logger.error("[GITHUB_API_RESPONSE_IS_NONE] %s %s - response object is None", method, full_url)
+            return None
 
-        rate_remaining = response.headers.get("X-RateLimit-Remaining")
+        # STEP 3: Access status code separately
+        status_code = None
+        try:
+            status_code = response.status_code
+            logger.info("[GITHUB_API_STATUS_SUCCESS] %s status=%d", endpoint, status_code)
+        except Exception as exc:
+            logger.error("[GITHUB_API_STATUS_ACCESS_FAILED] %s - cannot access status_code: %s", endpoint, exc)
+            return None
+
+        # STEP 4: Access headers separately
+        try:
+            rate_limit = response.headers.get("X-RateLimit-Limit", "unknown")
+            rate_remaining = response.headers.get("X-RateLimit-Remaining", "unknown")
+            rate_reset = response.headers.get("X-RateLimit-Reset", "unknown")
+            logger.info(
+                "[GITHUB_API_RESPONSE] %s status=%d rate_limit=%s/%s reset=%s",
+                endpoint, status_code, rate_remaining, rate_limit, rate_reset
+            )
+        except Exception as exc:
+            logger.error("[GITHUB_API_HEADERS_ACCESS_FAILED] %s - cannot access headers: %s", endpoint, exc)
+            rate_limit = "unknown"
+            rate_remaining = "unknown"
+            rate_reset = "unknown"
+
+        # STEP 5: Record usage if provided
         if usage:
-            usage.record_request(
-                method=method,
-                endpoint=endpoint,
-                endpoint_kind="rest",
-                purpose=purpose,
-                target_key=target_key,
-                status_code=response.status_code,
-                rate_remaining=int(rate_remaining) if isinstance(rate_remaining, str) and rate_remaining.isdigit() else None,
-                cache_hit=False,
-            )
+            try:
+                rate_remaining_int = None
+                if isinstance(rate_remaining, str) and rate_remaining.isdigit():
+                    rate_remaining_int = int(rate_remaining)
+                usage.record_request(
+                    method=method,
+                    endpoint=endpoint,
+                    endpoint_kind="rest",
+                    purpose=purpose,
+                    target_key=target_key,
+                    status_code=status_code,
+                    rate_remaining=rate_remaining_int,
+                    cache_hit=False,
+                )
+            except Exception as exc:
+                logger.warning("[GITHUB_API_USAGE_RECORDING_FAILED] %s: %s", endpoint, exc)
 
-        # Respect GitHub rate limits: if we're limited, log and return None so caller can decide.
-        if response.status_code == 403 and rate_remaining == "0":
-            reset = response.headers.get("X-RateLimit-Reset")
-            logger.error(
-                "[GITHUB_RATE_LIMIT] Rate limit exceeded for %s; remaining=0/%s reset=%s",
-                full_url, rate_limit, reset
-            )
-            if usage:
-                usage.mark_rate_limited()
+        # STEP 6: Respect GitHub rate limits
+        try:
+            if status_code == 403 and rate_remaining == "0":
+                reset = response.headers.get("X-RateLimit-Reset")
+                logger.error(
+                    "[GITHUB_RATE_LIMIT] Rate limit exceeded for %s; remaining=0/%s reset=%s",
+                    full_url, rate_limit, reset
+                )
+                if usage:
+                    usage.mark_rate_limited()
+                return None
+        except Exception as exc:
+            logger.error("[GITHUB_API_RATE_LIMIT_CHECK_FAILED] %s: %s", endpoint, exc)
+
+        # STEP 7: Handle specific status codes
+        if status_code == 404:
+            logger.info("[GITHUB_API_NOT_FOUND] %s", full_url)
             return None
 
-        if response.status_code == 404:
-            logger.info("GitHub resource not found: %s", full_url)
-            return None
-
-        if 200 <= response.status_code < 300:
+        # STEP 8: Handle successful responses (200-299)
+        if 200 <= status_code < 300:
             if accept_raw:
-                return response.text
+                try:
+                    return response.text
+                except Exception as exc:
+                    logger.error("[GITHUB_API_TEXT_ACCESS_FAILED] %s - cannot access response.text: %s", endpoint, exc)
+                    return None
+            
+            # Try JSON parsing
             try:
                 return response.json()
-            except ValueError:
-                return response.text or None
+            except ValueError as exc:
+                logger.warning("[GITHUB_API_JSON_PARSE_ERROR] %s - falling back to text: %s", endpoint, exc)
+                try:
+                    return response.text or None
+                except Exception as exc2:
+                    logger.error("[GITHUB_API_TEXT_FALLBACK_FAILED] %s - cannot access response.text: %s", endpoint, exc2)
+                    return None
+            except Exception as exc:
+                logger.error("[GITHUB_API_JSON_ACCESS_FAILED] %s - cannot call response.json(): %s", endpoint, exc)
+                return None
 
+        # STEP 9: Handle error responses
+        try:
+            response_text = response.text[:200] if response.text else "(empty)"
+        except Exception as exc:
+            response_text = f"(inaccessible: {exc})"
+        
         logger.warning(
-            "GitHub API error (%s): %s",
-            response.status_code,
-            response.text[:200],
+            "[GITHUB_API_ERROR_STATUS] %s status=%d response=%s",
+            endpoint,
+            status_code,
+            response_text,
         )
-        response.raise_for_status()
+        
+        try:
+            response.raise_for_status()
+        except Exception as exc:
+            logger.warning("[GITHUB_API_RAISE_FOR_STATUS] %s: %s", endpoint, exc)
+        
         return None
 
     def decode_file_content(self, file_data: Dict[str, Any]) -> Optional[str]:

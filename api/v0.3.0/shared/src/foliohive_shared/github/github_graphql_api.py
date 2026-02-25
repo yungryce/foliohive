@@ -20,7 +20,7 @@ class GitHubGraphQLAPI:
         self.token = token
         self.session = session or requests.Session()
 
-    def make_request(
+    def make_request_gql(
         self,
         *,
         query: str,
@@ -31,54 +31,87 @@ class GitHubGraphQLAPI:
         headers = {"Authorization": f"bearer {self.token}"} if self.token else {}
         payload = {"query": query, "variables": variables or {}}
 
-        logger.info("[GITHUB_GRAPHQL_REQUEST] purpose=%s query=%s variables=%s", purpose, query[:500], variables)
+        logger.info("[GITHUB_GRAPHQL_REQUEST_START] purpose=%s variables_count=%d", purpose, len(variables) if variables else 0)
 
+        response = None
         try:
-            logger.info("******************dudk*******************")
             response = self.session.post(self.GRAPHQL_URL, json=payload, headers=headers, timeout=30)
-            logger.info("[GITHUB_GRAPHQL_HTTP] purpose=%s status=%d", purpose, response.status_code)
+            logger.info("[GITHUB_GRAPHQL_POST_COMPLETE] purpose=%s response_exists=%s", purpose, response is not None)
+        except requests.Timeout as exc:
+            logger.error("[GITHUB_GRAPHQL_TIMEOUT] purpose=%s timeout_error=%s", purpose, str(exc)[:100])
+            return None
+        except requests.ConnectionError as exc:
+            logger.error("[GITHUB_GRAPHQL_CONNECTION_ERROR] purpose=%s connection_error=%s", purpose, str(exc)[:100])
+            return None
         except requests.RequestException as exc:
-            logger.info("******************duedfdk*******************")
-            logger.warning("[GITHUB_GRAPHQL_ERROR] Request failed: %s", exc)
+            logger.error("[GITHUB_GRAPHQL_REQUEST_ERROR] purpose=%s request_error_type=%s error=%s", purpose, type(exc).__name__, str(exc)[:100])
             return None
         except Exception as exc:
-            logger.info("******************duwefdk*******************")
-            logger.error("[GITHUB_GRAPHQL_ERROR] Unexpected error: %s", exc)
+            logger.error("[GITHUB_GRAPHQL_UNEXPECTED_ERROR] purpose=%s error_type=%s error=%s", purpose, type(exc).__name__, str(exc)[:100])
             return None
 
-        logger.info("*******************cnkn********************")
-        logger.info("[GITHUB_GRAPHQL_RESPONSE] purpose=%s status=%d response_length=%d", purpose, response.status_code, len(response.content))
+        # CRITICAL: Validate response exists before accessing properties
+        if response is None:
+            logger.error("[GITHUB_GRAPHQL_RESPONSE_IS_NONE] purpose=%s - POST call returned None without raising exception", purpose)
+            return None
 
-        rate_remaining = response.headers.get("X-RateLimit-Remaining")
+        # Try to access response properties separately
+        try:
+            status_code = response.status_code
+            logger.info("[GITHUB_GRAPHQL_STATUS_ACQUIRED] purpose=%s status=%d", purpose, status_code)
+        except Exception as exc:
+            logger.error("[GITHUB_GRAPHQL_STATUS_ACCESS_FAILED] purpose=%s error_type=%s error=%s", purpose, type(exc).__name__, str(exc)[:100])
+            return None
+
+        try:
+            rate_remaining = response.headers.get("X-RateLimit-Remaining")
+            logger.info("[GITHUB_GRAPHQL_HEADERS_ACQUIRED] purpose=%s rate_remaining=%s", purpose, rate_remaining)
+        except Exception as exc:
+            logger.error("[GITHUB_GRAPHQL_HEADERS_ACCESS_FAILED] purpose=%s error=%s", purpose, str(exc)[:100])
+            rate_remaining = None
+
         status = response.status_code
         if usage:
-            usage.record_request(
-                method="POST",
-                endpoint="graphql",
-                endpoint_kind="graphql",
-                purpose=purpose,
-                status_code=status,
-                rate_remaining=int(rate_remaining) if isinstance(rate_remaining, str) and rate_remaining.isdigit() else None,
-                cache_hit=False,
-            )
+            try:
+                usage.record_request(
+                    method="POST",
+                    endpoint="graphql",
+                    endpoint_kind="graphql",
+                    purpose=purpose,
+                    status_code=status,
+                    rate_remaining=int(rate_remaining) if isinstance(rate_remaining, str) and rate_remaining.isdigit() else None,
+                    cache_hit=False,
+                )
+            except Exception as exc:
+                logger.warning("[GITHUB_GRAPHQL_USAGE_RECORD_FAILED] purpose=%s error=%s", purpose, str(exc)[:100])
 
         if status == 403 and rate_remaining == "0":
             if usage:
                 usage.mark_rate_limited()
-            logger.error("[GITHUB_GRAPHQL_RATE_LIMIT] Rate limit exceeded")
+            logger.error("[GITHUB_GRAPHQL_RATE_LIMIT_EXCEEDED] purpose=%s", purpose)
             return None
 
         if status < 200 or status >= 300:
-            logger.warning("[GITHUB_GRAPHQL_ERROR] status=%d body=%s", status, response.text[:200])
+            try:
+                error_body = response.text[:200]
+            except Exception as exc:
+                logger.error("[GITHUB_GRAPHQL_ERROR_BODY_READ_FAILED] purpose=%s read_error=%s", purpose, str(exc)[:100])
+                error_body = "<unable to read response body>"
+            logger.warning("[GITHUB_GRAPHQL_HTTP_ERROR] purpose=%s status=%d error_body=%s", purpose, status, error_body)
             return None
 
         try:
-            return response.json()
-        except ValueError:
-            logger.warning("[GITHUB_GRAPHQL_ERROR] Invalid JSON response")
+            json_response = response.json()
+            logger.info("[GITHUB_GRAPHQL_JSON_PARSED] purpose=%s response_type=%s", purpose, type(json_response).__name__)
+            return json_response
+        except ValueError as exc:
+            logger.error("[GITHUB_GRAPHQL_JSON_PARSE_ERROR] purpose=%s parse_error=%s", purpose, str(exc)[:100])
+            return None
+        except Exception as exc:
+            logger.error("[GITHUB_GRAPHQL_JSON_ACCESS_ERROR] purpose=%s error_type=%s error=%s", purpose, type(exc).__name__, str(exc)[:100])
             return None
 
-    def fetch_blobs(
+    def fetch_blobs_gql(
         self,
         *,
         owner: str,
@@ -88,6 +121,7 @@ class GitHubGraphQLAPI:
         usage: Optional[ApiUsageTracker] = None,
     ) -> Dict[str, Optional[str]]:
         if not paths:
+            logger.info("[GRAPHQL_FETCH_EMPTY] repo=%s/%s reason=no_paths", owner, repo)
             return {}
 
         alias_map: Dict[str, str] = {}
@@ -107,7 +141,7 @@ class GitHubGraphQLAPI:
             + " } }"
         )
 
-        payload = self.make_request(
+        payload = self.make_request_gql(
             query=query,
             variables={"owner": owner, "name": repo},
             usage=usage,

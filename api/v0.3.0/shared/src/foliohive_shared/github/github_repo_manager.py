@@ -828,7 +828,7 @@ class GitHubRepoManager:
                 owner, repo, chunk_idx + 1, total_chunks, len(chunk)
             )
 
-            fetched = graphql_client.fetch_blobs(
+            fetched = graphql_client.fetch_blobs_gql(
                 owner=owner,
                 repo=repo,
                 paths=list(chunk),
