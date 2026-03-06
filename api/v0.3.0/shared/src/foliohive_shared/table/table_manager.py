@@ -1,4 +1,4 @@
-"""Azure Table Storage helper for Cloudfolio metadata."""
+"""Azure Table Storage helper for foliohive metadata."""
 
 from __future__ import annotations
 
@@ -26,10 +26,12 @@ __all__ = [
     "RepoLanguagesRow",
     "RepoGitHubMetadataRow",
     "RepoSyncStatusRow",
-    "RepoDiscoveredPathsRow",
+    "RepoCacheSummaryRow",
     "RepoAPIUsageRow",
+    "AIRequestUsageRow",
     "UserProfileRow",
     "table_manager",
+    "get_table_manager",
 ]
 
 logger = logging.getLogger(__name__)
@@ -38,15 +40,16 @@ logger.propagate = True
 
 @dataclass
 class TableNames:
-    """Configured table names used by Cloudfolio."""
+    """Configured table names used by foliohive."""
 
     session_candidates: str = "SessionCandidates"
     job_metadata: str = "JobMetadata"
     repo_languages: str = "RepoLanguages"
     repo_github_metadata: str = "RepoGitHubMetadata"
     repo_sync_status: str = "RepoSyncStatus"
-    repo_discovered_paths: str = "RepoDiscoveredPaths"
+    repo_cache_summary: str = "RepoCacheSummary"
     repo_api_usage: str = "RepoAPIUsage"
+    ai_request_usage: str = "AIRequestUsage"
     user_profile: str = "UserProfile"
 
 @dataclass
@@ -141,7 +144,7 @@ class RepoSyncStatusRow:
     """Per-repository pipeline status for a given job.
     
     Tracks progress through: sync (metadata) → cache (files) → merge (bundle).
-    Status transitions: pending → synced → cached → summary_ready (or failed at any stage).
+    Status transitions: pending → synced → summary_ready (or failed at any stage).
 
     PartitionKey: job_id (groups all repos for a job)
     RowKey: repo_name (unique repo within job)
@@ -160,28 +163,24 @@ class RepoSyncStatusRow:
 
 
 @dataclass
-class RepoDiscoveredPathsRow:
-    """Discovered file paths for a repository during cache phase.
+class RepoCacheSummaryRow:
+    """Track cached repo micro-summaries with fingerprint validation.
     
-    Stores discovered file paths (readme and config files) with fingerprint snapshot
-    for cache invalidation. Avoids re-fetching blob contents when repo hasn't changed.
+    Stores metadata about generated micro-summaries for cache invalidation
+    and existence verification before blob access.
     
-    fingerprint is a SNAPSHOT COPY of RepoGitHubMetadataRow.fingerprint taken at cache time,
-    tracking which version of the repo these cached blobs represent. When RepoGitHubMetadataRow
-    fingerprint changes (via github_pushed_at, github_updated_at), cleanup detects the mismatch
-    and invalidates stale blobs.
-    
-    PartitionKey: username (groups all repos for a user)
-    RowKey: repo_name (unique repo for user)
+    PartitionKey: username (groups all cached summaries for a user)
+    RowKey: repo_name|fingerprint (unique per repo version)
     """
-
+    
     username: str  # PartitionKey
-    repo_name: str  # RowKey
-    fingerprint: str  # Snapshot of RepoGitHubMetadataRow.fingerprint at cache time
-    discovered_paths: List[str] = field(default_factory=list)  # All discovered file paths
-    readme_paths: List[str] = field(default_factory=list)  # Subset: readme files
-    config_paths: List[str] = field(default_factory=list)  # Subset: config files
-    extraction_metadata: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    repo_name: str  # Part of RowKey
+    fingerprint: str  # Part of RowKey - snapshot of repo state
+    cache_key: str  # Full blob storage key
+    summary_blob_uri: Optional[str] = None  # Direct reference to blob
+    cache_status: str = "valid"  # valid | stale | expired
+    generated_at: Optional[str] = None
+    accessed_at: Optional[str] = None  # Track read frequency
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -198,7 +197,7 @@ class RepoAPIUsageRow:
     
     username: str  # PartitionKey
     operation_key: str  # RowKey: e.g., "freshness#2026-01-25T10:30:00#repo1"
-    operation: str  # "freshness_check" | "metadata_sync" | "file_cache"
+    purpose: str  # "freshness_check" | "metadata_sync" | "file_cache" | "user_profile" | "graphql_blob_batch" | etc.
     job_id: Optional[str] = None  # Associated job (None for freshness checks)
     repo_name: Optional[str] = None  # Specific repo (None for user-level operations)
     api_calls_rest: int = 0  # REST API calls made
@@ -206,8 +205,43 @@ class RepoAPIUsageRow:
     cache_hits: int = 0  # Number of cache hits (avoided API calls)
     rate_limit_remaining: Optional[int] = None  # Remaining rate limit after operation
     rate_limit_reset: Optional[str] = None  # When rate limit resets (ISO timestamp)
-    error: Optional[str] = None  # Error message if operation failed
+    error: Optional[str] = None  # Comma-separated error type summary (e.g. "timeout,rate_limited")
+    error_details: Optional[str] = None  # JSON array of full error detail dicts
     created_at: Optional[str] = None  # When operation started
+
+
+@dataclass
+class AIRequestUsageRow:
+    """AI request usage tracking per operation.
+
+    Tracks model selection, token budget/usage, truncation, and failures for
+    observability and consistency analysis.
+
+    PartitionKey: username (enables querying all AI operations for a user)
+    RowKey: {purpose}|{timestamp}|{request_id}
+    """
+
+    username: str  # PartitionKey
+    operation_key: str  # RowKey
+    purpose: str
+    request_id: str
+    provider: str = "openai"
+    model_name: Optional[str] = None
+    model_tier: Optional[str] = None
+    job_id: Optional[str] = None
+    repo_name: Optional[str] = None
+    budget_completion_tokens: int = 0
+    prompt_tokens_estimated: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    finish_reason: Optional[str] = None
+    was_truncated: bool = False
+    status: str = "started"  # started | completed | failed
+    error: Optional[str] = None
+    error_details: Optional[str] = None  # JSON array of full error detail dicts
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 @dataclass
@@ -324,10 +358,7 @@ class TableManager:
         table_service_client: Optional[TableServiceClient] = None,
         table_names: Optional[TableNames] = None,
     ) -> None:
-        self.table_names = table_names or TableNames(
-            job_metadata=os.getenv("TABLE_JOB_METADATA", TableNames.job_metadata),
-            session_candidates=os.getenv("TABLE_SESSION_CANDIDATES", TableNames.session_candidates),
-        )
+        self.table_names = table_names or TableNames()
 
         self._service_client = table_service_client or self._create_service_client()
         self._tables: Dict[str, TableClient] = {}
@@ -368,9 +399,10 @@ class TableManager:
             self.table_names.session_candidates,
             self.table_names.repo_languages,
             self.table_names.repo_github_metadata,
+            self.table_names.repo_cache_summary,
             self.table_names.repo_sync_status,
-            self.table_names.repo_discovered_paths,
             self.table_names.repo_api_usage,
+            self.table_names.ai_request_usage,
             self.table_names.user_profile,
         ):
             try:
@@ -884,145 +916,140 @@ class TableManager:
         return payload
 
     # ------------------------------------------------------------------
-    # Repo discovered paths
+    # Repo Cache Summary
     # ------------------------------------------------------------------
-    def upsert_repo_discovered_paths(self, row: RepoDiscoveredPathsRow) -> None:
-        """Persist discovered file paths for a repository with fingerprint.
-        
-        Args:
-            row: RepoDiscoveredPathsRow with username, repo_name, fingerprint, paths
-        """
-        table = self._get_table_client(self.table_names.repo_discovered_paths)
+    def upsert_cache_summary(self, row: RepoCacheSummaryRow) -> None:
+        """Register generated micro-summary in cache index."""
+        table = self._get_table_client(self.table_names.repo_cache_summary)
         if not table:
-            logger.warning("Table client unavailable for repo discovered paths")
             return
         
         now = _azure_safe_timestamp()
+        row_key = f"{row.repo_name}|{row.fingerprint}"
         entity = {
             "PartitionKey": row.username,
-            "RowKey": row.repo_name,
-            "fingerprint": row.fingerprint,
-            "discovered_paths": _safe_json_dump(row.discovered_paths),
-            "readme_paths": _safe_json_dump(row.readme_paths),
-            "config_paths": _safe_json_dump(row.config_paths),
-            "extraction_metadata": _safe_json_dump_limited(
-                row.extraction_metadata,
-                label="RepoDiscoveredPaths.extraction_metadata",
-            ),
-            "created_at": row.created_at or now,
+            "RowKey": row_key,
+            "cache_key": row.cache_key,
+            "summary_blob_uri": row.summary_blob_uri or "",
+            "cache_status": row.cache_status,
+            "generated_at": _azure_safe_timestamp(row.generated_at) if row.generated_at else now,
+            "accessed_at": _azure_safe_timestamp(row.accessed_at) if row.accessed_at else now,
+            "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
             "updated_at": now,
         }
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
         logger.info(
-            "[TABLE_UPSERT_DISCOVERED_PATHS] user=%s repo=%s fingerprint=%s path_count=%d",
-            row.username, row.repo_name, row.fingerprint or "<none>", len(row.discovered_paths)
+            "[TABLE_UPSERT_CACHE_SUMMARY] user=%s repo=%s fingerprint=%s status=%s",
+            row.username, row.repo_name, row.fingerprint, row.cache_status
         )
 
-    def get_repo_discovered_paths(self, username: str, repo_name: str) -> Optional[Dict[str, Any]]:
-        """Retrieve discovered file paths for a repository.
+    def register_pending_cache_summary(self, username: str, repo_name: str, fingerprint: str, cache_key: str) -> None:
+        """Register pending micro-summary cache entry (status=pending).
         
-        Args:
-            username: GitHub username
-            repo_name: Repository name
-            
-        Returns:
-            Dict with username, repo_name, fingerprint, discovered_paths, readme_paths,
-            config_paths, extraction_metadata or None if not found
+        Call this before generation starts to track cache entry existence.
+        Status will be updated to 'valid' by generate_repo_micro_summary on success.
         """
-        table = self._get_table_client(self.table_names.repo_discovered_paths)
+        table = self._get_table_client(self.table_names.repo_cache_summary)
+        if not table:
+            return
+        
+        now = _azure_safe_timestamp()
+        row_key = f"{repo_name}|{fingerprint}"
+        entity = {
+            "PartitionKey": username,
+            "RowKey": row_key,
+            "cache_key": cache_key,
+            "cache_status": "pending",
+            "created_at": now,
+            "updated_at": now,
+        }
+        table.upsert_entity(entity, mode=UpdateMode.MERGE)
+        logger.info(
+            "[REGISTER_PENDING_CACHE] user=%s repo=%s fingerprint=%s cache_key=%s",
+            username, repo_name, fingerprint, cache_key
+        )
+
+    def get_cache_summary(self, username: str, repo_name: str, fingerprint: str) -> Optional[Dict[str, Any]]:
+        """Check if micro-summary is cached and valid."""
+        table = self._get_table_client(self.table_names.repo_cache_summary)
         if not table:
             return None
         
+        row_key = f"{repo_name}|{fingerprint}"
         try:
-            entity = table.get_entity(username, repo_name)
-            return self._deserialize_repo_discovered_paths(entity)
+            entity = table.get_entity(partition_key=username, row_key=row_key)
+            # Update accessed_at on cache hit
+            entity["accessed_at"] = _azure_safe_timestamp()
+            table.update_entity(entity, mode=UpdateMode.MERGE)
+            return self._deserialize_cache_summary(entity)
         except ResourceNotFoundError:
             return None
 
-    def _deserialize_repo_discovered_paths(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+    def invalidate_cache_summary(self, username: str, repo_name: str, old_fingerprint: str) -> None:
+        """Mark summary as stale when fingerprint changes."""
+        table = self._get_table_client(self.table_names.repo_cache_summary)
+        if not table:
+            return
+        
+        row_key = f"{repo_name}|{old_fingerprint}"
+        try:
+            entity = {
+                "PartitionKey": username,
+                "RowKey": row_key,
+                "cache_status": "stale",
+                "updated_at": _azure_safe_timestamp(),
+            }
+            table.update_entity(entity, mode=UpdateMode.MERGE)
+            logger.info(
+                "[INVALIDATE_CACHE] user=%s repo=%s old_fingerprint=%s",
+                username, repo_name, old_fingerprint
+            )
+        except Exception as exc:
+            logger.warning("[INVALIDATE_CACHE_FAILED] %s", exc)
+    
+    def cleanup_stale_cache_summaries(self, older_than_iso: str) -> int:
+        """Delete stale summary cache entries (cascade blob cleanup)."""
+        table = self._get_table_client(self.table_names.repo_cache_summary)
+        if not table:
+            return 0
+        
+        safe_ts = _azure_safe_timestamp(older_than_iso)
+        filter_str = f"cache_status eq 'stale' and updated_at lt '{safe_ts}'"
+        
+        count = 0
+        try:
+            entities = list(table.list_entities(filter=filter_str, select=["PartitionKey", "RowKey", "summary_blob_uri"]))
+            
+            for e in entities:
+                try:
+                    # You can also orchestrate blob deletion here if needed
+                    table.delete_entity(e["PartitionKey"], e["RowKey"])
+                    count += 1
+                except Exception as del_exc:
+                    logger.warning("[CLEANUP_CACHE_SUMMARY] Failed: %s", del_exc)
+            
+            logger.info("[CLEANUP_STALE_CACHE] Deleted %d stale entries", count)
+        except Exception as exc:
+            logger.error("[CLEANUP_CACHE_SUMMARY] Failed: %s", exc)
+        
+        return count
+
+    def _deserialize_cache_summary(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
-        
-        payload["username"] = payload.get("PartitionKey", None)
-        payload["repo_name"] = payload.get("RowKey", None)
-        payload["fingerprint"] = payload.get("fingerprint") or None
-        
-        # Parse JSON arrays
-        try:
-            payload["discovered_paths"] = json.loads(payload.get("discovered_paths", "[]") or "[]")
-        except (json.JSONDecodeError, TypeError):
-            payload["discovered_paths"] = []
-        
-        try:
-            payload["readme_paths"] = json.loads(payload.get("readme_paths", "[]") or "[]")
-        except (json.JSONDecodeError, TypeError):
-            payload["readme_paths"] = []
-        
-        try:
-            payload["config_paths"] = json.loads(payload.get("config_paths", "[]") or "[]")
-        except (json.JSONDecodeError, TypeError):
-            payload["config_paths"] = []
-
-        try:
-            extraction_metadata = json.loads(payload.get("extraction_metadata", "{}") or "{}")
-            payload["extraction_metadata"] = extraction_metadata if isinstance(extraction_metadata, dict) else {}
-        except (json.JSONDecodeError, TypeError):
-            payload["extraction_metadata"] = {}
-        
+        payload["username"] = payload.pop("PartitionKey", None)
+        row_key = payload.pop("RowKey", "")
+        if "|" in row_key:
+            payload["repo_name"], payload["fingerprint"] = row_key.split("|", 1)
+        else:
+            payload["repo_name"] = row_key
+            payload["fingerprint"] = None
+        payload["generated_at"] = _restore_iso_timestamp(payload.get("generated_at"))
+        payload["accessed_at"] = _restore_iso_timestamp(payload.get("accessed_at"))
         payload["created_at"] = _restore_iso_timestamp(payload.get("created_at"))
         payload["updated_at"] = _restore_iso_timestamp(payload.get("updated_at"))
         return payload
-
-    def update_repo_discovered_path_extraction_status(
-        self,
-        username: str,
-        repo_name: str,
-        file_path: str,
-        *,
-        extraction_status: str,
-        extractor_key: Optional[str] = None,
-        error: Optional[str] = None,
-    ) -> None:
-        """Update extraction status metadata for one discovered file path.
-
-        Valid statuses: pending | extracted | failed | skipped
-        """
-        allowed = {"pending", "extracted", "failed", "skipped"}
-        normalized = (extraction_status or "").strip().lower()
-        if normalized not in allowed:
-            raise ValueError(f"Invalid extraction_status '{extraction_status}'")
-
-        existing = self.get_repo_discovered_paths(username, repo_name)
-        if not existing:
-            raise ValueError(f"Discovered paths not found for {username}/{repo_name}")
-
-        metadata = existing.get("extraction_metadata") or {}
-        if not isinstance(metadata, dict):
-            metadata = {}
-
-        row_payload = {
-            "extraction_status": normalized,
-        }
-        if extractor_key:
-            row_payload["extractor_key"] = extractor_key
-        if error:
-            row_payload["error"] = error
-
-        metadata[file_path] = row_payload
-
-        row = RepoDiscoveredPathsRow(
-            username=username,
-            repo_name=repo_name,
-            fingerprint=existing.get("fingerprint") or "",
-            discovered_paths=existing.get("discovered_paths") or [],
-            readme_paths=existing.get("readme_paths") or [],
-            config_paths=existing.get("config_paths") or [],
-            extraction_metadata=metadata,
-            created_at=existing.get("created_at"),
-            updated_at=existing.get("updated_at"),
-        )
-        self.upsert_repo_discovered_paths(row)
 
     # ------------------------------------------------------------------
     # Repo languages
@@ -1410,81 +1437,6 @@ class TableManager:
         
         return count
 
-    # def cleanup_old_discovered_paths(self, older_than_iso: str) -> int:
-    #     """Cleanup stale RepoDiscoveredPaths entries.
-        
-    #     Fingerprint-based cleanup pattern: Removes cached blob path references not recently accessed.
-    #     Cross-checks with RepoGitHubMetadata to detect orphaned or mismatched fingerprints.
-        
-    #     Args:
-    #         older_than_iso: ISO timestamp cutoff (paths older than this are candidates for deletion)
-            
-    #     Returns:
-    #         Number of discovered path rows deleted
-    #     """
-    #     paths_table = self._get_table_client(self.table_names.repo_discovered_paths)
-    #     if not paths_table:
-    #         return 0
-        
-    #     safe_ts = _azure_safe_timestamp(older_than_iso)
-    #     filter_str = f"updated_at lt '{safe_ts}'"
-        
-    #     count = 0
-    #     try:
-    #         # Query old discovered path entries
-    #         old_paths = list(paths_table.list_entities(
-    #             filter=filter_str,
-    #             select=["PartitionKey", "RowKey", "fingerprint"]
-    #         ))
-            
-    #         logger.info("[CLEANUP_DISCOVERED_PATHS] Found %d stale path entries", len(old_paths))
-            
-    #         metadata_table = self._get_table_client(self.table_names.repo_github_metadata)
-            
-    #         for path_entity in old_paths:
-    #             username = path_entity.get("PartitionKey")
-    #             repo_name = path_entity.get("RowKey")
-    #             path_fingerprint = path_entity.get("fingerprint")
-                
-    #             should_delete = False
-                
-    #             # Check if corresponding RepoGitHubMetadata exists with matching fingerprint
-    #             if metadata_table:
-    #                 try:
-    #                     metadata = metadata_table.get_entity(username, repo_name)
-    #                     metadata_fingerprint = metadata.get("fingerprint")
-                        
-    #                     # Delete if fingerprints mismatch (stale blobs)
-    #                     if path_fingerprint and metadata_fingerprint != path_fingerprint:
-    #                         should_delete = True
-    #                         logger.info(
-    #                             "[CLEANUP_PATHS] Fingerprint mismatch %s/%s: path=%s metadata=%s",
-    #                             username, repo_name, path_fingerprint, metadata_fingerprint
-    #                         )
-    #                 except ResourceNotFoundError:
-    #                     # Orphaned paths (no metadata) should be deleted
-    #                     should_delete = True
-    #                     logger.info("[CLEANUP_PATHS] Orphaned path entry: %s/%s", username, repo_name)
-    #                 except Exception:
-    #                     # If we can't verify, delete old entries
-    #                     should_delete = True
-    #             else:
-    #                 # No metadata table means we can't verify - delete old entries
-    #                 should_delete = True
-                
-    #             if should_delete:
-    #                 try:
-    #                     paths_table.delete_entity(username, repo_name)
-    #                     count += 1
-    #                 except Exception as del_exc:
-    #                     logger.warning("[CLEANUP_PATHS] Failed to delete %s/%s: %s", username, repo_name, del_exc)
-            
-    #     except Exception as exc:
-    #         logger.error("[CLEANUP_DISCOVERED_PATHS] Failed: %s", exc)
-        
-    #     return count
-
-
     # ------------------------------------------------------------------
     # Repo API usage tracking
     # ------------------------------------------------------------------
@@ -1503,7 +1455,7 @@ class TableManager:
         entity = {
             "PartitionKey": row.username,
             "RowKey": row.operation_key,
-            "operation": row.operation,
+            "purpose": row.purpose,
             "job_id": row.job_id,
             "repo_name": row.repo_name,
             "api_calls_rest": row.api_calls_rest,
@@ -1512,6 +1464,8 @@ class TableManager:
             "rate_limit_remaining": row.rate_limit_remaining,
             "rate_limit_reset": _azure_safe_timestamp(row.rate_limit_reset) if row.rate_limit_reset else "",
             "error": row.error,
+            "error_details": row.error_details,
+            
             "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
         }
         
@@ -1519,20 +1473,16 @@ class TableManager:
             "[TABLE_UPSERT_API_USAGE_ENTITY] PartitionKey=%s RowKey=%s operation=%s job_id=%s repo_name=%s",
             entity.get("PartitionKey"),
             entity.get("RowKey"),
-            entity.get("operation"),
+            entity.get("purpose"),
             entity.get("job_id"),
             entity.get("repo_name"),
-        )
-        logger.info(
-            "[TABLE_UPSERT_API_USAGE_ENTITY_FULL] %s",
-            entity,
         )
         
         table.upsert_entity(entity, mode=UpdateMode.REPLACE)
         logger.info(
             "[TABLE_UPSERT_API_USAGE] user=%s operation=%s job=%s repo=%s rest=%d graphql=%d cache_hits=%d",
             row.username,
-            row.operation,
+            row.purpose,
             row.job_id or "<none>",
             row.repo_name or "<all>",
             row.api_calls_rest,
@@ -1545,7 +1495,7 @@ class TableManager:
         username: str,
         *,
         job_id: Optional[str] = None,
-        operation: Optional[str] = None,
+        purpose: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
         """List API usage records for a username.
@@ -1553,7 +1503,7 @@ class TableManager:
         Args:
             username: User to query
             job_id: Optional filter by job
-            operation: Optional filter by operation type
+            purpose: Optional filter by purpose
             limit: Maximum records to return
         
         Returns:
@@ -1566,8 +1516,8 @@ class TableManager:
         query = f"PartitionKey eq '{username}'"
         if job_id:
             query += f" and job_id eq '{job_id}'"
-        if operation:
-            query += f" and operation eq '{operation}'"
+        if purpose:
+            query += f" and purpose eq '{purpose}'"
         
         try:
             entities = list(table.query_entities(query, results_per_page=limit))
@@ -1588,6 +1538,104 @@ class TableManager:
         payload["operation_key"] = payload.pop("RowKey", None)
         payload["created_at"] = _restore_iso_timestamp(payload.get("created_at"))
         payload["rate_limit_reset"] = _restore_iso_timestamp(payload.get("rate_limit_reset"))
+        return payload
+
+    # ------------------------------------------------------------------
+    # AI request usage tracking
+    # ------------------------------------------------------------------
+
+    def upsert_ai_request_usage(self, row: AIRequestUsageRow) -> None:
+        """Record AI request usage for an operation."""
+        table = self._get_table_client(self.table_names.ai_request_usage)
+        if not table:
+            logger.warning("[TABLE_UPSERT_AI_REQUEST_USAGE] No table client, skipping")
+            return
+
+        now = _azure_safe_timestamp()
+        entity = {
+            "PartitionKey": row.username,
+            "RowKey": row.operation_key,
+            "purpose": row.purpose,
+            "request_id": row.request_id,
+            "provider": row.provider,
+            "model_name": row.model_name,
+            "model_tier": row.model_tier,
+            "job_id": row.job_id,
+            "repo_name": row.repo_name,
+            "budget_completion_tokens": int(row.budget_completion_tokens or 0),
+            "prompt_tokens_estimated": int(row.prompt_tokens_estimated or 0),
+            "prompt_tokens": int(row.prompt_tokens or 0),
+            "completion_tokens": int(row.completion_tokens or 0),
+            "total_tokens": int(row.total_tokens or 0),
+            "finish_reason": row.finish_reason,
+            "was_truncated": bool(row.was_truncated),
+            "status": row.status,
+            "error": row.error,
+            "error_details": row.error_details,
+            "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
+            "updated_at": _azure_safe_timestamp(row.updated_at) if row.updated_at else now,
+        }
+
+        logger.info(
+            "[TABLE_UPSERT_AI_REQUEST_USAGE_ENTITY] PartitionKey=%s RowKey=%s purpose=%s request_id=%s model=%s status=%s",
+            entity.get("PartitionKey"),
+            entity.get("RowKey"),
+            entity.get("purpose"),
+            entity.get("request_id"),
+            entity.get("model_name"),
+            entity.get("status"),
+        )
+
+        table.upsert_entity(entity, mode=UpdateMode.REPLACE)
+        logger.info(
+            "[TABLE_UPSERT_AI_REQUEST_USAGE] user=%s purpose=%s request_id=%s model=%s prompt=%d completion=%d total=%d status=%s",
+            row.username,
+            row.purpose,
+            row.request_id,
+            row.model_name or "<unknown>",
+            row.prompt_tokens,
+            row.completion_tokens,
+            row.total_tokens,
+            row.status,
+        )
+
+    def list_ai_request_usage(
+        self,
+        username: str,
+        *,
+        job_id: Optional[str] = None,
+        purpose: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List AI request usage records for a username."""
+        table = self._get_table_client(self.table_names.ai_request_usage)
+        if not table:
+            return []
+
+        query = f"PartitionKey eq '{username}'"
+        if job_id:
+            query += f" and job_id eq '{job_id}'"
+        if purpose:
+            query += f" and purpose eq '{purpose}'"
+
+        try:
+            entities = list(table.query_entities(query, results_per_page=limit))
+            results = [self._deserialize_ai_request_usage(e) for e in entities]
+            results.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+            return results[:limit]
+        except Exception as exc:
+            logger.error("[TABLE_LIST_AI_REQUEST_USAGE] Query failed: %s", exc, exc_info=True)
+            return []
+
+    def _deserialize_ai_request_usage(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        """Deserialize AI request usage entity."""
+        payload = dict(entity)
+        for meta_key in _AZURE_META_FIELDS:
+            payload.pop(meta_key, None)
+        payload["username"] = payload.pop("PartitionKey", None)
+        payload["operation_key"] = payload.pop("RowKey", None)
+        payload["created_at"] = _restore_iso_timestamp(payload.get("created_at"))
+        payload["updated_at"] = _restore_iso_timestamp(payload.get("updated_at"))
         return payload
 
     # ------------------------------------------------------------------

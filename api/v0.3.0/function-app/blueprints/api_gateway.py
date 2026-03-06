@@ -1,4 +1,4 @@
-"""API Gateway blueprint for Cloudfolio.
+"""API Gateway blueprint for foliohive.
 
 Ported from `api/v0.3.0/api-gateway/function_app.py`.
 """
@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import random
-import statistics
 import uuid
 from collections import defaultdict
 from dataclasses import asdict, dataclass
@@ -27,10 +26,8 @@ from foliohive_shared import (
     table_manager,
     SummaryManager,
     get_file_budget,
-    ApiUsageTracker,
     JobMetadataRow,
     RepoSyncStatusRow,
-    RepoAPIUsageRow,
     UserProfileRow,
 )
 
@@ -53,7 +50,7 @@ class CandidateContext:
     username: str
 
 
-logger = logging.getLogger("cloudfolio.api_gateway")
+logger = logging.getLogger("foliohive.api_gateway")
 logger.setLevel(logging.INFO)
 logger.propagate = True
 
@@ -330,8 +327,7 @@ def _is_profile_fresh(profile: Dict[str, Any], ttl_seconds: int) -> bool:
 
 def _refresh_user_profile(username: str, cached_profile: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     repo_manager = _get_repo_manager(username)
-    usage_tracker = ApiUsageTracker(owner=username, repo="user_profile")
-    profile = repo_manager.get_user_profile(username=username, usage=usage_tracker)
+    profile = repo_manager.get_user_profile(username=username, purpose="user_profile")
     if not isinstance(profile, dict):
         return cached_profile
 
@@ -359,16 +355,7 @@ def _refresh_user_profile(username: str, cached_profile: Optional[Dict[str, Any]
         cached_at=cached_at,
     )
     table_manager.upsert_user_profile(row)
-    
-    # Record API usage for profile refresh (1 REST API call)
-    _record_api_usage(
-        username=username,
-        operation="profile_refresh",
-        api_usage_dict=usage_tracker.to_dict(),
-        job_id=None,
-        repo_name=None,
-    )
-    
+
     return table_manager.get_user_profile(username) or asdict(row)
 
 
@@ -380,98 +367,6 @@ def _get_or_refresh_user_profile(username: str) -> Optional[Dict[str, Any]]:
     refreshed = _refresh_user_profile(username, cached)
     return refreshed
 
-
-# ---------------------------------------------------------------------------
-# Cache Blob Retrieval 
-# ---------------------------------------------------------------------------
-
-def _get_repo_files(
-    username: str,
-    selected_repos: List[Dict[str, Any]],
-    max_additional_readmes: int = 3,
-    max_config_files: int = 3,
-    include_readme: bool = True,
-) -> Dict[str, Dict[str, Any]]:
-    """Get cached file contents for selected repos with configurable limits.
-    
-    Consolidates fetching and limiting of cached file contents across repos.
-    Retrieves discovered paths from table storage and uses RepoCacheRetrieval
-    for pre-cached file categorization. Discovery and caching happens 
-    asynchronously in cache_worker.py.
-    
-    Args:
-        username: GitHub username
-        selected_repos: List of repo metadata dicts (already filtered by strategy)
-        job_id: Optional job ID to retrieve discovered paths from table storage
-        max_additional_readmes: Max additional readme files per repo (default: 3)
-        max_config_files: Max config files per repo (default: 3)
-        include_readme: Whether to include primary readme content (default: True)
-    
-    Returns:
-        Dict mapping repo_name -> {readme_content, readme_files, config_files}
-    """
-    repo_files = {}
-    
-    for repo in selected_repos:
-        repo_name = repo.get("repo_name")
-        if not repo_name:
-            continue
-        
-        try:
-            # Retrieve discovered paths from table storage
-            discovered_paths = None
-            try:
-                paths_row = table_manager.get_repo_discovered_paths(username, repo_name)
-                if paths_row:
-                    discovered_paths = paths_row.get("discovered_paths")
-                    logger.info(
-                        "Retrieved discovered paths for %s/%s: %d paths (fingerprint=%s)",
-                        username, repo_name, len(discovered_paths or []), paths_row.get("fingerprint") or "<none>"
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to retrieve discovered paths for %s/%s: %s",
-                    username, repo_name, exc
-                )
-            
-            # Retrieve all cached files with limits
-            files = cache_manager.get_repo_files(
-                username=username,
-                repo=repo_name,
-                discovered_paths=discovered_paths,
-                readme_candidates=["README.md", "README.rst", "README.txt", "readme.md"],
-                max_readme_files=max_additional_readmes,
-                max_config_files=max_config_files,
-                include_readme=include_readme,
-            )
-            
-            logger.info(
-                "Retrieved cached files for %s/%s: readme=%s, readme_files=%d, config_count=%d",
-                username,
-                repo_name,
-                "yes" if files.get("readme_content") else "no",
-                len(files.get("readme_files", {})),
-                len(files.get("config_files", {})),
-            )
-            
-            repo_files[repo_name] = {
-                "readme_content": files.get("readme_content"),
-                "readme_files": files.get("readme_files", {}),
-                "config_files": files.get("config_files", {})
-            }
-        
-        except Exception as exc:
-            logger.warning(
-                "Failed to retrieve cached files for %s/%s: %s",
-                username, repo_name, exc
-            )
-            repo_files[repo_name] = {
-                "readme_content": None,
-                "readme_files": {},
-                "config_files": {}
-            }
-    
-    return repo_files
     
 # ---------------------------------------------------------------------------
 # Core Logic Helpers
@@ -749,101 +644,6 @@ def _aggregate_portfolio_statistics(
     }
 
 
-def _compute_repo_status_summary(job_id: str) -> Dict[str, Any]:
-    """Compute repository status summary for a job.
-    
-    Consolidates duplicate status counting logic previously in get_job_status
-    and _get_candidate_metadata. Single-pass computation of status counts and
-    repo lists by status.
-    
-    Args:
-        job_id: Job ID to compute status for
-    
-    Returns:
-        Dict containing:
-            - total: Total number of repos in job
-            - counts: Dict mapping status names to counts
-            - lists: Dict mapping status names to repo name lists
-            - completed: Number of repos in terminal states (cached + failed)
-            - percentage: Completion percentage (0-100)
-    """
-    statuses = table_manager.list_repo_statuses(job_id)
-    total = len(statuses)
-    
-    status_counts = defaultdict(int)
-    status_lists = defaultdict(list)
-    
-    for row in statuses:
-        status = row.get("status")
-        repo_name = row.get("repo_name")
-        if status in ("pending", "synced", "summary_ready", "failed") and repo_name:
-            status_counts[status] += 1
-            status_lists[status].append(repo_name)
-    
-    # Completed = synced metadata + summary_ready + failed (terminal states)
-    completed = status_counts["synced"] + status_counts["summary_ready"] + status_counts["failed"]
-    percentage = int((completed / total * 100) if total else 0)
-    
-    return {
-        "total": total,
-        "counts": dict(status_counts),
-        "lists": dict(status_lists),
-        "completed": completed,
-        "percentage": percentage,
-    }
-
-
-def _record_api_usage(
-    username: str,
-    operation: str,
-    api_usage_dict: Dict[str, Any],
-    *,
-    job_id: Optional[str] = None,
-    repo_name: Optional[str] = None,
-) -> None:
-    """Record API usage for GitHub operations.
-    
-    Generic helper to record API calls, cache hits, and rate limit info
-    for observability and cost analysis across all operations.
-    
-    Args:
-        username: GitHub username (PartitionKey)
-        operation: Operation type (e.g., "freshness_check", "metadata_sync", "file_cache", "profile_refresh")
-        api_usage_dict: Dict with "totals" and optional "file_targets" keys
-        job_id: Optional job ID (None for user-level operations like freshness/profile)
-        repo_name: Optional repo name (None for user-level operations)
-    """
-    # Handle None or empty api_usage_dict gracefully
-    if not api_usage_dict:
-        api_usage_dict = {"totals": {"requests": 0}, "file_targets": {}}
-
-    totals = api_usage_dict.get("totals", {})
-    file_targets = api_usage_dict.get("file_targets", {})
-    cache_hits = sum(target.get("cache_hits", 0) for target in file_targets.values())
-
-    now = datetime.now(timezone.utc).isoformat()
-    # Sanitize timestamp for Azure Table RowKey (no :, /, \, #, ?)
-    safe_timestamp = now.replace(":", "-").replace("+", "_")
-
-    # Build composite RowKey: operation|timestamp|repo_name (or all_repos/user for user-level ops)
-    row_key_part = repo_name or "all_repos" if operation == "freshness_check" else repo_name or operation
-    operation_key = f"{operation}|{safe_timestamp}|{row_key_part}"
-
-    row = RepoAPIUsageRow(
-        username=username,
-        operation_key=operation_key,
-        operation=operation,
-        job_id=job_id,
-        repo_name=repo_name,
-        api_calls_rest=totals.get("requests", 0),
-        api_calls_graphql=0,
-        cache_hits=cache_hits,
-        created_at=safe_timestamp,
-    )
-    
-    table_manager.upsert_api_usage(row)
-
-
 def _persist_job_metadata(
     job_id: str,
     username: str,
@@ -888,14 +688,11 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
     """
     repo_manager = _get_repo_manager(username)
 
-    # Track API usage for freshness check
-    usage_tracker = ApiUsageTracker(owner=username, repo="all_repos")
     all_repos = repo_manager.get_all_repos_metadata(
         username=username,
+        purpose="freshness_check",
         include_languages=False,
-        usage=usage_tracker,
     )
-    api_usage = usage_tracker.to_dict()
 
     current_fingerprints = {
         repo.get("name"): FingerprintManager.generate_metadata_fingerprint(repo)
@@ -936,15 +733,6 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
         # New repo (no cached fingerprint)
         else:
             stale_repos.append({**repo_metadata, "fingerprint": current_fingerprint})
-
-    # Record API usage if we have trace context
-    _record_api_usage(
-        username=username,
-        operation="freshness_check",
-        api_usage_dict=api_usage,
-        job_id=None,
-        repo_name=None,
-    )
 
     return {
         "stale_repos": stale_repos,
@@ -1174,7 +962,22 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
             "status": str,  // "queued" | "syncing" | "metadata_ready" | "caching_started" | "completed" | "failed"
             "metadata_ready": bool,  // True when metadata available (metadata_ready or later)
             "summary_ready": bool,   // True when summaries generated (completed)
-            "created_at": str
+            "created_at": str,
+            "progress": {
+                "total": int,          // Total number of repos in job
+                "completed": int,      // summary_ready + failed (terminal states)
+                "percentage": int,     // Completion percentage (0-100)
+                "pending": int,        // Waiting to be processed
+                "synced": int,         // Metadata synced, summary pending
+                "summary_ready": int,  // Micro-summary generated
+                "failed": int          // Failed state
+            },
+            "repo_details": {
+                "pending": [str],      // List of pending repo names
+                "synced": [str],       // List of synced repo names
+                "summary_ready": [str],// List of repos with ready summaries
+                "failed": [str]        // List of failed repo names
+            }
         }
     
     Status progression:
@@ -1196,6 +999,48 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
 
     job_status = job.get("status", "unknown")
 
+    # Build progress from RepoSyncStatus for client polling
+    progress = {
+        "total": 0,
+        "completed": 0,
+        "percentage": 0,
+        "pending": 0,
+        "synced": 0,
+        "summary_ready": 0,
+        "failed": 0,
+    }
+    repo_details = {
+        "pending": [],
+        "synced": [],
+        "summary_ready": [],
+        "failed": [],
+    }
+    
+    status_rows = table_manager.list_repo_statuses(job_id)
+    if status_rows:
+        progress["total"] = len(status_rows)
+        for row in status_rows:
+            status = row.get("status", "pending")
+            repo = row.get("repo_name", "unknown")
+            
+            if status == "pending":
+                progress["pending"] += 1
+                repo_details["pending"].append(repo)
+            elif status == "synced":
+                progress["synced"] += 1
+                repo_details["synced"].append(repo)
+            elif status == "summary_ready":
+                progress["summary_ready"] += 1
+                progress["completed"] += 1
+                repo_details["summary_ready"].append(repo)
+            elif status == "failed":
+                progress["failed"] += 1
+                progress["completed"] += 1
+                repo_details["failed"].append(repo)
+        
+        if progress["total"] > 0:
+            progress["percentage"] = int((progress["completed"] / progress["total"]) * 100)
+
     payload = {
         "job_id": job_id,
         "username": username,
@@ -1203,6 +1048,8 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
         "metadata_ready": job_status in ("metadata_ready", "caching_started", "completed"),
         "summary_ready": job_status == "completed",
         "created_at": job.get("created_at"),
+        "progress": progress,
+        "repo_details": repo_details,
     }
 
     logger.info(
@@ -1417,6 +1264,15 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
 
     ctx = _prepare_candidate_context(req, username)
     
+    # Guard: Only return profile summary when job is fully completed
+    if not ctx.job or ctx.job.get("status") != "completed":
+        return _create_error_response(
+            f"Profile summary for '{username}' is not ready. Job is in progress.",
+            404,
+            error_code="NOT_READY",
+            request_id=ctx.trace.get("request_id"),
+        )
+    
     # Use unified portfolio data fetcher
     bundle = _get_portfolio_bundle(username, job_id=ctx.job_id)
     logger.info("Fetched portfolio bundle for summary generation: repos=%d, languages=%d, stats=%s",
@@ -1442,37 +1298,19 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
         max_repos=file_budget["max_repos"]
     )
 
-    micro_summaries = []
-    for repo in selected_repos:
-        repo_name = repo.get("repo_name")
-        fingerprint = repo.get("fingerprint")
-        if not repo_name or not fingerprint:
-            continue
-        micro = manager.get_repo_micro_summary(repo_name, fingerprint)
-        if not micro:
-            continue
-        micro_summaries.append(
-            {
-                "repo_name": repo_name,
-                "fingerprint": fingerprint,
-                "repo_metadata": repo,
-                "micro_summary": micro,
-            }
-        )
-
-    aggregate = manager.aggregate_profile_from_summaries(
-        micro_summaries=micro_summaries,
-        profile=profile or {},
-        statistics=bundle["statistics"],
+    micro = manager.get_or_generate_profile_summary(
+        job_id=ctx.job_id,
+        profile=profile,
+        repo_rows=selected_repos,
+        statistics=bundle["statistics"]
     )
-    summary_html = manager.format_profile_html(aggregate)
 
     payload = {
         "username": username,
         "job_id": ctx.job_id,
-        "summary_html": summary_html,
-        "repos_included": len(micro_summaries),
-        "repos_total": len(selected_repos),
+        "summary_html": micro.get("summary_html") if micro else None,
+        "metadata": micro.get("metadata") if micro else {},
+        "aggregate": micro.get("aggregate") if micro else {}
     }
 
     return _create_success_response(payload, cache_control="no-cache", request_id=ctx.trace.get("request_id"))

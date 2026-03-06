@@ -22,10 +22,9 @@ from foliohive_shared import (
     GitHubRepoManager,
     SummaryManager,
     table_manager,
-    RepoAPIUsageRow,
 )
 
-logger = logging.getLogger("cloudfolio.cache_worker")
+logger = logging.getLogger("foliohive.cache_worker")
 logger.setLevel(logging.INFO)
 logger.propagate = True
 
@@ -36,13 +35,15 @@ STANDARD_CONFIG_MAX_CHARS = 4000
 READ_ME_EXCERPT_MAX_CHARS = 4096
 
 
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
 def _get_repo_manager(username: str) -> GitHubRepoManager:
     if not username:
-        raise ValueError("Username is required")
+        raise ValueError("Username required")
     token = os.getenv("GITHUB_TOKEN")
     api = GitHubAPI(token=token, username=username)
     return GitHubRepoManager(api, username=username)
-
 
 def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     body_bytes = msg.get_body()
@@ -88,13 +89,6 @@ def _fetch_file_content(
         Dict with api_usage, readme_content (in-memory), and config_files (in-memory)
     """
 
-    logger.info(
-        "[FETCH_START] repo=%s job=%s ref=%s",
-        repo_name,
-        job_id or "<unknown>",
-        ref or "<default_branch>",
-    )
-
     repo_manager = _get_repo_manager(username)
 
     mode = "rest"
@@ -108,16 +102,11 @@ def _fetch_file_content(
         repo=repo_name,
         mode=mode,
         ref=ref,
+        purpose="file_cache",
+        job_id=job_id,
         limit=STANDARD_CONFIG_FETCH_LIMIT,
         max_chars=STANDARD_CONFIG_MAX_CHARS,
         readme_max_chars=READ_ME_EXCERPT_MAX_CHARS,
-    )
-    
-    logger.info(
-        "[FETCH_DISCOVERY] repo=%s mode=%s discovery_keys=%s",
-        repo_name,
-        mode,
-        sorted(discovery.keys()),
     )
 
     config_files = discovery.get("config_files", {})
@@ -125,18 +114,6 @@ def _fetch_file_content(
     primary_readme = discovery.get("primary_readme", "")
     api_usage = discovery.get("api_usage", {})
     paths_discovered = discovery.get("paths_discovered", 0)
-    
-    # Check for repos with no paths discovered at all
-    if paths_discovered == 0:
-        logger.error(
-            "[NO_PATHS_DISCOVERED] repo=%s/%s - no config/readme files could be discovered from path index or candidates",
-            username, repo_name
-        )
-    else:
-        logger.info(
-            "[PATHS_DISCOVERED] repo=%s/%s discovered=%d",
-            username, repo_name, paths_discovered
-        )
     
     # Validate file fetch completeness (only if paths were discovered)
     total_discovered = len(config_files) + len(readme_files)
@@ -176,10 +153,6 @@ def _fetch_file_content(
         len(extracted_config_content),
         len(config_files),
     )
-    
-    # Record API usage if job_id provided
-    if job_id and api_usage:
-        _record_api_usage_for_file_cache(username, job_id, repo_name, api_usage)
     
     # Log if proceeding with partial data
     has_readme = bool(primary_readme)
@@ -224,59 +197,6 @@ def _fetch_file_content(
     }
 
 
-def _record_api_usage_for_file_cache(
-    username: str,
-    job_id: str,
-    repo_name: str,
-    api_usage_dict: Dict[str, Any],
-) -> None:
-    """Record API usage for file caching operation."""
-    from datetime import datetime, timezone
-    
-    totals = api_usage_dict.get("totals", {})
-    file_targets = api_usage_dict.get("file_targets", {})
-    cache_hits = sum(target.get("cache_hits", 0) for target in file_targets.values())
-    
-    now = datetime.now(timezone.utc).isoformat()
-    # Sanitize timestamp for Azure Table (no :, /, \, #, ? in any field)
-    safe_timestamp = now.replace(":", "-").replace("+", "_")
-    operation_key = f"file_cache|{safe_timestamp}|{repo_name}"
-    
-    row = RepoAPIUsageRow(
-        username=username,
-        operation_key=operation_key,
-        operation="file_cache",
-        job_id=job_id,
-        repo_name=repo_name,
-        api_calls_rest=totals.get("requests", 0),
-        api_calls_graphql=0,
-        cache_hits=cache_hits,
-        created_at=safe_timestamp,  # Use sanitized timestamp
-    )
-    
-    logger.info(
-        "[RECORD_API_USAGE_ROW] username=%s operation_key=%s operation=%s job_id=%s repo_name=%s rest=%d graphql=%d cache_hits=%d created_at=%s",
-        username,
-        operation_key,
-        "file_cache",
-        job_id,
-        repo_name,
-        totals.get("requests", 0),
-        0,
-        cache_hits,
-        now,
-    )
-    
-    table_manager.upsert_api_usage(row)
-    logger.info(
-        "[API_CACHE_USAGE_RECORDED] operation=file_cache job=%s repo=%s rest_calls=%d cache_hits=%d",
-        job_id,
-        repo_name,
-        row.api_calls_rest,
-        cache_hits,
-    )
-
-
 def _update_cache_progress(
     job_id: str,
     username: str,
@@ -293,9 +213,23 @@ def _update_cache_progress(
     Status transitions: synced → summary_ready (or failed).
     Tracks micro-summary caching progress.
     """
-    from datetime import datetime, timezone
+    logger.info("***********************ertisn************************")
+    from datetime import datetime, timezone, timedelta
+
+    _STALE_PENDING_THRESHOLD = timedelta(minutes=30)
+
+    logger.info(
+        "[CACHE_PROGRESS_UPDATE] job=%s repo=%s summary_ready=%s summary_failed=%s message_id=%s trace_id=%s error=%s",
+        job_id,
+        repo_name,
+        summary_ready,
+        summary_failed,
+        message_id or "<unknown>",
+        trace_id or "<none>",
+        error or "<none>",
+    )
     
-    status_value = "failed" if summary_failed else "summary_ready"
+    status_value = "failed" if summary_failed else ("summary_ready" if summary_ready else "failed")
     now = datetime.now(timezone.utc).isoformat()
     
     # Update RepoSyncStatus with cache completion (partial update)
@@ -319,6 +253,7 @@ def _update_cache_progress(
 
     status_counts = defaultdict(int)
     status_lists = defaultdict(list)
+    pending_rows: list = []
 
     for row in statuses:
         status = row.get("status")
@@ -327,17 +262,50 @@ def _update_cache_progress(
         if status in ("synced", "summary_ready", "failed"):
             status_counts[status] += 1
             status_lists[status].append(repo)
+        elif status == "pending":
+            pending_rows.append(row)
 
     summary_ready_list = sorted(status_lists.get("summary_ready", []))
-    failed_list = sorted(status_lists.get("failed", []))
+    failed_list = list(sorted(status_lists.get("failed", [])))
     synced_list = sorted(status_lists.get("synced", []))
+
+    # Safety valve: promote stale pending repos to failed so the job can complete.
+    # A pending repo with no queue message processed after the threshold is assumed dropped.
+    now_utc = datetime.now(timezone.utc)
+    stale_pending: list = []
+    for pending_row in pending_rows:
+        updated_at_str = pending_row.get("updated_at")
+        is_stale = True  # Default: treat as stale when no timestamp
+        if updated_at_str:
+            try:
+                updated_at = datetime.fromisoformat(updated_at_str)
+                is_stale = (now_utc - updated_at) > _STALE_PENDING_THRESHOLD
+            except (ValueError, TypeError):
+                pass  # Can't parse timestamp — treat as stale
+        if is_stale:
+            stale_pending.append(pending_row.get("repo_name"))
+
+    if stale_pending:
+        logger.warning(
+            "[STALE_PENDING] job=%s - %d pending repos exceeded %s threshold, marking failed: %s",
+            job_id, len(stale_pending), _STALE_PENDING_THRESHOLD, stale_pending,
+        )
+        for stale_repo in stale_pending:
+            table_manager.update_repo_status(
+                job_id,
+                stale_repo,
+                {"status": "failed", "error": "stale: no queue message processed within timeout"},
+            )
+        failed_list.extend(stale_pending)
+        failed_list.sort()
     
     logger.info(
-        "[CACHE_PROGRESS] job=%s summary_ready=%d failed=%d synced=%d total=%d",
+        "[CACHE_PROGRESS] job=%s summary_ready=%d failed=%d synced=%d pending=%d total=%d",
         job_id,
         len(summary_ready_list),
         len(failed_list),
         len(synced_list),
+        len(pending_rows),
         total_repos,
     )
     
@@ -345,19 +313,21 @@ def _update_cache_progress(
     job = table_manager.get_job_metadata(username, job_id)
     current_status = job.get("status") if job else "queued"
     
-    # Transition: metadata_ready → caching_started when first repo generates summary
-    if len(summary_ready_list) > 0 and current_status == "metadata_ready":
+    # Transition: metadata_ready → caching_started when first repo is processed (success or failure)
+    if (len(summary_ready_list) > 0 or len(failed_list) > 0) and current_status == "metadata_ready":
         logger.info(
-            "[JOB_CACHING_STARTED] job=%s - First micro-summary generated (%d/%d), caching in progress",
+            "[JOB_CACHING_STARTED] job=%s - First repo processed (%d summary_ready, %d failed / %d total)",
             job_id,
             len(summary_ready_list),
+            len(failed_list),
             total_repos,
         )
         table_manager.update_job_metadata(username, job_id, {"status": "caching_started"})
 
     
     # Transition: caching_started → completed when all repos have summary or failed
-    completed_count = len(summary_ready_list) + len(failed_list)
+    completed_count = len(summary_ready_list) 
+    # completed_count = len(summary_ready_list) + len(failed_list)
     if completed_count == total_repos and current_status == "caching_started":
         logger.info(
             "[JOB_COMPLETED] job=%s - All micro-summaries processed (%d summary_ready, %d failed)",
@@ -430,106 +400,72 @@ def process_cache_job(msg: func.QueueMessage) -> None:
             )
 
         summary_ready = False
-        try:
-            summary_manager = SummaryManager(username=username)
-
-            metadata_row = table_manager.get_repo_github_metadata(username, repo_name) or {}
-            logger.info(
-                "[METADATA_ROW] repo=%s metadata_keys=%s",
-                repo_name,
-                sorted(metadata_row.keys()) if metadata_row else "<empty>"
-            )
-
-            repo_languages_raw = table_manager.get_repo_languages(job_id, repo_name)
-            logger.info(
-                "[REPO_LANGUAGES_RAW] repo=%s languages_count=%d",
-                repo_name,
-                len(repo_languages_raw),
-            )
-
-            repo_languages = [
-                lang for lang in repo_languages_raw
-                if lang.get("repo_name") == repo_name
-            ]
-            logger.info(
-                "[REPO_LANGUAGES_FILTERED] repo=%s languages_count=%d",
-                repo_name,
-                len(repo_languages),
-            )
-
-            if len(repo_languages) != len(repo_languages_raw):
-                logger.warning(
-                    "[REPO_LANGUAGES_FILTER] repo=%s requested=%d retained=%d",
-                    repo_name,
-                    len(repo_languages_raw),
-                    len(repo_languages),
-                )
-            languages_tuples = [
-                (lang.get("language"), lang.get("percentage")) 
-                for lang in sorted(repo_languages, key=lambda x: x.get("percentage", 0), reverse=True)
-            ][:5]  # Top 5 languages
-            
-            logger.info(
-                "[REPO_LANGUAGES] repo=%s language_count=%d top_languages=%s",
-                repo_name,
-                len(repo_languages),
-                languages_tuples,
-            )
-
-            # Check if we have complete file data
-            has_readme = bool(fetch_result.get("readme_content"))
-            has_configs = bool(fetch_result.get("config_content"))
-            file_data_complete = has_readme or has_configs
-            
-            if not file_data_complete:
-                logger.warning(
-                    "[SUMMARY_GENERATION_LIMITED] repo=%s/%s generating_with=metadata_only readme=%s configs=%s",
-                    username, repo_name, has_readme, has_configs
-                )
-            elif not has_readme:
-                logger.info(
-                    "[SUMMARY_GENERATION_PARTIAL] repo=%s/%s generating_without_readme configs=%d",
-                    username, repo_name, len(fetch_result.get("config_content", {}))
-                )
-
-            summary_result = summary_manager.generate_repo_micro_summary(
-                repo_name=repo_name,
-                fingerprint=fingerprint,
-                repo_metadata={
-                    "name": repo_name,
-                    "description": metadata_row.get("description") or "",
-                    "topics": metadata_row.get("topics") or [],
-                    "languages": languages_tuples,
-                    "stats": {
-                        "stars": metadata_row.get("stars_count", 0),
-                        "forks": metadata_row.get("forks_count", 0),
-                    },
-                },
-                readme_content=fetch_result.get("readme_content"),
-                config_content=fetch_result.get("config_content", {}),
-            )
-            logger.info("[MICRO_SUMMARY_RESULT] repo=%s result_keys=%s", repo_name, sorted(summary_result.keys()))
-            
-            if summary_result.get("summary"):
-                summary_ready = True
-                logger.info("[MICRO_SUMMARY] Generated for %s/%s", username, repo_name)
-            else:
-                logger.warning("[MICRO_SUMMARY] Failed for %s/%s reason=%s", username, repo_name, summary_result.get("reason") or summary_result.get("error"))
-        except Exception as summary_exc:
-            logger.warning("[MICRO_SUMMARY] Exception for %s/%s: %s", username, repo_name, summary_exc)
+        summary_failed = False
         
-        # Update progress tracking (status: cached → summary_ready)
+        summary_manager = SummaryManager(username=username)
+
+        metadata_row = table_manager.get_repo_github_metadata(username, repo_name) or {}
+        repo_languages_raw = table_manager.get_repo_languages(job_id, repo_name)
+
+        repo_languages = [
+            lang for lang in repo_languages_raw
+            if lang.get("repo_name") == repo_name
+        ]
+
+        languages_tuples = [
+            (lang.get("language"), lang.get("percentage")) 
+            for lang in sorted(repo_languages, key=lambda x: x.get("percentage", 0), reverse=True)
+        ][:5]  # Top 5 languages
+
+        cache_key = summary_manager.build_repo_micro_summary_cache_key(repo_name, fingerprint)
+        table_manager.register_pending_cache_summary(username, repo_name, fingerprint, cache_key)
+        logger.info(
+            "[CACHE_REGISTRATION] repo=%s fingerprint=%s cache_key=%s status=pending",
+            repo_name, fingerprint, cache_key
+        )
+
+        summary_result = summary_manager.generate_repo_micro_summary(
+            repo_name=repo_name,
+            fingerprint=fingerprint,
+            job_id=job_id,
+            repo_metadata={
+                "name": repo_name,
+                "description": metadata_row.get("description") or "",
+                "topics": metadata_row.get("topics") or [],
+                "languages": languages_tuples,
+                "stats": {
+                    "stars": metadata_row.get("stars_count", 0),
+                    "forks": metadata_row.get("forks_count", 0),
+                },
+            },
+            readme_content=fetch_result.get("readme_content"),
+            config_content=fetch_result.get("config_content", {}),
+        )
+        logger.info("[MICRO_SUMMARY_RESULT] repo=%s result_keys=%s", repo_name, sorted(summary_result.keys()))
+        
+        if summary_result.get("summary"):
+            summary_ready = True
+            logger.info("[MICRO_SUMMARY] Generated for %s/%s", username, repo_name)
+        else:
+            summary_failed = True
+            logger.warning("[MICRO_SUMMARY] Failed for %s/%s reason=%s", username, repo_name, summary_result.get("reason") or summary_result.get("error"))
+        
+        # Update progress tracking (status: synced → summary_ready or failed)
         _update_cache_progress(
             job_id,
             username,
             repo_name,
-            summary_failed=False,
+            summary_failed=summary_failed,
             summary_ready=summary_ready,
             message_id=queue_message_id,
             trace_id=trace_id,
         )
 
     except ValueError as ve:
+        logger.info("************************ValueError processing cache job")
+        logger.info("ValueError processing cache job: %s", str(ve))
+        logger.error("ValueError processing cache job: %s", str(ve))
+        logger.warning("ValueError processing cache job: %s", str(ve))
         if job_id and username and repo_name:
             _update_cache_progress(
                 job_id,
@@ -542,6 +478,10 @@ def process_cache_job(msg: func.QueueMessage) -> None:
             )
         raise
     except Exception as exc:
+        logger.info("************************Exception processing cache job")
+        logger.info("Exception processing cache job: %s", str(exc))
+        logger.error("Exception processing cache job: %s", str(exc))
+        logger.warning("Exception processing cache job: %s", str(exc))
         if job_id and username and repo_name:
             _update_cache_progress(
                 job_id,

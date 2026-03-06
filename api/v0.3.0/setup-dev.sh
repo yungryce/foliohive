@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Setup development environment for Cloudfolio backend (v0.3.0)
+# Setup development environment for foliohive backend (v0.3.0)
 # Creates a single consolidated virtual environment at api/v0.3.0/.venv
 
 set -euo pipefail
@@ -110,14 +110,14 @@ smart_editable_install() {
         pkg_spec="-e ${pkg_dir}"
     fi
 
-    if pip show cloudfolio-shared >/dev/null 2>&1; then
+    if pip show foliohive-shared >/dev/null 2>&1; then
         if [[ "$FORCE_REINSTALL" == true ]]; then
-            log_info "Reinstalling cloudfolio-shared (force enabled)..."
+            log_info "Reinstalling foliohive-shared (force enabled)..."
         else
-            log_info "Refreshing cloudfolio-shared editable install..."
+            log_info "Refreshing foliohive-shared editable install..."
         fi
     else
-        log_info "Installing cloudfolio-shared${extras:+ with $extras}..."
+        log_info "Installing foliohive-shared${extras:+ with $extras}..."
     fi
 
     pip install $pkg_spec
@@ -256,7 +256,6 @@ check_python() {
 
     if [[ -n "$REQUESTED_PYTHON_VERSION" && "$REQUESTED_PYTHON_VERSION" != "3.13" ]]; then
         log_warn "Using Python $PYTHON_VERSION. Note: Azure Functions officially supports 3.12-3.14."
-        log_warn "Python 3.12 may work but is not officially supported for production deployments."
     fi
     
     log_info "Using Python $PYTHON_VERSION via $PYTHON_BIN"
@@ -294,7 +293,7 @@ install_requirements() {
     
     log_info "Installing $app_name requirements..."
     # Filter and install only missing packages
-    grep -v -E "^(cloudfolio-shared|\s*#|-e|$)" "$app_dir/requirements.txt" | while read -r req; do
+    grep -v -E "^(foliohive-shared|\s*#|-e|$)" "$app_dir/requirements.txt" | while read -r req; do
         [[ -z "$req" ]] && continue
         local pkg_name="${req%%[=<>]*}"
         if ! is_installed "$pkg_name" || [[ "$FORCE_REINSTALL" == true ]]; then
@@ -383,7 +382,7 @@ print_success() {
 main() {
     parse_args "$@"
     
-    log_info "Setting up Cloudfolio development environment..."
+    log_info "Setting up foliohive development environment..."
     [[ "$FORCE_REINSTALL" == true ]] && log_info "Force reinstall enabled"
     
     check_python

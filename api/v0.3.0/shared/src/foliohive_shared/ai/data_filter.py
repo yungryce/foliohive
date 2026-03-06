@@ -13,7 +13,7 @@ except ModuleNotFoundError:  # pragma: no cover
     tomllib = None
 
 
-logger = logging.getLogger("cloudfolio.data_filter")
+logger = logging.getLogger("foliohive.data_filter")
 logger.setLevel(logging.INFO)
 logger.propagate = True
 

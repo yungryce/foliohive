@@ -400,7 +400,7 @@ trigger: none  # Manual
 
 ## 🔐 Variable Groups
 
-### Cloudfolio-Vars
+### foliohive-Vars
 
 **Purpose**: Shared variables across all pipelines
 
@@ -418,7 +418,7 @@ trigger: none  # Manual
 | `acrName` | String | `foliohiveprodacr` | Container registry name |
 | `keyVaultName` | String | `foliohive-prod-kv` | Key Vault name |
 
-### Cloudfolio-Secrets (Linked from Key Vault)
+### foliohive-Secrets (Linked from Key Vault)
 
 **Purpose**: Secure secrets from Azure Key Vault
 
@@ -445,8 +445,8 @@ trigger: none  # Manual
 **Pipeline Configuration**:
 ```yaml
 variables:
-  - group: Cloudfolio-Vars
-  - group: Cloudfolio-Secrets  # Linked to Key Vault
+  - group: foliohive-Vars
+  - group: foliohive-Secrets  # Linked to Key Vault
 
 steps:
   - task: AzureKeyVault@2

@@ -1,4 +1,4 @@
-"""Cloudfolio consolidated Function App (v0.3.0).
+"""foliohive consolidated Function App (v0.3.0).
 
 This Function App hosts:
 - HTTP API routes (former api-gateway)
@@ -11,6 +11,21 @@ Logical separation is maintained via Azure Functions Blueprints.
 from __future__ import annotations
 
 import azure.functions as func
+import logging
+import os
+from logging.handlers import RotatingFileHandler
+
+_log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "logs")
+os.makedirs(_log_dir, exist_ok=True)
+_fh = RotatingFileHandler(
+    os.path.join(_log_dir, "worker.log"),
+    maxBytes=10 * 1024 * 1024,  # 10 MB
+    backupCount=3,
+    encoding="utf-8",
+)
+_fh.setLevel(logging.INFO)
+_fh.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+logging.getLogger("foliohive").addHandler(_fh)
 
 from blueprints.api_gateway import bp as api_gateway_bp
 from blueprints.cache_worker import bp as cache_worker_bp

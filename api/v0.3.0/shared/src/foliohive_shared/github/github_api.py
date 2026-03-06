@@ -1,16 +1,38 @@
 import logging
 import os
 from base64 import b64decode
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from .api_usage import ApiUsageTracker
+from .session_pool import SessionPool
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("foliohive.github_api")
+logger.setLevel(logging.INFO)
+logger.propagate = True
+
+
+def _resolve_default_table_manager() -> Optional[Any]:
+    try:
+        from foliohive_shared.table import get_table_manager
+
+        return get_table_manager()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.warning("Failed to resolve default table manager for GitHubAPI: %s", exc)
+        return None
+
+
+def _parse_rate_limit_reset(reset_value: Optional[str]) -> Optional[str]:
+    if not reset_value or not isinstance(reset_value, str) or not reset_value.isdigit():
+        return None
+    try:
+        return datetime.fromtimestamp(int(reset_value), timezone.utc).isoformat()
+    except (OverflowError, ValueError):
+        return None
 
 
 class GitHubAPI:
@@ -19,7 +41,8 @@ class GitHubAPI:
     DEFAULT_BASE_URL = "https://api.github.com"
 
     def __init__(self, token: Optional[str] = None, username: Optional[str] = None,
-                 base_url: str = DEFAULT_BASE_URL) -> None:
+                 base_url: str = DEFAULT_BASE_URL, session_pool: Optional[SessionPool] = None,
+                 table_manager: Optional[Any] = None) -> None:
         """Initialise the client and require an explicit GitHub username."""
 
         self.token = token or os.getenv('GITHUB_TOKEN')
@@ -32,23 +55,48 @@ class GitHubAPI:
         self.username = resolved_username
         self.base_url = base_url.rstrip('/')
         self.headers = {'Authorization': f'token {self.token}'} if self.token else {}
-        self.session = self._build_session()
-
-
-    def _build_session(self) -> requests.Session:
-        """Create a shared session with retries and connection pooling to reduce SNAT usage."""
-        retry = Retry(
-            total=5,
-            backoff_factor=0.5,
-            status_forcelist=(429, 500, 502, 503, 504),
-            allowed_methods=("HEAD", "GET", "OPTIONS", "POST", "PUT", "DELETE", "PATCH"),
-            raise_on_status=False,
+        
+        # Use provided session pool or create a new one
+        self.session_pool = session_pool or SessionPool()
+        self.session = self.session_pool.get_session()
+        self.table_manager = table_manager if table_manager is not None else _resolve_default_table_manager()
+        # Tracker owned by the API instance; reset per-operation via begin_tracking()
+        self.tracker = ApiUsageTracker(
+            owner=self.username,
+            repo=self.username,
+            table_manager=self.table_manager,
         )
-        adapter = HTTPAdapter(max_retries=retry, pool_connections=20, pool_maxsize=20)
-        session = requests.Session()
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-        return session
+
+    def begin_tracking(self, repo: str, *, purpose: str = "unknown", job_id: Optional[str] = None) -> ApiUsageTracker:
+        """Reset the internal tracker for a new logical operation.
+
+        Call this at the start of each top-level operation (per-repo or per-user)
+        so the tracker captures only the work done in that operation.
+
+        Returns the new tracker for convenience.
+        """
+        self.tracker = ApiUsageTracker(
+            owner=self.username,
+            repo=repo,
+            purpose=purpose,
+            job_id=job_id,
+            table_manager=self.table_manager,
+        )
+        return self.tracker
+
+    @contextmanager
+    def track_operation(
+        self,
+        *,
+        repo: str,
+        purpose: str = "unknown",
+        job_id: Optional[str] = None,
+    ):
+        tracker = self.begin_tracking(repo=repo, purpose=purpose, job_id=job_id)
+        try:
+            yield tracker
+        finally:
+            tracker.persist_operation_to_table()
 
     def make_request(
         self,
@@ -60,7 +108,6 @@ class GitHubAPI:
         data: Optional[Dict[str, Any]] = None,
         accept_raw: bool = False,
         timeout: int = 30,
-        usage: Optional[ApiUsageTracker] = None,
         purpose: Optional[str] = None,
         target_key: Optional[str] = None,
     ) -> Any:
@@ -72,15 +119,6 @@ class GitHubAPI:
         if accept_raw:
             request_headers['Accept'] = 'application/vnd.github.v3.raw'
 
-        # Log outgoing API call (before making request)
-        has_auth = 'Authorization' in request_headers
-        logger.info(
-            "[GITHUB_API_CALL] %s %s auth=%s params=%s",
-            method, endpoint, has_auth, params or {}
-        )
-
-        # STEP 1: Make the HTTP request with specific exception handling
-        response = None
         try:
             response = self.session.request(
                 method=method,
@@ -90,125 +128,122 @@ class GitHubAPI:
                 json=data,
                 timeout=timeout,
             )
-        except requests.Timeout as exc:
-            logger.error("[GITHUB_API_TIMEOUT] %s %s (timeout=%s)", method, full_url, timeout)
-            return None
-        except requests.ConnectionError as exc:
-            logger.error("[GITHUB_API_CONNECTION_ERROR] %s %s (error=%s)", method, full_url, exc)
-            return None
-        except requests.RequestException as exc:
-            logger.error("[GITHUB_API_REQUEST_ERROR] %s %s (error=%s)", method, full_url, exc)
-            return None
-        
-        # STEP 2: Validate response object exists
-        if response is None:
-            logger.error("[GITHUB_API_RESPONSE_IS_NONE] %s %s - response object is None", method, full_url)
-            return None
-
-        # STEP 3: Access status code separately
-        status_code = None
-        try:
-            status_code = response.status_code
-            logger.info("[GITHUB_API_STATUS_SUCCESS] %s status=%d", endpoint, status_code)
         except Exception as exc:
-            logger.error("[GITHUB_API_STATUS_ACCESS_FAILED] %s - cannot access status_code: %s", endpoint, exc)
-            return None
-
-        # STEP 4: Access headers separately
-        try:
-            rate_limit = response.headers.get("X-RateLimit-Limit", "unknown")
-            rate_remaining = response.headers.get("X-RateLimit-Remaining", "unknown")
-            rate_reset = response.headers.get("X-RateLimit-Reset", "unknown")
-            logger.info(
-                "[GITHUB_API_RESPONSE] %s status=%d rate_limit=%s/%s reset=%s",
-                endpoint, status_code, rate_remaining, rate_limit, rate_reset
+            error_type = (
+                "timeout" if isinstance(exc, requests.Timeout)
+                else "connection_error" if isinstance(exc, requests.ConnectionError)
+                else "request_error"
             )
-        except Exception as exc:
-            logger.error("[GITHUB_API_HEADERS_ACCESS_FAILED] %s - cannot access headers: %s", endpoint, exc)
-            rate_limit = "unknown"
-            rate_remaining = "unknown"
-            rate_reset = "unknown"
-
-        # STEP 5: Record usage if provided
-        if usage:
-            try:
-                rate_remaining_int = None
-                if isinstance(rate_remaining, str) and rate_remaining.isdigit():
-                    rate_remaining_int = int(rate_remaining)
-                usage.record_request(
-                    method=method,
-                    endpoint=endpoint,
-                    endpoint_kind="rest",
-                    purpose=purpose,
-                    target_key=target_key,
-                    status_code=status_code,
-                    rate_remaining=rate_remaining_int,
-                    cache_hit=False,
-                )
-            except Exception as exc:
-                logger.warning("[GITHUB_API_USAGE_RECORDING_FAILED] %s: %s", endpoint, exc)
-
-        # STEP 6: Respect GitHub rate limits
-        try:
-            if status_code == 403 and rate_remaining == "0":
-                reset = response.headers.get("X-RateLimit-Reset")
-                logger.error(
-                    "[GITHUB_RATE_LIMIT] Rate limit exceeded for %s; remaining=0/%s reset=%s",
-                    full_url, rate_limit, reset
-                )
-                if usage:
-                    usage.mark_rate_limited()
-                return None
-        except Exception as exc:
-            logger.error("[GITHUB_API_RATE_LIMIT_CHECK_FAILED] %s: %s", endpoint, exc)
-
-        # STEP 7: Handle specific status codes
-        if status_code == 404:
-            logger.info("[GITHUB_API_NOT_FOUND] %s", full_url)
+            logger.error("[GITHUB_API_REQUEST_FAILED %s] %s %s: %s", purpose or "unknown", method, full_url, exc)
+            self.tracker.record_error(error_type, endpoint, message=str(exc)[:100])
             return None
 
-        # STEP 8: Handle successful responses (200-299)
-        if 200 <= status_code < 300:
-            if accept_raw:
-                try:
-                    return response.text
-                except Exception as exc:
-                    logger.error("[GITHUB_API_TEXT_ACCESS_FAILED] %s - cannot access response.text: %s", endpoint, exc)
-                    return None
-            
-            # Try JSON parsing
-            try:
-                return response.json()
-            except ValueError as exc:
-                logger.warning("[GITHUB_API_JSON_PARSE_ERROR] %s - falling back to text: %s", endpoint, exc)
-                try:
-                    return response.text or None
-                except Exception as exc2:
-                    logger.error("[GITHUB_API_TEXT_FALLBACK_FAILED] %s - cannot access response.text: %s", endpoint, exc2)
-                    return None
-            except Exception as exc:
-                logger.error("[GITHUB_API_JSON_ACCESS_FAILED] %s - cannot call response.json(): %s", endpoint, exc)
-                return None
+        status_code = response.status_code
+        rate_remaining = response.headers.get("X-RateLimit-Remaining", "unknown")
+        rate_reset = _parse_rate_limit_reset(response.headers.get("X-RateLimit-Reset"))
 
-        # STEP 9: Handle error responses
-        try:
-            response_text = response.text[:200] if response.text else "(empty)"
-        except Exception as exc:
-            response_text = f"(inaccessible: {exc})"
-        
-        logger.warning(
-            "[GITHUB_API_ERROR_STATUS] %s status=%d response=%s",
-            endpoint,
-            status_code,
-            response_text,
+        rate_remaining_int = int(rate_remaining) if isinstance(rate_remaining, str) and rate_remaining.isdigit() else None
+        self.tracker.record_request(
+            method=method,
+            endpoint=endpoint,
+            endpoint_kind="rest",
+            purpose=purpose or self.tracker.purpose,
+            target_key=target_key,
+            status_code=status_code,
+            rate_remaining=rate_remaining_int,
+            rate_reset=rate_reset,
+            cache_hit=False,
         )
-        
+
+        if status_code == 403 and rate_remaining_int == 0:
+            self.tracker.mark_rate_limited()
+            self.tracker.record_error(
+                "rate_limited",
+                endpoint,
+                status_code=status_code,
+                message=getattr(response, "text", "")[:100],
+            )
+        elif status_code >= 400:
+            self.tracker.record_error(
+                "http_error",
+                endpoint,
+                status_code=status_code,
+                message=getattr(response, "text", "")[:100],
+            )
+
+        if accept_raw:
+            return response.text
         try:
-            response.raise_for_status()
+            return response.json()
         except Exception as exc:
-            logger.warning("[GITHUB_API_RAISE_FOR_STATUS] %s: %s", endpoint, exc)
+            logger.warning("[GITHUB_API_JSON_PARSE_ERROR %s] %s: %s", purpose or "unknown", endpoint, exc)
+            return None
         
-        return None
+
+    def make_request_gql(
+        self,
+        *,
+        query: str,
+        variables: Optional[Dict[str, Any]] = None,
+        purpose: str = "graphql_batch",
+    ) -> Optional[Dict[str, Any]]:
+        """Perform a GraphQL request against the GitHub API."""
+        headers = {"Authorization": f"bearer {self.token}"} if self.token else {}
+        payload = {"query": query, "variables": variables or {}}
+        repo = variables.get("name") if variables else None
+        GRAPHQL_URL = "https://api.github.com/graphql"
+        logger.info("[GITHUB_GRAPHQL_POST] repo=%s purpose=%s", repo, purpose)
+
+        try:
+            response = self.session.post(GRAPHQL_URL, json=payload, headers=headers, timeout=30)
+        except Exception as exc:
+            error_type = (
+                "timeout" if isinstance(exc, requests.Timeout)
+                else "connection_error" if isinstance(exc, requests.ConnectionError)
+                else "request_error"
+            )
+            logger.error("[GITHUB_GRAPHQL_FAILED %s] %s: %s", purpose, type(exc).__name__, exc)
+            self.tracker.record_error(error_type, "graphql", message=str(exc)[:100])
+            return None
+
+        status = response.status_code
+        rate_remaining = response.headers.get("X-RateLimit-Remaining")
+        rate_reset = _parse_rate_limit_reset(response.headers.get("X-RateLimit-Reset"))
+        logger.info("[GITHUB_GRAPHQL_RESPONSE %s] status=%d rate_remaining=%s", purpose, status, rate_remaining)
+
+        self.tracker.record_request(
+            method="POST",
+            endpoint="graphql",
+            endpoint_kind="graphql",
+            purpose=purpose or self.tracker.purpose,
+            status_code=status,
+            rate_remaining=int(rate_remaining) if isinstance(rate_remaining, str) and rate_remaining.isdigit() else None,
+            rate_reset=rate_reset,
+            cache_hit=False,
+        )
+
+        if status == 403 and isinstance(rate_remaining, str) and rate_remaining.isdigit() and int(rate_remaining) == 0:
+            self.tracker.mark_rate_limited()
+            self.tracker.record_error(
+                "rate_limited",
+                "graphql",
+                status_code=status,
+                message=getattr(response, "text", "")[:100],
+            )
+
+        payload = response.json()
+        errors = payload.get("errors") if isinstance(payload, dict) else None
+        if isinstance(errors, list) and errors:
+            first_message = errors[0].get("message", "") if isinstance(errors[0], dict) else str(errors[0])
+            self.tracker.record_error(
+                "graphql_error",
+                "graphql",
+                status_code=status,
+                message=first_message,
+            )
+
+        return payload
+
 
     def decode_file_content(self, file_data: Dict[str, Any]) -> Optional[str]:
         """Base64 decode a file payload returned by GitHub."""
@@ -222,15 +257,3 @@ class GitHubAPI:
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.warning("Failed to decode GitHub file content: %s", exc)
             return None
-    
-    def get_user_profile(
-        self,
-        username: str,
-        *,
-        usage: Optional[ApiUsageTracker] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Fetch a GitHub user profile (GET /users/{username})."""
-        if not username:
-            raise ValueError("GitHub username is required")
-        return self.make_request("GET", f"users/{username}", usage=usage, purpose="user_profile")
-

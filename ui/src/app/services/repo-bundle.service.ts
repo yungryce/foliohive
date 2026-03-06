@@ -26,23 +26,23 @@ export interface RefreshResponse {
 export interface JobStatusResponse {
   job_id: string;
   username: string;
-  status: string;  // "queued" | "syncing" | "metadata_ready" | "completed" | "failed"
-  metadata_ready: boolean;  // True when first repo cached (can display metadata)
-  files_ready: boolean;     // True when all files cached (can display README)
-  progress: {
+  status: string;  // "queued" | "syncing" | "metadata_ready" | "caching_started" | "completed" | "failed"
+  metadata_ready: boolean;  // True when metadata available (metadata_ready or later)
+  summary_ready: boolean;   // True when summaries generated (completed)
+  progress?: {
     total: number;
-    completed: number;      // cached + failed (terminal states)
+    completed: number;      // summary_ready + failed (terminal states)
     percentage: number;
-    pending: number;        // Waiting to sync
-    synced: number;         // Metadata synced, files pending
-    cached: number;         // Files cached (ready)
+    pending: number;        // Waiting to process
+    synced: number;         // Metadata synced, summary pending
+    summary_ready: number;  // Micro-summary generated
     failed: number;         // Terminal failure state
   };
   created_at?: string;
   repo_details?: {
     pending: string[];
     synced: string[];
-    cached: string[];
+    summary_ready: string[];
     failed: string[];
   };
 }
@@ -128,7 +128,7 @@ export class RepoBundleService {
         const payload = (res?.status === 'success' && res?.data) ? res.data : res;
         const jobStatus = payload as JobStatusResponse;
         console.log(
-          `[getJobStatus] response: status=${jobStatus?.status}, metadata_ready=${jobStatus?.metadata_ready}, files_ready=${jobStatus?.files_ready}, progress=${jobStatus?.progress?.completed}/${jobStatus?.progress?.total}`
+          `[getJobStatus] response: status=${jobStatus?.status}, metadata_ready=${jobStatus?.metadata_ready}, summary_ready=${jobStatus?.summary_ready}, progress=${jobStatus?.progress?.completed}/${jobStatus?.progress?.total}`
         );
         return jobStatus;
       }),

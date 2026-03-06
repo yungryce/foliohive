@@ -14,9 +14,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from foliohive_shared.ai import AIAssistant
-from foliohive_shared import cache_manager
+from foliohive_shared.cache.cache_manager import cache_manager
+from foliohive_shared.table import get_table_manager, RepoCacheSummaryRow
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("foliohive.summary_manager")
+logger.setLevel(logging.INFO)
+logger.propagate = True
 
 
 # Model configuration - OpenAI GPT models only
@@ -161,7 +164,6 @@ class SummaryManager:
         profile: Dict[str, Any],
         repo_rows: List[Dict[str, Any]],
         statistics: Dict[str, Any],
-        repo_files: Optional[Dict[str, Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """Get cached or generate new profile summary.
         
@@ -171,7 +173,6 @@ class SummaryManager:
             repo_rows: List of repository metadata rows
             languages_by_repo: Languages data by repo name
             statistics: Aggregated statistics
-            repo_files: Optional dict of {repo_name: {readme, configs}}
             
         Returns:
             Dict with summary_html, metadata (cache_hit, tokens, etc.)
@@ -181,12 +182,14 @@ class SummaryManager:
 
         micro_summaries: List[Dict[str, Any]] = []
         for repo in repo_rows:
+            logger.info(f"Processing repo {repo.get('repo_name') or repo.get('name')} for profile summary aggregation")
             repo_name = repo.get("repo_name") or repo.get("name")
             fingerprint = repo.get("fingerprint")
             if not repo_name or not fingerprint:
                 continue
             cached = self.get_repo_micro_summary(repo_name, fingerprint)
             if not cached:
+                logger.warning(f"Missing micro-summary for {repo_name} (fingerprint: {fingerprint}) - skipping in profile aggregation")
                 continue
             micro_summaries.append(
                 {
@@ -253,7 +256,9 @@ class SummaryManager:
         summary_html = self.ai_assistant.summarize_readme_html(
             readme_text=readme_content,
             repo_name=repo_name,
-            model_tier=model_tier
+            model_tier=model_tier,
+            purpose="get_or_generate_readme_summary",
+            job_id=job_id,
         )
         
         metadata = {
@@ -565,16 +570,35 @@ class SummaryManager:
         return response_payload
 
     def build_repo_micro_summary_cache_key(self, repo_name: str, fingerprint: str) -> str:
+        """Build cache key for micro-summary blob storage.
+        
+        Args:
+            repo_name: Repository name (may contain /)
+            fingerprint: Content fingerprint for cache invalidation
+            
+        Returns:
+            Safe cache key for blob storage
+        """
         safe_repo = str(repo_name).replace("/", "_").replace(" ", "_")
         safe_fingerprint = str(fingerprint).replace("/", "_").replace(" ", "_")
         return f"repo_micro_summary:{self.username}:{safe_repo}:{safe_fingerprint}"
 
     def get_repo_micro_summary(self, repo_name: str, fingerprint: str) -> Optional[Dict[str, Any]]:
-        key = self.build_repo_micro_summary_cache_key(repo_name, fingerprint)
-        cached = cache_manager.get(key)
+        """Get micro-summary from cache with table validation."""
+        # First check table for cache entry existence
+        table_manager = get_table_manager()
+        cache_entry = table_manager.get_cache_summary(self.username, repo_name, fingerprint)
+        
+        if not cache_entry:
+            return None  # Not cached or stale
+        
+        # Cache entry exists and is valid - fetch from blob
+        cache_key = cache_entry.get("cache_key")
+        cached = cache_manager.get(cache_key)
         if cached.get("status") == "valid":
             data = cached.get("data")
             return data if isinstance(data, dict) else None
+        
         return None
 
     def _validate_micro_summary_schema(self, payload: Dict[str, Any]) -> bool:
@@ -600,30 +624,23 @@ class SummaryManager:
         *,
         repo_name: str,
         fingerprint: str,
+        job_id: Optional[str] = None,
         repo_metadata: Dict[str, Any],
         readme_content: Optional[str],
         config_content: Optional[Dict[str, str]],
     ) -> Dict[str, Any]:
-        """Generate and cache JSON micro-summary for one repository.
+        """Generate and cache JSON micro-summary.
         
-        Args:
-            repo_name: Repository name
-            fingerprint: Repo fingerprint for cache invalidation
-            repo_metadata: Repository metadata (name, description, languages, stats)
-            readme_content: README file content (string)
-            config_content: Dict of {filename: json_string} with extracted config payloads
-                           (values are JSON-serialized strings, not raw dicts)
-        
-        Returns:
-            Dict with cache_hit, summary, and optionally error/reason
+        Assumes cache entry was registered with pending status before calling.
+        Updates status to 'valid' on success or leaves as 'pending' on failure.
         """
-
-        logger.info(f"Generating micro-summary for {repo_name} (fingerprint: {fingerprint}) with metadata: {repo_metadata.keys()} and readme length: {len(readme_content) if readme_content else 0} and config files: {list(config_content.keys()) if config_content else []}")
-
+        
+        # Check cache table first
         cached = self.get_repo_micro_summary(repo_name, fingerprint)
         if cached:
+            logger.info(f"Cache hit for micro-summary of {repo_name} (fingerprint: {fingerprint})")
             return {"cache_hit": True, "summary": cached}
-
+        
         token_budget = {
             "metadata": 2000,
             "readme": 8000,
@@ -637,9 +654,7 @@ class SummaryManager:
             config_files=config_content or {},
             token_budget=token_budget,
         )
-
-        logger.info("*********************dlnek*********************")
-        logger.info(f"Context built for {repo_name} (fingerprint: {fingerprint}): {context.keys()} with estimated tokens: {context.get('tokens_estimated', 0)}")
+        logger.info(f"Context built for micro-summary of {repo_name} (fingerprint: {fingerprint}) with estimated tokens: {context.get('tokens_estimated', 0)}")
 
         attempts = 2
         last_error = None
@@ -648,17 +663,30 @@ class SummaryManager:
                 repo_name=repo_name,
                 repo_context=context,
                 model_tier=MODEL_ASSIGNMENTS.get("readme", "default"),
+                purpose="get_repo_micro_summary",
+                job_id=job_id,
             )
             if isinstance(summary, dict) and self._validate_micro_summary_schema(summary):
                 key = self.build_repo_micro_summary_cache_key(repo_name, fingerprint)
                 cache_manager.save(key, summary)
-                summary_response = {
+                logger.info(f"Cache updated for micro-summary of {repo_name} (fingerprint: {fingerprint})")
+                # Update cache entry status to valid
+                table_manager = get_table_manager()
+                cache_row = RepoCacheSummaryRow(
+                    username=self.username,
+                    repo_name=repo_name,
+                    fingerprint=fingerprint,
+                    cache_key=key,
+                    cache_status="valid",
+                    generated_at=datetime.now(timezone.utc).isoformat(),
+                )
+                table_manager.upsert_cache_summary(cache_row)
+                
+                return {
                     "cache_hit": False,
                     "summary": summary,
                     "tokens_estimated": context.get("tokens_estimated", 0),
                 }
-                logger.info("[Count] %s : [Summary] %s", _, summary)
-                return summary_response
             
             last_error = summary.get("error") if isinstance(summary, dict) else "invalid_response"
             logger.info(f"Micro-summary generation attempt failed for {repo_name} (fingerprint: {fingerprint}): {last_error}")
@@ -697,6 +725,7 @@ class SummaryManager:
         Returns:
             Dict with summary_html (cached) and metadata
         """
+        logger.info(f"Expanding micro-summary for {repo_name} (fingerprint: {fingerprint})")
         cache_key = self.build_expanded_summary_cache_key(repo_name, fingerprint)
         cached = cache_manager.get(cache_key)
         if cached.get("status") == "valid":
@@ -714,6 +743,7 @@ class SummaryManager:
             micro_summary=micro_summary,
             repo_metadata=repo_metadata,
             model_tier=MODEL_ASSIGNMENTS.get("readme", "default"),
+            purpose="expand_repo_micro_summary",
         )
 
         # Cache the expanded summary

@@ -14,8 +14,6 @@ class TestRepoManagerFileDiscovery:
         api = Mock()
         manager = GitHubRepoManager(api=api, username="alice")
         manager.get_repo_path_index = Mock(return_value=["requirements.txt", "package.json", "README.md"])
-        manager.get_file_content = Mock(side_effect=lambda username, repo, path, usage=None: f"content:{path}")
-
         result = manager.get_standard_config_files(username="alice", repo="sample", limit=30)
 
         assert "requirements.txt" in result
@@ -41,36 +39,6 @@ class TestRepoManagerFileDiscovery:
 
         assert "src/package.json" in selected
         assert "src/random.txt" not in selected
-
-    def test_persists_discovered_paths_to_table(self):
-        api = Mock()
-        manager = GitHubRepoManager(api=api, username="alice")
-        table = Mock()
-
-        manager.persist_discovered_paths(
-            table_manager_obj=table,
-            username="alice",
-            repo="sample",
-            fingerprint="fp-1",
-            config_files={"package.json": "{}"},
-            readme_files={"README.md": "# readme"},
-            extraction_metadata={
-                "package.json": {
-                    "extractor_key": "_extract_package_json",
-                    "extraction_status": "extracted",
-                }
-            },
-        )
-
-        table.upsert_repo_discovered_paths.assert_called_once()
-        row = table.upsert_repo_discovered_paths.call_args[0][0]
-        assert row.username == "alice"
-        assert row.repo_name == "sample"
-        assert "README.md" in row.discovered_paths
-        assert "package.json" in row.discovered_paths
-        assert row.extraction_metadata["package.json"]["extraction_status"] == "extracted"
-
-
 class TestRepoManagerExtractionIntegration:
     """Test extraction triggering during cache phase."""
 

@@ -10,12 +10,12 @@ export interface PollOptions {
 }
 
 /**
- * Centralized service for polling job status with support for metadata_ready and files_ready states.
+ * Centralized service for polling job status with support for metadata_ready and summary_ready states.
  * 
  * Usage:
  * - pollJobStatus() - Poll until completed/failed, emitting all status updates
  * - waitForMetadataReady() - Complete when metadata is ready for display
- * - waitForFilesReady() - Complete when files/summaries are ready for display
+ * - waitForFilesReady() - Complete when summaries are ready for display
  */
 @Injectable({ providedIn: 'root' })
 export class JobPollingService {
@@ -78,7 +78,7 @@ export class JobPollingService {
         
         // Continue polling until completed or failed
         const isActive = status.status !== 'completed' && status.status !== 'failed';
-        console.debug(`[pollJobStatus] status=${status.status}, metadata_ready=${status.metadata_ready}, files_ready=${status.files_ready}, isActive=${isActive}`);
+        console.debug(`[pollJobStatus] status=${status.status}, metadata_ready=${status.metadata_ready}, summary_ready=${status.summary_ready}, isActive=${isActive}`);
         return isActive;
       }, true), // inclusive=true to emit final completed/failed status
       finalize(() => {
@@ -119,20 +119,20 @@ export class JobPollingService {
           this.stop$.next();  // Signal root polling to stop
           return false;
         }
-        console.debug(`[waitForMetadataReady] waiting: status=${status.status}, metadata_ready=${status.metadata_ready}, progress=${status.progress?.cached}/${status.progress?.total}`);
+        console.debug(`[waitForMetadataReady] waiting: status=${status.status}, metadata_ready=${status.metadata_ready}, progress=${status.progress?.completed}/${status.progress?.total}`);
         return true; // Continue polling
       }, true) // inclusive=true to emit the ready status
     );
   }
 
   /**
-   * Poll until files_ready is true, then complete.
-   * Use when you need to wait for file caching/summaries to be available.
+   * Poll until summary_ready is true, then complete.
+   * Use when you need to wait for micro-summaries to be available.
    * 
    * @param username - GitHub username
    * @param jobId - Job ID to poll
    * @param options - Polling configuration
-   * @returns Observable<JobStatusResponse> completing when files are ready
+   * @returns Observable<JobStatusResponse> completing when summaries are ready
    */
   waitForFilesReady(
     username: string,
@@ -146,8 +146,8 @@ export class JobPollingService {
           return false;
         }
         
-        // Complete when files_ready flag is true or job failed
-        if (status.files_ready) {
+        // Complete when summary_ready flag is true or job failed
+        if (status.summary_ready) {
           this.stop$.next();  // Signal root polling to stop
           return false; // Stop and emit this final value
         }
@@ -155,7 +155,7 @@ export class JobPollingService {
           this.stop$.next();  // Signal root polling to stop
           return false;
         }
-        console.debug(`[waitForFilesReady] waiting: status=${status.status}, files_ready=${status.files_ready}, progress=${status.progress?.cached}/${status.progress?.total}`);
+        console.debug(`[waitForFilesReady] waiting: status=${status.status}, summary_ready=${status.summary_ready}, progress=${status.progress?.summary_ready}/${status.progress?.total}`);
         return true; // Continue polling
       }, true) // inclusive=true to emit the ready status
     );

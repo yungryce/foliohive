@@ -86,7 +86,7 @@ export class LandingComponent implements OnInit, OnDestroy {
           
           // Update progress UI
           this.buildProgress = status.progress?.percentage ?? 0;
-          const cached = status.progress?.cached ?? 0;
+          const cached = status.progress?.summary_ready ?? 0;
           const total = status.progress?.total ?? 0;
           this.statusMessage = `Synced ${cached} of ${total} repositories...`;
           

@@ -3,7 +3,24 @@
 Keep imports light here — import heavy ML dependencies inside functions.
 """
 
-from foliohive_shared.ai.ai_assistant import AIAssistant
-from foliohive_shared.ai.summary_manager import SummaryManager, FILE_BUDGETS, get_file_budget
+__all__ = ["AIAssistant", "SummaryManager", "AIUsageTracker", "FILE_BUDGETS", "get_file_budget"]
 
-__all__ = ["AIAssistant", "SummaryManager", "FILE_BUDGETS", "get_file_budget", "ai_assistant", "summary_manager"]
+
+def __getattr__(name: str):
+    """Lazy loading for AI modules to avoid early dependency loading."""
+    if name == "AIAssistant":
+        from foliohive_shared.ai.ai_assistant import AIAssistant
+        return AIAssistant
+    if name == "SummaryManager":
+        from foliohive_shared.ai.summary_manager import SummaryManager
+        return SummaryManager
+    if name == "AIUsageTracker":
+        from foliohive_shared.ai.api_usage import AIUsageTracker
+        return AIUsageTracker
+    if name == "FILE_BUDGETS":
+        from foliohive_shared.ai.summary_manager import FILE_BUDGETS
+        return FILE_BUDGETS
+    if name == "get_file_budget":
+        from foliohive_shared.ai.summary_manager import get_file_budget
+        return get_file_budget
+    raise AttributeError(f"module 'foliohive_shared.ai' has no attribute '{name}'")

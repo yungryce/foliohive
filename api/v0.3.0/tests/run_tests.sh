@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Central test runner for every Cloudfolio app
-# Requires: cloudfolio-shared installed via ../setup-dev.sh
+# Central test runner for every foliohive app
+# Requires: foliohive-shared installed via ../setup-dev.sh
 
 set -euo pipefail
 
@@ -26,7 +26,7 @@ show_help() {
     cat <<'EOF'
 Usage: ./tests/run_tests.sh [options] [path]
 
-Requires: Run ../setup-dev.sh first to install cloudfolio-shared
+Requires: Run ../setup-dev.sh first to install foliohive-shared
 
 Options:
   -h, --help            Show this help message
@@ -97,7 +97,7 @@ pushd "$APPS_DIR" > /dev/null
 
 # Ensure shared package is available (installed by setup-dev.sh)
 if ! python -c "import foliohive_shared" >/dev/null 2>&1; then
-    echo -e "${RED}❌ cloudfolio-shared not found in active environment.${NC}"
+    echo -e "${RED}❌ foliohive-shared not found in active environment.${NC}"
     echo -e "${YELLOW}Make sure the consolidated venv is activated:${NC}"
     echo -e "${YELLOW}  source .venv/bin/activate${NC}"
     echo -e "${YELLOW}Or run full setup:${NC}"

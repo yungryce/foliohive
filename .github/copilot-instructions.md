@@ -1,5 +1,5 @@
 #  Recruiting analysis tool
-**codebase root**: `/home/juk/DEV/cloudfolio/`
+**codebase root**: `/home/juk/DEV/foliohive/`
 **api root**: `/api/v0.3.0/function-app/function_app.py`
 **api gateway**: `/api/v0.3.0/api_gateway/api_gateway.py`
 **shared modules**: `/api/v0.3.0/shared/src/foliohive_shared/`
@@ -70,7 +70,7 @@ Client has 4 views that retrives and displays data from the server. These views 
 
 **Job Status**
 - Job status is tracked and updated by `api_gateway.job_job_status()` via `table_manager.py` `JobMetadata` and `RepoSyncStatus`. Status are updated during `sync_worker._update_job_progress()` and `cache_worker._update_cache_progress()`.
-- `RepoSyncStatus` per-repo status transitions: `pending → synced → cached → summary_ready` (or `failed` at any stage). `summary_ready` is set after micro-summary generation succeeds.
+- `RepoSyncStatus` per-repo status transitions: `pending → synced → summary_ready` (or `failed` at any stage). `summary_ready` is set after micro-summary generation succeeds.
 - This is a backend-only feature used for debugging, monitoring, and progress feedback.
 
 **Fingerprinting**
@@ -80,7 +80,6 @@ Client has 4 views that retrives and displays data from the server. These views 
 **reconciliation and Cleanup**
 - `cleanup_old_jobs`: Cron job that cleans up inactive jobs in `JobMetadata`, `RepoSyncStatus`, and `SessionCandidates`.
 - `cleanup_old_repo_github_metadata`: Cron job that cleans up stale repo metadata and associated blobs based on fingerprint validation in `RepoSyncStatus`. This ensures we don't keep outdated data and helps manage storage costs.
-- `cleanup_old_discovered_paths`: Cron job that cleans up stale discovered paths in `RepoDiscoveredPathsRow` based on repo freshness. This ensures we don't keep outdated file path data and helps manage storage costs.
 
 
 **Table Schema Overview**
@@ -88,8 +87,8 @@ Client has 4 views that retrives and displays data from the server. These views 
 - `JobMetadata`: Tracks metadata for each sync job, including job ID, candidate username, start time, end time, and status.
 - `RepoLanguages`: Stores information about the programming languages used in each repository, including language name and percentage of code written in that language.
 - `RepoGitHubMetadata`: Stores GitHub metadata for each repository, such as stars, forks, issues, and pull requests.
-- `RepoSyncStatus`: Tracks per-repo pipeline status. Valid values: `pending | synced | cached | summary_ready | failed`. `summary_ready` indicates micro-summary generation succeeded and the repo is available for profile aggregation and query context.
-- `RepoDiscoveredPathsRow`: Stores discovered file paths per repo (readme and config), fingerprint snapshot for cache invalidation, and per-file extraction metadata (extractor key, success/failure).
+- `RepoSyncStatus`: Tracks per-repo pipeline status. Valid values: `pending | synced | summary_ready | failed`. `summary_ready` indicates micro-summary generation succeeded and the repo is available for profile aggregation and query context.
+- `RepoCacheSummaryRow`: Stores cached repo micro-summaries with fingerprint validation.
 - `UserProfileRow`: Stores candidate GitHub profile metadata.
 
 **AI Summary Pipeline Overview**

@@ -15,7 +15,7 @@ import azure.functions as func
 from foliohive_shared import table_manager
 from foliohive_shared.github.github_repo_manager import get_non_bundle_cache_prefixes
 
-logger = logging.getLogger("cloudfolio.reconciler")
+logger = logging.getLogger("foliohive.reconciler")
 logger.setLevel(logging.INFO)
 logger.propagate = True
 
@@ -82,20 +82,3 @@ def cleanup_old_repo_github_metadata(timer: func.TimerRequest) -> None:
             cutoff
         )
 
-
-@bp.timer_trigger(arg_name="timer", schedule=DISCOVERED_PATHS_CLEANUP_SCHEDULE)
-def cleanup_old_discovered_paths(timer: func.TimerRequest) -> None:
-    """Cleanup stale RepoDiscoveredPaths entries.
-    
-    Fingerprint-based cleanup pattern: Removes cached blob path references not recently accessed.
-    Orphaned or fingerprint-mismatched paths will be refetched on next cache job.
-    """
-    if os.getenv("CF_DISCOVERED_PATHS_CLEANUP_ENABLED", "true").lower() != "true":
-        return
-
-    retention_days = _env_int("CF_DISCOVERED_PATHS_RETENTION_DAYS", 30)
-    cutoff = (_utcnow() - timedelta(days=retention_days)).isoformat()
-
-    deleted_paths = table_manager.cleanup_old_discovered_paths(cutoff)
-    if deleted_paths:
-        logger.info("[DISCOVERED_PATHS_CLEANUP] deleted_paths=%d (older than %d days)", deleted_paths, retention_days)

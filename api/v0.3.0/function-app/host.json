@@ -2,7 +2,9 @@
   "version": "2.0",
   "extensions": {
     "queues": {
-      "messageEncoding": "none"
+      "messageEncoding": "none",
+      "maxConcurrentCalls": 8,
+      "newBatchThreshold": 4
     }
   },
   "logging": {

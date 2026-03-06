@@ -76,39 +76,4 @@ export class ProfileService {
       })
     );
   }
-
-  /**
-   * Get candidate summary with automatic polling if data is not ready.
-   * 
-   * This method wraps getCandidateSummary with polling logic:
-   * - Tries to fetch summary immediately
-   * - On NOT_READY (404) error, polls until files_ready
-   * - Retries fetch after files are ready
-   * 
-   * @param username - GitHub username
-   * @param jobId - Job ID (required for polling)
-   * @returns Observable<CandidateSummaryResponse>
-   */
-  getCandidateSummaryWithPolling(username: string, jobId?: string): Observable<CandidateSummaryResponse> {
-    return this.getCandidateSummary(username, jobId).pipe(
-      catchError((error) => {
-        // Check if error is NOT_READY (404) and we have a job_id
-        const isNotReady = error?.status === 404 || error?.error?.error_code === 'NOT_READY';
-        
-        if (isNotReady && jobId) {
-          // Poll until files are ready, then retry
-          return this.jobPollingService.waitForFilesReady(username, jobId).pipe(
-            switchMap(() => this.getCandidateSummary(username, jobId)),
-            catchError(() => {
-              // Failed even after polling - return empty
-              return of({ username, summary_html: '' } as CandidateSummaryResponse);
-            })
-          );
-        }
-        
-        // Not a NOT_READY error or no job_id - return empty
-        return of({ username, summary_html: '' } as CandidateSummaryResponse);
-      })
-    );
-  }
 }

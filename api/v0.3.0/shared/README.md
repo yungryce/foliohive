@@ -1,6 +1,6 @@
-# Cloudfolio Shared Package (v0.3.0)
+# foliohive Shared Package (v0.3.0)
 
-Shared Python utilities for Cloudfolio services.
+Shared Python utilities for foliohive services.
 
 The package lives under `api/v0.3.0/shared/` and is imported by Function Apps and other backend components as `foliohive_shared`.
 
@@ -49,4 +49,4 @@ Backend tests (unit + integration) are centralized under `api/v0.3.0/tests/`:
 cd api/v0.3.0/tests
 ./run_tests.sh
 ```
-# Cloudfolio Shared Package
+# foliohive Shared Package

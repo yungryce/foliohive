@@ -1,4 +1,4 @@
-"""Cloudfolio shared modules.
+"""foliohive shared modules.
 
 The v0.3.0 backend is a single Azure Functions app with multiple blueprints.
 This package contains the reusable logic those blueprints depend on.
@@ -65,6 +65,9 @@ def __getattr__(name: str):
     if name == "TableManager":
         from foliohive_shared.table import TableManager
         return TableManager
+    if name == "AIRequestUsageRow":
+        from foliohive_shared.table import AIRequestUsageRow
+        return AIRequestUsageRow
     if name == "JobMetadataRow":
         from foliohive_shared.table import JobMetadataRow
         return JobMetadataRow
@@ -77,9 +80,9 @@ def __getattr__(name: str):
     if name == "UserProfileRow":
         from foliohive_shared.table import UserProfileRow
         return UserProfileRow
-    if name == "RepoDiscoveredPathsRow":
-        from foliohive_shared.table import RepoDiscoveredPathsRow
-        return RepoDiscoveredPathsRow
+    if name == "RepoCacheSummaryRow":
+        from foliohive_shared.table import RepoCacheSummaryRow
+        return RepoCacheSummaryRow
     
     # AI utilities
     if name == "AIAssistant":
@@ -88,6 +91,9 @@ def __getattr__(name: str):
     if name == "SummaryManager":
         from foliohive_shared.ai.summary_manager import SummaryManager
         return SummaryManager
+    if name == "AIUsageTracker":
+        from foliohive_shared.ai.api_usage import AIUsageTracker
+        return AIUsageTracker
     if name == "get_file_budget":
         from foliohive_shared.ai.summary_manager import get_file_budget
         return get_file_budget

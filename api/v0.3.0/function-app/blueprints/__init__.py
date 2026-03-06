@@ -1,1 +1,1 @@
-"""Blueprint modules for the consolidated Cloudfolio Function App."""
+"""Blueprint modules for the consolidated foliohive Function App."""

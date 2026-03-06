@@ -1,4 +1,4 @@
-"""Queue utilities for Cloudfolio shared package."""
+"""Queue utilities for foliohive shared package."""
 
 from .queue_manager import QueueManager, queue_manager
 

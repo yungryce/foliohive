@@ -22,10 +22,9 @@ from foliohive_shared import (
     queue_manager,
     table_manager,
 )
-from foliohive_shared.github.api_usage import ApiUsageTracker
-from foliohive_shared.table import RepoLanguagesRow, RepoGitHubMetadataRow, RepoAPIUsageRow
+from foliohive_shared.table import RepoLanguagesRow, RepoGitHubMetadataRow
 
-logger = logging.getLogger("cloudfolio.sync_worker")
+logger = logging.getLogger("foliohive.sync_worker")
 logger.setLevel(logging.INFO)
 logger.propagate = True
 
@@ -37,6 +36,9 @@ STANDARD_CONFIG_FETCH_LIMIT = 20
 STANDARD_CONFIG_MAX_CHARS = 4000
 
 
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
 def _get_repo_manager(username: str) -> GitHubRepoManager:
     if not username:
         raise ValueError("Username required")
@@ -64,56 +66,6 @@ def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
     )
 
     return payload
-
-
-def _record_api_usage_from_tracker(
-    username: str,
-    job_id: str,
-    repo_name: str,
-    operation: str,
-    api_usage_dict: Dict[str, Any],
-) -> None:
-    """Record API usage from GitHubRepoManager's ApiUsageTracker to table storage."""
-    totals = api_usage_dict.get("totals", {})
-
-    
-    # Count REST vs GraphQL calls (simplified - assume all are REST unless endpoint_kind is graphql)
-    api_calls_rest = totals.get("requests", 0)
-    api_calls_graphql = 0  # GitHubRepoManager would need to track this separately
-    
-    # Count cache hits from file_targets
-    file_targets = api_usage_dict.get("file_targets", {})
-    cache_hits = sum(target.get("cache_hits", 0) for target in file_targets.values())
-    
-    # Generate operation key: {operation}|{timestamp}|{repo_name}
-    now = datetime.now(timezone.utc).isoformat()
-    # Sanitize timestamp for Azure Table RowKey (no :, /, \, #, ?)
-    safe_timestamp = now.replace(":", "-").replace("+", "_")
-    operation_key = f"{operation}|{safe_timestamp}|{repo_name}"
-    
-    row = RepoAPIUsageRow(
-        username=username,
-        operation_key=operation_key,
-        operation=operation,
-        job_id=job_id,
-        repo_name=repo_name,
-        api_calls_rest=api_calls_rest,
-        api_calls_graphql=api_calls_graphql,
-        cache_hits=cache_hits,
-        rate_limit_remaining=None,  # Would need to extract from last request
-        rate_limit_reset=None,
-        created_at=safe_timestamp,  # Use sanitized timestamp
-    )
-    
-    table_manager.upsert_api_usage(row)
-    logger.info(
-        "[API_SYNC_USAGE_RECORDED] operation=%s job=%s repo=%s rest_calls=%d cache_hits=%d",
-        operation,
-        job_id,
-        repo_name,
-        api_calls_rest,
-        cache_hits,
-    )
 
 
 def _fetch_repo_metadata(
@@ -148,13 +100,13 @@ def _fetch_repo_metadata(
     if not repo_name:
         raise ValueError("Repository name missing")
 
-    usage_tracker = ApiUsageTracker(owner=username, repo=repo_name)
     try:
         repo_metadata = repo_manager.get_repo_metadata(
             username=username,
             repo=repo_name,
+            purpose="metadata_sync",
+            job_id=job_id,
             include_languages=True,
-            usage=usage_tracker,
         )
     except Exception as exc:
         logger.error("Failed to fetch metadata for %s/%s: %s", username, repo_name, exc)
@@ -170,7 +122,6 @@ def _fetch_repo_metadata(
     # Return fingerprint, api_usage, and default_branch to avoid redundant API calls downstream
     return {
         "fingerprint": resolved_fingerprint,
-        "api_usage": usage_tracker.to_dict(),
         "default_branch": default_branch,
     }
 
@@ -402,16 +353,6 @@ def process_sync_job(msg: func.QueueMessage) -> None:
         logger.info("[SYNC] Starting metadata sync for job=%s repo=%s user=%s", job_id, repo_name, username)
         fetch_result = _fetch_repo_metadata(username, repo_name, fingerprint, job_id=job_id)
         logger.info("[SYNC] Metadata sync completed for job=%s repo=%s", job_id, repo_name)
-        
-        # Record API usage to table
-        api_usage = fetch_result.get("api_usage", {})
-        _record_api_usage_from_tracker(
-            username=username,
-            job_id=job_id,
-            repo_name=repo_name,
-            operation="metadata_sync",
-            api_usage_dict=api_usage,
-        )
         
         # Enqueue file caching job (async background task)
         logger.info("[CACHE] Enqueuing file cache for job=%s repo=%s", job_id, repo_name)

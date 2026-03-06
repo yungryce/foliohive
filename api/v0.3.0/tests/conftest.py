@@ -1,4 +1,4 @@
-"""Global pytest fixtures and environment setup for all Cloudfolio apps."""
+"""Global pytest fixtures and environment setup for all foliohive apps."""
 
 from __future__ import annotations
 

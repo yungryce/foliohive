@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Orchestrate full local development workflow for Cloudfolio (v0.3.0).
+# Orchestrate full local development workflow for foliohive (v0.3.0).
 # Prepares the consolidated backend virtualenv, starts Azurite,
 # launches the single Azure Functions app (multiple blueprints),
 # optionally runs the end-to-end curl suite, and starts the Angular UI.
@@ -157,7 +157,7 @@ validate_env() {
 import foliohive_shared
 PY
     then
-        log_error "cloudfolio-shared not importable from venv. Run ./setup-dev.sh (without skipping)."
+        log_error "foliohive-shared not importable from venv. Run ./setup-dev.sh (without skipping)."
         exit 1
     fi
 }
