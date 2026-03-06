@@ -58,46 +58,6 @@ class TestRepoManagerExtractionIntegration:
         assert metadata["requirements.txt"]["extraction_status"] == "extracted"
         assert metadata["package.json"]["extraction_status"] == "extracted"
 
-    def test_persists_extracted_artifact_to_blob(self):
-        api = Mock()
-        manager = GitHubRepoManager(api=api, username="alice")
-        cache = Mock()
-        cache.generate_cache_key.side_effect = lambda **kwargs: f"k:{kwargs['filename']}"
-
-        cached = manager.cache_extracted_config_files(
-            cache_manager_obj=cache,
-            username="alice",
-            repo="sample",
-            extracted_config_files={"package.json": {"dependencies": {"react": "18"}}},
-        )
-
-        assert cached == 1
-        cache.save.assert_called_once_with("k:package.json", {"dependencies": {"react": "18"}})
-
-    def test_updates_discovered_path_extraction_status(self):
-        api = Mock()
-        manager = GitHubRepoManager(api=api, username="alice")
-        table = Mock()
-
-        manager.persist_extraction_statuses(
-            table_manager_obj=table,
-            username="alice",
-            repo="sample",
-            extraction_metadata={
-                "package.json": {
-                    "extractor_key": "_extract_package_json",
-                    "extraction_status": "extracted",
-                },
-                "pyproject.toml": {
-                    "extractor_key": "_extract_pyproject_toml",
-                    "extraction_status": "failed",
-                    "error": "invalid_toml",
-                },
-            },
-        )
-
-        assert table.update_repo_discovered_path_extraction_status.call_count == 2
-
     def test_skips_files_without_registered_extractor(self):
         api = Mock()
         manager = GitHubRepoManager(api=api, username="alice")

@@ -58,20 +58,20 @@ class GitHubRepoManager:
         if not repo:
             raise ValueError("Repository name is required")
         endpoint = f"repos/{username}/{repo}"
-        with self.api.track_operation(repo=repo, purpose=purpose, job_id=job_id):
-            repo_data = self.api.make_request('GET', endpoint, purpose=purpose)
-            if not isinstance(repo_data, dict):
-                raise ValueError("Invalid response format for repository metadata")
-            if include_languages:
-                languages = self.api.make_request(
-                    'GET',
-                    f"{endpoint}/languages",
-                    purpose=purpose,
-                    target_key=repo,
-                )
-                if isinstance(languages, dict):
-                    repo_data['languages'] = languages
-            return repo_data
+        self.api.begin_tracking(repo=repo, purpose=purpose, job_id=job_id)
+        repo_data = self.api.make_request('GET', endpoint, purpose=purpose)
+        if not isinstance(repo_data, dict):
+            raise ValueError("Invalid response format for repository metadata")
+        if include_languages:
+            languages = self.api.make_request(
+                'GET',
+                f"{endpoint}/languages",
+                purpose=purpose,
+                target_key=repo,
+            )
+            if isinstance(languages, dict):
+                repo_data['languages'] = languages
+        return repo_data
 
     def get_all_repos_metadata(
         self,
@@ -96,28 +96,28 @@ class GitHubRepoManager:
             raise ValueError(USERNAME_REQUIRED_ERROR)
         endpoint = f"users/{username}/repos"
 
-        with self.api.track_operation(repo="all_repos", purpose=purpose, job_id=job_id):
-            repos = self.api.make_request(
-                'GET',
-                endpoint,
-                params={'per_page': per_page},
-                purpose=purpose,
-            )
-            logger.info("Fetched repos metadata for user %s: count=%d", username, len(repos) if isinstance(repos, list) else 0)
-            if not isinstance(repos, list):
-                raise ValueError("Invalid response format for repositories metadata")
-            if include_languages:
-                for repo in repos:
-                    if isinstance(repo, dict) and 'name' in repo:
-                        languages = self.api.make_request(
-                            'GET',
-                            f"repos/{username}/{repo['name']}/languages",
-                            purpose=purpose,
-                            target_key=repo.get("name"),
-                        )
-                        if isinstance(languages, dict):
-                            repo['languages'] = languages
-            return repos
+        self.api.begin_tracking(repo="all_repos", purpose=purpose, job_id=job_id)
+        repos = self.api.make_request(
+            'GET',
+            endpoint,
+            params={'per_page': per_page},
+            purpose=purpose,
+        )
+        logger.info("Fetched repos metadata for user %s: count=%d", username, len(repos) if isinstance(repos, list) else 0)
+        if not isinstance(repos, list):
+            raise ValueError("Invalid response format for repositories metadata")
+        if include_languages:
+            for repo in repos:
+                if isinstance(repo, dict) and 'name' in repo:
+                    languages = self.api.make_request(
+                        'GET',
+                        f"repos/{username}/{repo['name']}/languages",
+                        purpose=purpose,
+                        target_key=repo.get("name"),
+                    )
+                    if isinstance(languages, dict):
+                        repo['languages'] = languages
+        return repos
 
 
     def get_user_profile(
@@ -130,9 +130,9 @@ class GitHubRepoManager:
         resolved_username = username or self.username
         if not resolved_username:
             raise ValueError(USERNAME_REQUIRED_ERROR)
-        with self.api.track_operation(repo=resolved_username, purpose=purpose, job_id=job_id):
-            profile = self.api.make_request("GET", f"users/{resolved_username}", purpose=purpose)
-            return profile
+        self.api.begin_tracking(repo=resolved_username, purpose=purpose, job_id=job_id)
+        profile = self.api.make_request("GET", f"users/{resolved_username}", purpose=purpose)
+        return profile
 
 
     def get_repo_path_index(
@@ -308,133 +308,98 @@ class GitHubRepoManager:
         readme_candidates = ["README.md", "README.rst", "README.txt", "readme.md"]
         readme_set = {name.lower() for name in readme_candidates}
 
-        with self.api.track_operation(repo=repo, purpose=purpose, job_id=job_id):
-            path_index = self.get_repo_path_index(username=username, repo=repo, ref=ref)
-            path_index_set = set(path_index) if path_index else set()
-            
-            logger.info("[PATH_INDEX_SUCCESS] repo=%s/%s paths=%d", username, repo, len(path_index_set))
-            
-            target_paths = self._discover_file_target_paths_by_level(
-                path_index=path_index_set,
-                file_candidates=file_candidates,
-                readme_candidates=readme_candidates,
-                limit=limit,
-            )
-            if not target_paths:
-                logger.warning(
-                    "[NO_PATHS_DISCOVERED] repo=%s/%s path_index_size=%d - no config/readme files found after discovery",
-                    username, repo, len(path_index_set)
-                )
-                return {
-                    "config_files": {},
-                    "readme_files": {},
-                    "primary_readme": "",
-                    "paths_discovered": 0,
-                    "api_usage": self.api.tracker.to_dict(),
-                }
-            logger.info("[Discovered Paths] [%s] %s", repo, target_paths)
-
-            config_files: Dict[str, str] = {}
-            readme_files: Dict[str, str] = {}
-
-            if mode not in {"rest", "graphql"}:
-                logger.warning("Unknown config discovery mode '%s'; defaulting to rest", mode)
-                mode = "rest"
-
-            if mode == "graphql":
-                # Fetch paths in chunks to manage query complexity
-                chunks = list(self._chunk_paths(target_paths, chunk_size=50))
-                content_map = {}
-                
-                for chunk_idx, chunk in enumerate(chunks):
-                    if self.api.tracker.rate_limited:
-                        remaining_chunks = len(chunks) - chunk_idx
-                        remaining_paths = sum(len(c) for c in chunks[chunk_idx:])
-                        logger.warning(
-                            "[GRAPHQL_RATE_LIMITED] repo=%s/%s chunk=%d/%d remaining_chunks=%d remaining_paths=%d",
-                            username, repo, chunk_idx + 1, len(chunks), remaining_chunks, remaining_paths,
-                        )
-                        for remaining_chunk in chunks[chunk_idx:]:
-                            for path in remaining_chunk:
-                                content_map[path] = None
-                        break
-                    
-                    logger.info(
-                        "[GRAPHQL_FETCH_CHUNK] repo=%s/%s chunk=%d/%d paths_in_chunk=%d",
-                        username, repo, chunk_idx + 1, len(chunks), len(chunk),
-                    )
-                    
-                    chunk_results = self.fetch_blobs_gql(
-                        owner=username,
-                        repo=repo,
-                        paths=list(chunk),
-                        ref=ref or "HEAD",
-                    )
-                    
-                    logger.info(
-                        "[GRAPHQL_FETCH_RESULT] repo=%s/%s chunk=%d/%d fetched=%d",
-                        username, repo, chunk_idx + 1, len(chunks), len(chunk_results),
-                    )
-                    
-                    content_map.update(chunk_results)
-            else:
-                logger.info("Using REST API for blob fetch in %s/%s for %d paths", username, repo, len(target_paths))
-                content_map = {}
-                for path in target_paths:
-                    endpoint = f"repos/{username}/{repo}/contents/{path}"
-                    file_data = self.api.make_request(
-                        'GET',
-                        endpoint,
-                        purpose="content_request",
-                        target_key=path,
-                    )
-                    content = None
-                    if isinstance(file_data, dict) and file_data.get('type') == 'file':
-                        content = self.api.decode_file_content(file_data)
-                    content_map[path] = content
-
-            if len(content_map) != len(target_paths):
-                missing = [p for p in target_paths if p not in content_map]
-                logger.error(
-                    "[CONTENT_MAP_INCOMPLETE] repo=%s/%s mode=%s requested=%d returned=%d missing=%d sample_missing=%s",
-                    username, repo, mode, len(target_paths), len(content_map), len(missing), missing[:5]
-                )
-                for path in missing:
-                    content_map[path] = None
-
-            for path in target_paths:
-                content = content_map.get(path)
-                if not content:
-                    continue
-                self.api.tracker.mark_file_target_found(path, selected=True, bytes_returned=len(content))
-                if os.path.basename(path).lower() in readme_set:
-                    readme_files[path] = content[:readme_max_chars]
-                else:
-                    config_files[path] = content[:max_chars]
-
-            primary_readme = ""
-            if readme_files:
-                primary_readme = readme_files.get("README.md") or next(iter(readme_files.values()))
-
-            logger.info(
-                "Discovery complete for %s/%s mode=%s candidates=%d found=%d readme=%d config=%d primary_readme=%s",
-                username,
-                repo,
-                mode,
-                len(target_paths),
-                len(config_files) + len(readme_files),
-                len(readme_files),
-                len(config_files),
-                bool(primary_readme),
-            )
-
+        self.api.begin_tracking(repo=repo, purpose=purpose, job_id=job_id)
+        path_index = self.get_repo_path_index(username=username, repo=repo, ref=ref)
+        path_index_set = set(path_index) if path_index else set()
+        
+        
+        target_paths = self._discover_file_target_paths_by_level(
+            path_index=path_index_set,
+            file_candidates=file_candidates,
+            readme_candidates=readme_candidates,
+            limit=limit,
+        )
+        if not target_paths:
             return {
-                "config_files": config_files,
-                "readme_files": readme_files,
-                "primary_readme": primary_readme,
-                "paths_discovered": len(target_paths),
-                "api_usage": self.api.tracker.to_dict(),
+                "config_files": {},
+                "readme_files": {},
+                "primary_readme": "",
+                "paths_discovered": 0,
             }
+
+        config_files: Dict[str, str] = {}
+        readme_files: Dict[str, str] = {}
+
+        if mode not in {"rest", "graphql"}:
+            logger.warning("Unknown config discovery mode '%s'; defaulting to rest", mode)
+            mode = "rest"
+
+        if mode == "graphql":
+            # Fetch paths in chunks to manage query complexity
+            chunks = list(self._chunk_paths(target_paths, chunk_size=50))
+            content_map = {}
+            
+            for chunk_idx, chunk in enumerate(chunks):
+                if self.api.tracker.rate_limited:
+                    for remaining_chunk in chunks[chunk_idx:]:
+                        for path in remaining_chunk:
+                            content_map[path] = None
+                    break
+                
+                chunk_results = self.fetch_blobs_gql(
+                    owner=username,
+                    repo=repo,
+                    paths=list(chunk),
+                    ref=ref or "HEAD",
+                )
+                content_map.update(chunk_results)
+        else:
+            logger.info("Using REST API for blob fetch in %s/%s for %d paths", username, repo, len(target_paths))
+            content_map = {}
+            for path in target_paths:
+                endpoint = f"repos/{username}/{repo}/contents/{path}"
+                file_data = self.api.make_request(
+                    'GET',
+                    endpoint,
+                    purpose="content_request",
+                    target_key=path,
+                )
+                content = None
+                if isinstance(file_data, dict) and file_data.get('type') == 'file':
+                    content = self.api.decode_file_content(file_data)
+                content_map[path] = content
+
+        for path in target_paths:
+            content = content_map.get(path)
+            if not content:
+                continue
+            if os.path.basename(path).lower() in readme_set:
+                readme_files[path] = content[:readme_max_chars]
+            else:
+                config_files[path] = content[:max_chars]
+
+        primary_readme = ""
+        if readme_files:
+            primary_readme = readme_files.get("README.md") or next(iter(readme_files.values()))
+
+        logger.info(
+            "Discovery complete for %s/%s mode=%s candidates=%d found=%d readme=%d config=%d primary_readme=%s",
+            username,
+            repo,
+            mode,
+            len(target_paths),
+            len(config_files) + len(readme_files),
+            len(readme_files),
+            len(config_files),
+            bool(primary_readme),
+        )
+
+        return {
+            "config_files": config_files,
+            "readme_files": readme_files,
+            "primary_readme": primary_readme,
+            "paths_discovered": len(target_paths),
+        }
 
 
     def get_standard_config_files(
@@ -537,56 +502,6 @@ class GitHubRepoManager:
 
         return extracted_config_files
 
-    def cache_extracted_config_files(
-        self,
-        *,
-        cache_manager_obj: Any,
-        username: Optional[str],
-        repo: str,
-        extracted_config_files: Dict[str, Any],
-    ) -> int:
-        """Persist extracted config artifacts using the cache manager."""
-        resolved_username = username or self.username
-        if not resolved_username:
-            raise ValueError(USERNAME_REQUIRED_ERROR)
-
-        cached_count = 0
-        for filename, payload in extracted_config_files.items():
-            key = cache_manager_obj.generate_cache_key(
-                username=resolved_username,
-                repo=repo,
-                file_type="config",
-                filename=filename,
-            )
-            cache_manager_obj.save(key, payload)
-            cached_count += 1
-        return cached_count
-
-    def persist_extraction_statuses(
-        self,
-        *,
-        table_manager_obj: Any,
-        username: Optional[str],
-        repo: str,
-        extraction_metadata: Dict[str, Dict[str, Any]],
-    ) -> None:
-        """Persist per-file extraction statuses to discovered-path metadata."""
-        resolved_username = username or self.username
-        if not resolved_username:
-            raise ValueError(USERNAME_REQUIRED_ERROR)
-
-        for file_path, metadata in extraction_metadata.items():
-            status = metadata.get("extraction_status")
-            if not status:
-                continue
-            table_manager_obj.update_repo_discovered_path_extraction_status(
-                resolved_username,
-                repo,
-                file_path,
-                extraction_status=str(status),
-                extractor_key=metadata.get("extractor_key"),
-                error=metadata.get("error"),
-            )
 
     @staticmethod
     def _build_directory_levels(paths: Iterable[str]) -> Dict[int, Set[str]]:
@@ -615,35 +530,6 @@ class GitHubRepoManager:
     @staticmethod
     def _chunk_paths(paths: Sequence[str], chunk_size: int) -> List[List[str]]:
         return [list(paths[i : i + chunk_size]) for i in range(0, len(paths), chunk_size)]
-
-    @staticmethod
-    def categorize_fetch_failure(content: Optional[str], context: Optional[Dict[str, Any]] = None) -> str:
-        """Categorize why a file fetch might have failed.
-        
-        Args:
-            content: The content returned (None, empty string, or actual content)
-            context: Optional context dict with keys like 'status_code', 'rate_limited', etc.
-        
-        Returns:
-            Category string: "not_found" | "rate_limited" | "api_error" | "empty" | "success" | "unknown"
-        """
-        if context:
-            if context.get("rate_limited"):
-                return "rate_limited"
-            status_code = context.get("status_code")
-            if status_code == 404:
-                return "not_found"
-            if status_code and status_code >= 400:
-                return "api_error"
-        
-        if content is None:
-            return "not_found"
-        if content == "":
-            return "empty"
-        if isinstance(content, str) and len(content) > 0:
-            return "success"
-        
-        return "unknown"
 
 
     def fetch_blobs_gql(

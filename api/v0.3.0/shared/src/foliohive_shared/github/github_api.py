@@ -134,9 +134,7 @@ class GitHubAPI:
                 else "connection_error" if isinstance(exc, requests.ConnectionError)
                 else "request_error"
             )
-            logger.error("[GITHUB_API_REQUEST_FAILED %s] %s %s: %s", purpose or "unknown", method, full_url, exc)
             self.tracker.record_error(error_type, endpoint, message=str(exc)[:100])
-            return None
 
         status_code = response.status_code
         rate_remaining = response.headers.get("X-RateLimit-Remaining", "unknown")
@@ -202,9 +200,7 @@ class GitHubAPI:
                 else "connection_error" if isinstance(exc, requests.ConnectionError)
                 else "request_error"
             )
-            logger.error("[GITHUB_GRAPHQL_FAILED %s] %s: %s", purpose, type(exc).__name__, exc)
             self.tracker.record_error(error_type, "graphql", message=str(exc)[:100])
-            return None
 
         status = response.status_code
         rate_remaining = response.headers.get("X-RateLimit-Remaining")

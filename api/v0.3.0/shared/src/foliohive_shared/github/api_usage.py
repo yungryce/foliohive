@@ -101,14 +101,6 @@ class ApiUsageTracker:
         # Persist operation to table after each request
         self.persist_operation_to_table()
 
-    def mark_file_target_found(self, target_key: str, *, selected: bool = False, bytes_returned: Optional[int] = None) -> None:
-        usage = self.file_targets.setdefault(target_key, FileTargetUsage())
-        usage.found = True
-        if selected:
-            usage.selected = True
-        if bytes_returned is not None:
-            usage.bytes_returned = bytes_returned
-
     def mark_rate_limited(self) -> None:
         self.rate_limited = True
         self.persist_operation_to_table()

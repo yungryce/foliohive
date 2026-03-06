@@ -213,7 +213,6 @@ def _update_cache_progress(
     Status transitions: synced → summary_ready (or failed).
     Tracks micro-summary caching progress.
     """
-    logger.info("***********************ertisn************************")
     from datetime import datetime, timezone, timedelta
 
     _STALE_PENDING_THRESHOLD = timedelta(minutes=30)
@@ -364,17 +363,6 @@ def process_cache_job(msg: func.QueueMessage) -> None:
         branch_ref = payload.get("default_branch")  # Use default_branch from queue message for consistency
 
         queue_message_id = getattr(msg, "id", None)
-        dequeue_count = getattr(msg, "dequeue_count", None)
-
-        logger.info(
-            "[CACHE_MESSAGE] job=%s user=%s repo=%s trace_id=%s message_id=%s dequeue_count=%s",
-            job_id or "<unknown>",
-            username or "<unknown>",
-            repo_name or "<unknown>",
-            trace_id or "<none>",
-            queue_message_id or "<unknown>",
-            dequeue_count if dequeue_count is not None else "<unknown>",
-        )
 
         if not username or not job_id or not repo_name:
             raise ValueError(
@@ -383,11 +371,6 @@ def process_cache_job(msg: func.QueueMessage) -> None:
 
         # Fetch files and extract signals (in-memory only)
         fetch_result = _fetch_file_content(username, repo_name, job_id=job_id, ref=branch_ref)
-        logger.info(
-            "[FETCH_RESULT_DETAIL] repo=%s readme_content=%s",
-            repo_name,
-            fetch_result.get("readme_content", "")[:100] if fetch_result.get("readme_content") else "<empty>",
-        )
 
         # Log extracted config content
         extracted_config_content = fetch_result.get("config_content", {})
@@ -462,10 +445,6 @@ def process_cache_job(msg: func.QueueMessage) -> None:
         )
 
     except ValueError as ve:
-        logger.info("************************ValueError processing cache job")
-        logger.info("ValueError processing cache job: %s", str(ve))
-        logger.error("ValueError processing cache job: %s", str(ve))
-        logger.warning("ValueError processing cache job: %s", str(ve))
         if job_id and username and repo_name:
             _update_cache_progress(
                 job_id,
@@ -478,10 +457,6 @@ def process_cache_job(msg: func.QueueMessage) -> None:
             )
         raise
     except Exception as exc:
-        logger.info("************************Exception processing cache job")
-        logger.info("Exception processing cache job: %s", str(exc))
-        logger.error("Exception processing cache job: %s", str(exc))
-        logger.warning("Exception processing cache job: %s", str(exc))
         if job_id and username and repo_name:
             _update_cache_progress(
                 job_id,
