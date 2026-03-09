@@ -75,12 +75,11 @@ TOKEN_BUDGETS = {
         "reserve": 2000,       # Reserve for query overhead
         # Total: ~36k tokens (gpt-5-nano with caching)
     },
-    "initial_summary": {
-        "metadata": 1000,      # Minimal metadata for bulk processing
-        "readme": 8000,        # Lighter README chunks
-        "config": 3000,        # Basic config context
-        "reserve": 500,        # Minimal reserve
-        # Total: ~12.5k tokens (gpt-5-nano budget tier)
+    "default": {
+        "metadata": 512,
+        "readme": 1024,
+        "config": 512,
+        "reserve": 512,
     },
 }
 
@@ -156,7 +155,6 @@ class SummaryManager:
     # ---------------------------------------------------------------------------
     # Public API - High-Level Summary Methods
     # ---------------------------------------------------------------------------
-
     def get_or_generate_profile_summary(
         self,
         *,
@@ -187,7 +185,7 @@ class SummaryManager:
             fingerprint = repo.get("fingerprint")
             if not repo_name or not fingerprint:
                 continue
-            cached = self.get_repo_micro_summary(repo_name, fingerprint)
+            cached = self.get_cache_repo_micro_summary(repo_name, fingerprint)
             if not cached:
                 logger.warning(f"Missing micro-summary for {repo_name} (fingerprint: {fingerprint}) - skipping in profile aggregation")
                 continue
@@ -216,74 +214,63 @@ class SummaryManager:
         }
         return {"summary_html": summary_html, "metadata": metadata, "aggregate": aggregate}
 
-    def get_or_generate_readme_summary(
-        self,
-        *,
-        job_id: str,
-        repo_name: str,
-        repo_metadata: Dict[str, Any],
-        repo_files: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Get cached or generate new README summary.
+    # # This would be refactored to retrieve micr_summary cached to 
+    # def get_or_generate_readme_summary(
+    #     self,
+    #     *,
+    #     job_id: str,
+    #     repo_name: str,
+    #     repo_metadata: Dict[str, Any],
+    #     repo_files: Dict[str, Any]
+    # ) -> Dict[str, Any]:
+    #     """Get cached or generate new README summary.
         
-        Args:
-            job_id: Job ID for cache invalidation
-            repo_name: Repository name
-            repo_metadata: Repository metadata dict
-            repo_files: Dict with {readme_content, readme_files, config_files}
+    #     Args:
+    #         job_id: Job ID for cache invalidation
+    #         repo_name: Repository name
+    #         repo_metadata: Repository metadata dict
+    #         repo_files: Dict with {readme_content, readme_files, config_files}
             
-        Returns:
-            Dict with summary_html, metadata (cache_hit, tokens, etc.)
-        """
-        start_time = time.time()
-        summary_type = "readme"
+    #     Returns:
+    #         Dict with summary_html, metadata (cache_hit, tokens, etc.)
+    #     """
+    #     start_time = time.time()
+    #     summary_type = "readme"
         
-        # Extract file contents from repo_files dict
-        readme_content = repo_files.get("readme_content")
-        config_files = repo_files.get("config_files", {})
         
-        # Build context
-        token_budget = TOKEN_BUDGETS.get(summary_type, {})
-        context = self.build_repo_context(
-            repo_metadata=repo_metadata,
-            readme_content=readme_content,
-            config_files=config_files,
-            token_budget=token_budget
-        )
+    #     # Generate summary with appropriate model tier
+    #     model_tier = MODEL_ASSIGNMENTS.get(summary_type, "default")
+    #     summary_html = self.ai_assistant.summarize_readme_html(
+    #         readme_text=readme_content,
+    #         repo_name=repo_name,
+    #         model_tier=model_tier,
+    #         purpose="get_or_generate_readme_summary",
+    #         job_id=job_id,
+    #     )
         
-        # Generate summary with appropriate model tier
-        model_tier = MODEL_ASSIGNMENTS.get(summary_type, "default")
-        summary_html = self.ai_assistant.summarize_readme_html(
-            readme_text=readme_content,
-            repo_name=repo_name,
-            model_tier=model_tier,
-            purpose="get_or_generate_readme_summary",
-            job_id=job_id,
-        )
+    #     metadata = {
+    #         "generated_at": datetime.now(timezone.utc).isoformat(),
+    #         "job_id": job_id,
+    #         "summary_type": summary_type,
+    #         "repo_name": repo_name,
+    #         "tokens_estimated": context.get("tokens_estimated", 0),
+    #         "files_included": len(config_files) + 1,  # +1 for README
+    #         "generation_time_ms": int((time.time() - start_time) * 1000),
+    #     }
         
-        metadata = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "job_id": job_id,
-            "summary_type": summary_type,
-            "repo_name": repo_name,
-            "tokens_estimated": context.get("tokens_estimated", 0),
-            "files_included": len(config_files) + 1,  # +1 for README
-            "generation_time_ms": int((time.time() - start_time) * 1000),
-        }
+    #     # Track metrics
+    #     self.track_generation_metrics(
+    #         summary_type,
+    #         start_time,
+    #         metadata["tokens_estimated"],
+    #         metadata["files_included"],
+    #         cache_hit=False
+    #     )
         
-        # Track metrics
-        self.track_generation_metrics(
-            summary_type,
-            start_time,
-            metadata["tokens_estimated"],
-            metadata["files_included"],
-            cache_hit=False
-        )
-        
-        return {
-            "summary_html": summary_html,
-            "metadata": metadata
-        }
+    #     return {
+    #         "summary_html": summary_html,
+    #         "metadata": metadata
+    #     }
 
     def get_or_generate_query_response(
         self,
@@ -315,7 +302,7 @@ class SummaryManager:
             fingerprint = repo.get("fingerprint")
             if not repo_name or not fingerprint:
                 continue
-            cached = self.get_repo_micro_summary(repo_name, fingerprint)
+            cached = self.get_cache_repo_micro_summary(repo_name, fingerprint)
             if not cached:
                 continue
             micro_summaries.append(
@@ -583,7 +570,7 @@ class SummaryManager:
         safe_fingerprint = str(fingerprint).replace("/", "_").replace(" ", "_")
         return f"repo_micro_summary:{self.username}:{safe_repo}:{safe_fingerprint}"
 
-    def get_repo_micro_summary(self, repo_name: str, fingerprint: str) -> Optional[Dict[str, Any]]:
+    def get_cache_repo_micro_summary(self, repo_name: str, fingerprint: str) -> Optional[Dict[str, Any]]:
         """Get micro-summary from cache with table validation."""
         # First check table for cache entry existence
         table_manager = get_table_manager()
@@ -601,24 +588,6 @@ class SummaryManager:
         
         return None
 
-    def _validate_micro_summary_schema(self, payload: Dict[str, Any]) -> bool:
-        required = {"overview", "key_features", "tech_stack", "architecture_patterns", "skill_signals"}
-        if not isinstance(payload, dict):
-            return False
-        if not required.issubset(set(payload.keys())):
-            return False
-        if not isinstance(payload.get("overview"), str):
-            return False
-        if not isinstance(payload.get("key_features"), list):
-            return False
-        if not isinstance(payload.get("tech_stack"), dict):
-            return False
-        if not isinstance(payload.get("architecture_patterns"), list):
-            return False
-        if not isinstance(payload.get("skill_signals"), list):
-            return False
-        return True
-
     def generate_repo_micro_summary(
         self,
         *,
@@ -626,8 +595,9 @@ class SummaryManager:
         fingerprint: str,
         job_id: Optional[str] = None,
         repo_metadata: Dict[str, Any],
-        readme_content: Optional[str],
+        primary_readme_content: Optional[str],
         config_content: Optional[Dict[str, str]],
+        secondary_readme_content: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Generate and cache JSON micro-summary.
         
@@ -636,64 +606,59 @@ class SummaryManager:
         """
         
         # Check cache table first
-        cached = self.get_repo_micro_summary(repo_name, fingerprint)
+        cached = self.get_cache_repo_micro_summary(repo_name, fingerprint)
         if cached:
             logger.info(f"Cache hit for micro-summary of {repo_name} (fingerprint: {fingerprint})")
-            return {"cache_hit": True, "summary": cached}
+            return {"cache_hit": True, "summary": True, "tokens_estimated": 0}
         
-        token_budget = {
-            "metadata": 2000,
-            "readme": 8000,
-            "config": 2000,
-            "reserve": 1000,
-        }
+        token_budget = TOKEN_BUDGETS["default"]  # Use default budget for micro-summary generation
 
         context = self.build_repo_context(
             repo_metadata=repo_metadata,
-            readme_content=readme_content,
+            primary_readme_content=primary_readme_content,
             config_files=config_content or {},
+            secondary_readme_content=secondary_readme_content or [],
             token_budget=token_budget,
         )
         logger.info(f"Context built for micro-summary of {repo_name} (fingerprint: {fingerprint}) with estimated tokens: {context.get('tokens_estimated', 0)}")
 
-        attempts = 2
-        last_error = None
-        for _ in range(attempts):
-            summary = self.ai_assistant.summarize_repo_micro_summary_json(
-                repo_name=repo_name,
-                repo_context=context,
-                model_tier=MODEL_ASSIGNMENTS.get("readme", "default"),
-                purpose="get_repo_micro_summary",
-                job_id=job_id,
-            )
-            if isinstance(summary, dict) and self._validate_micro_summary_schema(summary):
-                key = self.build_repo_micro_summary_cache_key(repo_name, fingerprint)
-                cache_manager.save(key, summary)
-                logger.info(f"Cache updated for micro-summary of {repo_name} (fingerprint: {fingerprint})")
-                # Update cache entry status to valid
-                table_manager = get_table_manager()
-                cache_row = RepoCacheSummaryRow(
-                    username=self.username,
-                    repo_name=repo_name,
-                    fingerprint=fingerprint,
-                    cache_key=key,
-                    cache_status="valid",
-                    generated_at=datetime.now(timezone.utc).isoformat(),
-                )
-                table_manager.upsert_cache_summary(cache_row)
-                
-                return {
-                    "cache_hit": False,
-                    "summary": summary,
-                    "tokens_estimated": context.get("tokens_estimated", 0),
-                }
-            
-            last_error = summary.get("error") if isinstance(summary, dict) else "invalid_response"
-            logger.info(f"Micro-summary generation attempt failed for {repo_name} (fingerprint: {fingerprint}): {last_error}")
 
+        summary = self.ai_assistant.summarize_repo_micro_summary_json(
+            repo_name=repo_name,
+            repo_context=context,
+            model_tier=MODEL_ASSIGNMENTS["readme"],
+            purpose="get_repo_micro_summary",
+            job_id=job_id,
+        )
+
+        logger.info(f"Micro-summary generation attempted for {repo_name} (fingerprint: {fingerprint}) - validating response")
+        if "error" not in summary:
+            key = self.build_repo_micro_summary_cache_key(repo_name, fingerprint)
+            cache_manager.save(key, summary)
+
+            table_manager = get_table_manager()
+            cache_row = RepoCacheSummaryRow(
+                username=self.username,
+                repo_name=repo_name,
+                fingerprint=fingerprint,
+                cache_key=key,
+                cache_status="valid",
+                generated_at=datetime.now(timezone.utc).isoformat(),
+            )
+            table_manager.upsert_cache_summary(cache_row)
+            
+            return {
+                "cache_hit": False,
+                "summary": True,
+                "tokens_estimated": context.get("tokens_estimated", 0),
+            }
+        
+        # summarize_repo_micro_summary_json always returns dict (with error key on failure)
+        last_error = summary.get("error")
         return {
-            "error": "micro_summary_generation_failed",
-            "reason": last_error or "schema_validation_failed",
+            "cache_hit": False,
+            "summary": False,
+            "error": last_error,
             "tokens_estimated": context.get("tokens_estimated", 0),
         }
 
@@ -825,92 +790,27 @@ class SummaryManager:
         return truncated.rstrip() + "\n\n... [README truncated for length]"
 
     def chunk_config_file(self, filename: str, content: str, max_tokens: int) -> str:
-        """Smart truncation for config files by type.
+        """Truncate pre-extracted config content to token budget.
         
         Args:
-            filename: Name of config file (used to detect type)
-            content: File content (must be string, typically JSON-serialized from extracted dict)
+            filename: Name of config file (for logging only, all inputs pre-extracted)
+            content: JSON-serialized extracted config dict (already optimized by upstream extraction)
             max_tokens: Maximum tokens allowed
             
         Returns:
-            Chunked content optimized per file type (string)
+            Truncated content or full content if under budget
         """
         if not content:
             return ""
         
         max_chars = max_tokens * 4
         
-        # Full file if under 500 chars
-        if len(content) < 500:
+        # Return full content if under budget
+        if len(content) <= max_chars:
             return content
         
-        # Type-specific truncation
-        filename_lower = filename.lower()
-        
-        if filename_lower == "package.json":
-            return self._chunk_package_json(content, max_chars)
-        elif filename_lower == "dockerfile":
-            return self._chunk_dockerfile(content, max_chars)
-        elif filename_lower.endswith(".yml") or filename_lower.endswith(".yaml"):
-            return self._chunk_yaml(content, max_chars)
-        elif filename_lower == "requirements.txt":
-            # Usually small, keep all
-            return content if len(content) <= max_chars else content[:max_chars]
-        else:
-            # Generic truncation
-            return content[:max_chars] + "\n... [truncated]" if len(content) > max_chars else content
-
-    def _chunk_package_json(self, content: str, max_chars: int) -> str:
-        """Extract key sections from package.json."""
-        try:
-            data = json.loads(content)
-            # Keep essential fields
-            filtered = {
-                "name": data.get("name"),
-                "version": data.get("version"),
-                "description": data.get("description"),
-                "scripts": data.get("scripts", {}),
-                "dependencies": data.get("dependencies", {}),
-                "engines": data.get("engines"),
-            }
-            result = json.dumps(filtered, indent=2)
-            return result if len(result) <= max_chars else result[:max_chars] + "\n... [truncated]"
-        except Exception:
-            # Fallback to truncation if parsing fails
-            return content[:max_chars] + "\n... [truncated]"
-
-    def _chunk_dockerfile(self, content: str, max_chars: int) -> str:
-        """Extract key instructions from Dockerfile."""
-        lines = content.split('\n')
-        important_lines = []
-        
-        for line in lines:
-            stripped = line.strip()
-            # Keep FROM, RUN, EXPOSE, CMD, ENTRYPOINT
-            if any(stripped.startswith(keyword) for keyword in ['FROM', 'RUN', 'EXPOSE', 'CMD', 'ENTRYPOINT', 'ENV']):
-                important_lines.append(line)
-        
-        result = '\n'.join(important_lines)
-        return result if len(result) <= max_chars else result[:max_chars] + "\n... [truncated]"
-
-    def _chunk_yaml(self, content: str, max_chars: int) -> str:
-        """Extract key sections from YAML files."""
-        # For workflow files, keep job names and key steps
-        lines = content.split('\n')
-        result_lines = []
-        in_important_section = False
-        
-        for line in lines:
-            stripped = line.strip()
-            # Keep job definitions, step names, workflow triggers
-            if any(keyword in stripped for keyword in ['name:', 'on:', 'jobs:', 'steps:', 'run:', 'uses:']):
-                in_important_section = True
-                result_lines.append(line)
-            elif in_important_section and line and not line[0].isspace():
-                in_important_section = False
-        
-        result = '\n'.join(result_lines) if result_lines else content[:max_chars]
-        return result if len(result) <= max_chars else result[:max_chars] + "\n... [truncated]"
+        # Truncate to budget and append indicator
+        return content[:max_chars] + "\n... [truncated]"
 
     # ---------------------------------------------------------------------------
     # Context Building
@@ -919,22 +819,30 @@ class SummaryManager:
     def build_repo_context(
         self,
         repo_metadata: Dict[str, Any],
-        readme_content: Optional[str],
+        token_budget: Dict[str, int],
+        primary_readme_content: Optional[str],
         config_files: Optional[Dict[str, str]],
-        token_budget: Dict[str, int]
+        secondary_readme_content: Optional[List[str]] = None,
+        
     ) -> Dict[str, Any]:
-        """Build standardized repo context with chunking.
+        """Build standardized repo context with chunking and token budgeting.
+        
+        Token budget priority (in order):
+        1. Primary README (high priority from budget["readme"])
+        2. Config files (medium priority from budget["config"])
+        3. Secondary READMEs (low priority from remaining budget)
         
         Args:
             repo_metadata: Repository metadata (name, description, languages, etc.)
-            readme_content: Full README content (string)
+            primary_readme_content: Full primary README content (string)
             config_files: Dict of {filename: content_string}. Values MUST be JSON strings
                          (pre-serialized from extracted dicts). Token estimation depends on
                          receiving strings, not dicts.
-            token_budget: Token budget allocation dict
+            secondary_readme_content: List of secondary README contents (strings)
+            token_budget: Token budget allocation dict with keys: readme, config, reserve
             
         Returns:
-            Structured repo context dict with chunked content
+            Structured repo context dict with chunked content and token accounting
         """
         context = {
             "repo_name": repo_metadata.get("name", "Unknown"),
@@ -944,19 +852,20 @@ class SummaryManager:
             "stats": repo_metadata.get("stats", {}),
             "readme_chunk": "",
             "config_chunks": [],
+            "secondary_readme_chunks": [],
         }
 
         tokens_used = self.estimate_tokens(json.dumps(context))
         logger.info(f"Initial context for {context['repo_name']} estimated tokens: {tokens_used}")
         
-        # Chunk README within budget
-        if readme_content and token_budget.get("readme", 0) > 0:
+        # Priority 1: Chunk primary README within allocated budget
+        if primary_readme_content and token_budget.get("readme", 0) > 0:
             readme_budget = token_budget["readme"]
-            context["readme_chunk"] = self.chunk_readme(readme_content, readme_budget)
+            context["readme_chunk"] = self.chunk_readme(primary_readme_content, readme_budget)
             tokens_used += self.estimate_tokens(context["readme_chunk"])
-            logger.info(f"Chunked README for {context['repo_name']} to fit {readme_budget} tokens, estimated tokens used: {self.estimate_tokens(context['readme_chunk'])}")
+            logger.info(f"Chunked primary README for {context['repo_name']} to fit {readme_budget} tokens, estimated tokens used: {self.estimate_tokens(context['readme_chunk'])}")
         
-        # Chunk config files within budget
+        # Priority 2: Chunk config files within allocated budget
         if config_files and token_budget.get("config", 0) > 0:
             config_budget = token_budget["config"]
             config_budget_per_file = config_budget // max(len(config_files), 1)
@@ -971,185 +880,208 @@ class SummaryManager:
                 tokens_used += self.estimate_tokens(chunked)
                 logger.info(f"Chunked config file {filename} for {context['repo_name']} to fit {config_budget_per_file} tokens, estimated tokens used: {self.estimate_tokens(chunked)}")
         
+        # Priority 3: Chunk secondary READMEs with remaining budget (if any)
+        if secondary_readme_content and token_budget.get("reserve", 0) > 0:
+            # Calculate remaining budget after primary readme and configs
+            total_budget = token_budget.get("readme", 0) + token_budget.get("config", 0) + token_budget.get("reserve", 0)
+            remaining_budget = total_budget - tokens_used
+            
+            if remaining_budget > 0 and len(secondary_readme_content) > 0:
+                secondary_budget_per_file = remaining_budget // len(secondary_readme_content)
+                
+                for idx, readme_content in enumerate(secondary_readme_content):
+                    if not readme_content:
+                        continue
+                    
+                    chunked = self.chunk_readme(readme_content, secondary_budget_per_file)
+                    context["secondary_readme_chunks"].append({
+                        "index": idx,
+                        "content": chunked
+                    })
+                    tokens_used += self.estimate_tokens(chunked)
+                    logger.info(f"Chunked secondary README {idx} for {context['repo_name']} to fit {secondary_budget_per_file} tokens, estimated tokens used: {self.estimate_tokens(chunked)}")
+                
+                logger.info(f"[Secondary READMEs] {context['repo_name']} - included {len(context['secondary_readme_chunks'])} files with {remaining_budget} token budget")
+        
         context["tokens_estimated"] = tokens_used
         logger.info("[Context] %s", context)
         return context
 
-    def build_profile_context(
-        self,
-        profile: Dict[str, Any],
-        repo_rows: List[Dict[str, Any]],
-        repo_files: Dict[str, Dict[str, Any]],
-        statistics: Dict[str, Any],
-        token_budget: Dict[str, int]
-    ) -> Dict[str, Any]:
-        """Build profile context with multiple repos.
+    # def build_profile_context(
+    #     self,
+    #     profile: Dict[str, Any],
+    #     repo_rows: List[Dict[str, Any]],
+    #     repo_files: Dict[str, Dict[str, Any]],
+    #     statistics: Dict[str, Any],
+    #     token_budget: Dict[str, int]
+    # ) -> Dict[str, Any]:
+    #     """Build profile context with multiple repos.
         
-        Args:
-            profile: GitHub user profile data
-            repo_rows: List of top repository metadata dicts
-            repo_files: Dict of {repo_name: {readme, configs}} file contents
-            statistics: Aggregated statistics
-            token_budget: Token budget allocation dict
+    #     Args:
+    #         profile: GitHub user profile data
+    #         repo_rows: List of top repository metadata dicts
+    #         repo_files: Dict of {repo_name: {readme, configs}} file contents
+    #         statistics: Aggregated statistics
+    #         token_budget: Token budget allocation dict
             
-        Returns:
-            Structured profile context dict with chunked content
-        """
-        context = {
-            "username": self.username,
-            "profile": {
-                "name": profile.get("name"),
-                "bio": profile.get("bio"),
-                "location": profile.get("location"),
-                "company": profile.get("company"),
-                "blog": profile.get("blog"),
-                "public_repos": profile.get("public_repos"),
-                "followers": profile.get("followers"),
-                "following": profile.get("following"),
-            },
-            "statistics": statistics,
-            "repositories": [],
-        }
+    #     Returns:
+    #         Structured profile context dict with chunked content
+    #     """
+    #     context = {
+    #         "username": self.username,
+    #         "profile": {
+    #             "name": profile.get("name"),
+    #             "bio": profile.get("bio"),
+    #             "location": profile.get("location"),
+    #             "company": profile.get("company"),
+    #             "blog": profile.get("blog"),
+    #             "public_repos": profile.get("public_repos"),
+    #             "followers": profile.get("followers"),
+    #             "following": profile.get("following"),
+    #         },
+    #         "statistics": statistics,
+    #         "repositories": [],
+    #     }
         
-        tokens_used = self.estimate_tokens(json.dumps(context))
+    #     tokens_used = self.estimate_tokens(json.dumps(context))
         
-        # Calculate per-repo budgets
-        num_repos = len(repo_rows)
-        readme_budget_per_repo = token_budget.get("readme", 0) // max(num_repos, 1)
-        config_budget_per_repo = token_budget.get("config", 0) // max(num_repos, 1)
+    #     # Calculate per-repo budgets
+    #     num_repos = len(repo_rows)
+    #     readme_budget_per_repo = token_budget.get("readme", 0) // max(num_repos, 1)
+    #     config_budget_per_repo = token_budget.get("config", 0) // max(num_repos, 1)
         
-        # Build context for each repo
-        for repo in repo_rows:
-            repo_name = repo.get("repo_name")
-            if not repo_name:
-                continue
+    #     # Build context for each repo
+    #     for repo in repo_rows:
+    #         repo_name = repo.get("repo_name")
+    #         if not repo_name:
+    #             continue
             
-            files = repo_files.get(repo_name, {})
-            readme = files.get("readme_content", "")
-            configs = files.get("config_files", [])
+    #         files = repo_files.get(repo_name, {})
+    #         readme = files.get("readme_content", "")
+    #         configs = files.get("config_files", [])
             
-            # Build mini repo context
-            repo_context = {
-                "name": repo_name,
-                "description": repo.get("description", ""),
-                # "primary_language": repo.get("primary_language"),
-                "languages": repo.get("languages", [])[:3],  # Top 3
-                # "topics": repo.get("topics", [])[:5],  # Top 5
-                # "stars": repo.get("stats", {}).get("stars", 0),
-                # "forks": repo.get("stats", {}).get("forks", 0),
-            }
+    #         # Build mini repo context
+    #         repo_context = {
+    #             "name": repo_name,
+    #             "description": repo.get("description", ""),
+    #             # "primary_language": repo.get("primary_language"),
+    #             "languages": repo.get("languages", [])[:3],  # Top 3
+    #             # "topics": repo.get("topics", [])[:5],  # Top 5
+    #             # "stars": repo.get("stats", {}).get("stars", 0),
+    #             # "forks": repo.get("stats", {}).get("forks", 0),
+    #         }
             
-            # Add chunked README
-            if readme and readme_budget_per_repo > 0:
-                repo_context["readme_chunk"] = self.chunk_readme(readme, readme_budget_per_repo)
+    #         # Add chunked README
+    #         if readme and readme_budget_per_repo > 0:
+    #             repo_context["readme_chunk"] = self.chunk_readme(readme, readme_budget_per_repo)
             
-            # Add chunked configs
-            if configs and config_budget_per_repo > 0:
-                config_chunks = []
-                # configs is now a dict {filename: content}
-                budget_per_file = config_budget_per_repo // max(len(configs), 1)
+    #         # Add chunked configs
+    #         if configs and config_budget_per_repo > 0:
+    #             config_chunks = []
+    #             # configs is now a dict {filename: content}
+    #             budget_per_file = config_budget_per_repo // max(len(configs), 1)
                 
-                for filename, content in configs.items():
-                    if filename and content:
-                        chunked = self.chunk_config_file(filename, content, budget_per_file)
-                        config_chunks.append({
-                            "filename": filename,
-                            "content": chunked
-                        })
+    #             for filename, content in configs.items():
+    #                 if filename and content:
+    #                     chunked = self.chunk_config_file(filename, content, budget_per_file)
+    #                     config_chunks.append({
+    #                         "filename": filename,
+    #                         "content": chunked
+    #                     })
                 
-                repo_context["config_chunks"] = config_chunks
+    #             repo_context["config_chunks"] = config_chunks
             
-            context["repositories"].append(repo_context)
-            tokens_used += self.estimate_tokens(json.dumps(repo_context))
+    #         context["repositories"].append(repo_context)
+    #         tokens_used += self.estimate_tokens(json.dumps(repo_context))
         
-        context["tokens_estimated"] = tokens_used
-        return context
+    #     context["tokens_estimated"] = tokens_used
+    #     return context
 
-    def build_query_bundle_context(
-        self,
-        query: str,
-        repo_rows: List[Dict[str, Any]],
-        repo_files: Dict[str, Dict[str, Any]],
-        token_budget: Dict[str, int],
-    ) -> Dict[str, Any]:
-        """Build query context with multiple repo summaries.
+    # def build_query_bundle_context(
+    #     self,
+    #     query: str,
+    #     repo_rows: List[Dict[str, Any]],
+    #     repo_files: Dict[str, Dict[str, Any]],
+    #     token_budget: Dict[str, int],
+    # ) -> Dict[str, Any]:
+    #     """Build query context with multiple repo summaries.
         
-        Args:
-            query: User query string
-            repo_rows: List of repository metadata rows (already pre-selected by strategy)
-            repo_files: Dict of {repo_name: {readme, configs}} file contents
-            token_budget: Token budget allocation dict
+    #     Args:
+    #         query: User query string
+    #         repo_rows: List of repository metadata rows (already pre-selected by strategy)
+    #         repo_files: Dict of {repo_name: {readme, configs}} file contents
+    #         token_budget: Token budget allocation dict
             
-        Returns:
-            Structured query context dict with chunked multi-repo content
-        """
+    #     Returns:
+    #         Structured query context dict with chunked multi-repo content
+    #     """
         
-        # Use pre-selected repos directly (selection done in endpoint via _select_repos_for_context)
-        context = {
-            "query": query,
-            "repositories": [],
-        }
+    #     # Use pre-selected repos directly (selection done in endpoint via _select_repos_for_context)
+    #     context = {
+    #         "query": query,
+    #         "repositories": [],
+    #     }
         
-        tokens_used = self.estimate_tokens(json.dumps({"query": query}))
+    #     tokens_used = self.estimate_tokens(json.dumps({"query": query}))
         
-        # Calculate per-repo budgets
-        num_repos = len(repo_rows)
-        if num_repos == 0:
-            context["tokens_estimated"] = tokens_used
-            return context
+    #     # Calculate per-repo budgets
+    #     num_repos = len(repo_rows)
+    #     if num_repos == 0:
+    #         context["tokens_estimated"] = tokens_used
+    #         return context
         
-        readme_budget_per_repo = token_budget.get("readme", 0) // num_repos
-        config_budget_per_repo = token_budget.get("config", 0) // num_repos
+    #     readme_budget_per_repo = token_budget.get("readme", 0) // num_repos
+    #     config_budget_per_repo = token_budget.get("config", 0) // num_repos
         
-        # Build context for each repo (already selected)
-        for repo in repo_rows:
-            repo_name = repo.get("repo_name") or repo.get("name")
-            if not repo_name:
-                continue
+    #     # Build context for each repo (already selected)
+    #     for repo in repo_rows:
+    #         repo_name = repo.get("repo_name") or repo.get("name")
+    #         if not repo_name:
+    #             continue
             
-            files = repo_files.get(repo_name, {})
-            readme = files.get("readme_content", "")
-            configs = files.get("config_files", [])
+    #         files = repo_files.get(repo_name, {})
+    #         readme = files.get("readme_content", "")
+    #         configs = files.get("config_files", [])
             
-            # Build mini repo summary
-            repo_summary = {
-                "name": repo_name,
-                "description": repo.get("description", "")[:200],  # Truncate descriptions
-                "primary_language": repo.get("primary_language"),
-                "stars": repo.get("stars_count", 0),
-                "forks": repo.get("forks_count", 0),
-                "last_updated": repo.get("github_updated_at", ""),
-            }
+    #         # Build mini repo summary
+    #         repo_summary = {
+    #             "name": repo_name,
+    #             "description": repo.get("description", "")[:200],  # Truncate descriptions
+    #             "primary_language": repo.get("primary_language"),
+    #             "stars": repo.get("stars_count", 0),
+    #             "forks": repo.get("forks_count", 0),
+    #             "last_updated": repo.get("github_updated_at", ""),
+    #         }
             
-            # Add chunked README if available
-            if readme and readme_budget_per_repo > 0:
-                repo_summary["readme_summary"] = self.chunk_readme(readme, readme_budget_per_repo)
+    #         # Add chunked README if available
+    #         if readme and readme_budget_per_repo > 0:
+    #             repo_summary["readme_summary"] = self.chunk_readme(readme, readme_budget_per_repo)
             
-            # Add chunked configs if available
-            if configs and config_budget_per_repo > 0:
-                config_summaries = []
-                # configs is now a dict {filename: content}
-                configs_list = list(configs.items())[:2]  # Max 2 config files per repo for query
-                budget_per_file = config_budget_per_repo // max(len(configs_list), 1)
+    #         # Add chunked configs if available
+    #         if configs and config_budget_per_repo > 0:
+    #             config_summaries = []
+    #             # configs is now a dict {filename: content}
+    #             configs_list = list(configs.items())[:2]  # Max 2 config files per repo for query
+    #             budget_per_file = config_budget_per_repo // max(len(configs_list), 1)
                 
-                for filename, content in configs_list:
-                    if filename and content:
-                        chunked = self.chunk_config_file(filename, content, budget_per_file)
-                        config_summaries.append({
-                            "filename": filename,
-                            "content": chunked
-                        })
+    #             for filename, content in configs_list:
+    #                 if filename and content:
+    #                     chunked = self.chunk_config_file(filename, content, budget_per_file)
+    #                     config_summaries.append({
+    #                         "filename": filename,
+    #                         "content": chunked
+    #                     })
                 
-                if config_summaries:
-                    repo_summary["config_summaries"] = config_summaries
+    #             if config_summaries:
+    #                 repo_summary["config_summaries"] = config_summaries
             
-            context["repositories"].append(repo_summary)
-            tokens_used += self.estimate_tokens(json.dumps(repo_summary))
+    #         context["repositories"].append(repo_summary)
+    #         tokens_used += self.estimate_tokens(json.dumps(repo_summary))
         
-        context["tokens_estimated"] = tokens_used
-        context["repos_included"] = len(context["repositories"])
+    #     context["tokens_estimated"] = tokens_used
+    #     context["repos_included"] = len(context["repositories"])
  
-        return context
+    #     return context
 
     # ---------------------------------------------------------------------------
     # Metrics & Observability

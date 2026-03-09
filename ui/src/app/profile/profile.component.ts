@@ -2,10 +2,11 @@ import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { Subject, takeUntil, switchMap, catchError, of } from 'rxjs';
+import { Subject, takeUntil, switchMap, catchError, of, tap } from 'rxjs';
 import DOMPurify from 'dompurify';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
+import { JobStatusBadgeComponent } from '../shared/job-status-badge.component';
 import { ProfileService, CandidateProfileResponse, CandidateSummaryResponse } from '../services/profile.service';
 import { JobPollingService } from '../services/job-polling.service';
 import { CacheService } from '../services/cache.service';
@@ -13,7 +14,7 @@ import { CacheService } from '../services/cache.service';
 @Component({
   selector: 'app-profile',
   standalone: true,
-  imports: [CommonModule, RouterModule, CandidateListComponent],
+  imports: [CommonModule, RouterModule, CandidateListComponent, JobStatusBadgeComponent],
   templateUrl: './profile.component.html',
   styleUrls: ['./profile.component.css']
 })
@@ -31,6 +32,7 @@ export class ProfileComponent implements OnInit, OnDestroy {
   activeUsername: string | null = null;
   profile: CandidateProfileResponse | null = null;
   summaryHtml: SafeHtml | null = null;
+  jobStatus: string | null = null;
 
   loadingProfile = false;
   loadingSummary = false;
@@ -96,6 +98,7 @@ export class ProfileComponent implements OnInit, OnDestroy {
     this.loadingSummary = true;
     this.summaryError = '';
     this.summaryHtml = null;
+    this.jobStatus = null;
 
     // Check cache first (24 hour TTL for expensive summaries)
     const cacheKey = `profile-summary-${username}-${jobId || 'latest'}`;
@@ -110,20 +113,42 @@ export class ProfileComponent implements OnInit, OnDestroy {
         this.summaryHtml = this.sanitizer.bypassSecurityTrustHtml('<p>No summary available yet.</p>');
       }
       this.loadingSummary = false;
+      this.jobStatus = null;
       return;
     }
 
     // Optimistically try to load summary
     this.profileService.getCandidateSummary(username, jobId).pipe(
+      switchMap((summary) => {
+        // Handle 200+empty case: treat as NOT_READY if jobId is available
+        const html = summary?.summary_html || '';
+        if (!html && jobId) {
+          // Empty response with active job - enter polling chain
+          return this.jobPollingService.waitForFilesReady(username, jobId).pipe(
+            tap((status) => {
+              this.jobStatus = status.status;
+            }),
+            switchMap(() => this.profileService.getCandidateSummary(username, jobId)),
+            catchError(() => {
+              // Failed even after polling
+              return of({ username, summary_html: '' } as CandidateSummaryResponse);
+            }),
+            takeUntil(this.destroy$)
+          );
+        }
+        // Non-empty response or no job_id - return as-is
+        return of(summary);
+      }),
       catchError((error) => {
-        // Check if error is NOT_READY (404) and we have a job_id
+        // Check if error is NOT_READY (404)
         const isNotReady = error?.status === 404 || error?.error?.error_code === 'NOT_READY';
         
         if (isNotReady && jobId) {
           // Poll until files are ready, then retry
-          this.summaryHtml = this.sanitizer.bypassSecurityTrustHtml('<p>Summary generating… Please wait.</p>');
-          
           return this.jobPollingService.waitForFilesReady(username, jobId).pipe(
+            tap((status) => {
+              this.jobStatus = status.status;
+            }),
             switchMap(() => this.profileService.getCandidateSummary(username, jobId)),
             catchError(() => {
               // Failed even after polling
@@ -134,6 +159,7 @@ export class ProfileComponent implements OnInit, OnDestroy {
         }
         
         // Not a NOT_READY error or no job_id - return empty
+        console.warn('Summary not ready or failed to load:', error);
         return of({ username, summary_html: '' } as CandidateSummaryResponse);
       }),
       takeUntil(this.destroy$)
@@ -152,10 +178,12 @@ export class ProfileComponent implements OnInit, OnDestroy {
           this.summaryHtml = this.sanitizer.bypassSecurityTrustHtml('<p>No summary available yet.</p>');
         }
         this.loadingSummary = false;
+        this.jobStatus = null;
       },
       error: () => {
         this.loadingSummary = false;
         this.summaryError = 'Failed to load AI summary.';
+        this.jobStatus = null;
       }
     });
   }

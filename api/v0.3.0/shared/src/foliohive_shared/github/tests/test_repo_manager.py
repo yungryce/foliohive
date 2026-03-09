@@ -34,7 +34,8 @@ class TestRepoManagerFileDiscovery:
             },
             file_candidates=["package.json", "requirements.txt"],
             readme_candidates=["README.md"],
-            limit=5,
+            config_cap=5,
+            readme_cap=4,
         )
 
         assert "src/package.json" in selected

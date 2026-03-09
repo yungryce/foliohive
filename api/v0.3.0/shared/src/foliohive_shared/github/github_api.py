@@ -135,6 +135,7 @@ class GitHubAPI:
                 else "request_error"
             )
             self.tracker.record_error(error_type, endpoint, message=str(exc)[:100])
+            raise exc
 
         status_code = response.status_code
         rate_remaining = response.headers.get("X-RateLimit-Remaining", "unknown")
@@ -154,7 +155,6 @@ class GitHubAPI:
         )
 
         if status_code == 403 and rate_remaining_int == 0:
-            self.tracker.mark_rate_limited()
             self.tracker.record_error(
                 "rate_limited",
                 endpoint,
@@ -186,6 +186,7 @@ class GitHubAPI:
         purpose: str = "graphql_batch",
     ) -> Optional[Dict[str, Any]]:
         """Perform a GraphQL request against the GitHub API."""
+
         headers = {"Authorization": f"bearer {self.token}"} if self.token else {}
         payload = {"query": query, "variables": variables or {}}
         repo = variables.get("name") if variables else None
@@ -201,34 +202,26 @@ class GitHubAPI:
                 else "request_error"
             )
             self.tracker.record_error(error_type, "graphql", message=str(exc)[:100])
-
+            raise exc
+        
         status = response.status_code
         rate_remaining = response.headers.get("X-RateLimit-Remaining")
         rate_reset = _parse_rate_limit_reset(response.headers.get("X-RateLimit-Reset"))
-        logger.info("[GITHUB_GRAPHQL_RESPONSE %s] status=%d rate_remaining=%s", purpose, status, rate_remaining)
+        rate_remaining_int = int(rate_remaining) if isinstance(rate_remaining, str) and rate_remaining.isdigit() else None
 
-        self.tracker.record_request(
-            method="POST",
-            endpoint="graphql",
-            endpoint_kind="graphql",
-            purpose=purpose or self.tracker.purpose,
-            status_code=status,
-            rate_remaining=int(rate_remaining) if isinstance(rate_remaining, str) and rate_remaining.isdigit() else None,
-            rate_reset=rate_reset,
-            cache_hit=False,
-        )
-
-        if status == 403 and isinstance(rate_remaining, str) and rate_remaining.isdigit() and int(rate_remaining) == 0:
-            self.tracker.mark_rate_limited()
+        # Check for HTTP-level rate limiting FIRST (before parsing response body)
+        if status == 403 and rate_remaining_int == 0:
             self.tracker.record_error(
                 "rate_limited",
                 "graphql",
                 status_code=status,
                 message=getattr(response, "text", "")[:100],
             )
+            return None
 
-        payload = response.json()
-        errors = payload.get("errors") if isinstance(payload, dict) else None
+        # Parse response body and check for GraphQL-level errors
+        response_payload = response.json()
+        errors = response_payload.get("errors") if isinstance(response_payload, dict) else None
         if isinstance(errors, list) and errors:
             first_message = errors[0].get("message", "") if isinstance(errors[0], dict) else str(errors[0])
             self.tracker.record_error(
@@ -237,8 +230,21 @@ class GitHubAPI:
                 status_code=status,
                 message=first_message,
             )
+            return None
 
-        return payload
+        # Only record success if no errors occurred
+        self.tracker.record_request(
+            method="POST",
+            endpoint="graphql",
+            endpoint_kind="graphql",
+            purpose=purpose or self.tracker.purpose,
+            status_code=status,
+            rate_remaining=rate_remaining_int,
+            rate_reset=rate_reset,
+            cache_hit=False,
+        )
+
+        return response_payload if status < 400 else None
 
 
     def decode_file_content(self, file_data: Dict[str, Any]) -> Optional[str]:

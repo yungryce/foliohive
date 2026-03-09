@@ -18,10 +18,4 @@
 If uncertain, lower confidence.
 - Based strictly on provided data, list observed architecture patterns
 
-lets add add a destroy method to #file:table_manager.py that deletes all tables
-we would alos add a destroy method to #file:cache_manager.py that deletes all container (_DEFAULT_CONTAINER = "github-cache")
-This is for debugging purposes toease starting afresh ( i currently have to manually delete tables and contsiners)
 
-we would add an api trigger to #file:api_gateway.py and a service to #file:repo-bundle.service.ts that deletes tables and container 
-
-add a button to #file:landing that calls service and trigger

@@ -101,10 +101,6 @@ class ApiUsageTracker:
         # Persist operation to table after each request
         self.persist_operation_to_table()
 
-    def mark_rate_limited(self) -> None:
-        self.rate_limited = True
-        self.persist_operation_to_table()
-
     def has_errors(self) -> bool:
         return int(self.errors.get("count", 0)) > 0
 
@@ -134,6 +130,10 @@ class ApiUsageTracker:
         }
         details = self.errors.setdefault("details", [])
         details.append(error_detail)
+
+        # Set rate_limited flag when rate_limited error is recorded
+        if error_type == "rate_limited":
+            self.rate_limited = True
 
         # Persist operation to table after each error
         self.persist_operation_to_table()

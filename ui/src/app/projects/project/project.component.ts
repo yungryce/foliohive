@@ -2,12 +2,13 @@ import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, RouterModule } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { Observable, Subject, catchError, map, of, switchMap, takeUntil } from 'rxjs';
+import { Observable, Subject, catchError, map, of, switchMap, takeUntil, tap } from 'rxjs';
 import DOMPurify from 'dompurify';
 import { CandidateContextService } from '../../services/candidate-context.service';
 import { RepoBundleService, ReadmeSummaryResponse } from '../../services/repo-bundle.service';
 import { JobPollingService } from '../../services/job-polling.service';
 import { CacheService } from '../../services/cache.service';
+import { JobStatusBadgeComponent } from '../../shared/job-status-badge.component';
 
 /**
  * Aligned with backend schema from get_repo_files in api_gateway.py
@@ -26,7 +27,7 @@ interface RepoDetailVM {
 @Component({
   selector: 'app-project',
   standalone: true,
-  imports: [CommonModule, RouterModule],
+  imports: [CommonModule, RouterModule, JobStatusBadgeComponent],
   templateUrl: './project.component.html',
   styleUrls: ['./project.component.css']
 })
@@ -43,6 +44,7 @@ export class ProjectComponent implements OnInit, OnDestroy {
   contentHtml: SafeHtml = '';
   summaryLoading = false;
   summaryError = '';
+  jobStatus: string | null = null;
 
   username = '';
   repoName = '';
@@ -104,6 +106,7 @@ export class ProjectComponent implements OnInit, OnDestroy {
   private loadReadmeSummary(username: string, repoName: string, jobId: string): void {
     this.summaryLoading = true;
     this.summaryError = '';
+    this.jobStatus = null;
 
     // Check cache first (24 hour TTL for expensive summaries)
     const cacheKey = `readme-summary-${username}-${repoName}-${jobId}`;
@@ -118,21 +121,42 @@ export class ProjectComponent implements OnInit, OnDestroy {
         this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>No README summary available yet.</p>');
       }
       this.summaryLoading = false;
+      this.jobStatus = null;
       return;
     }
 
     // Optimistically try to load summary
     this.repoBundle.getReadmeSummary(username, repoName).pipe(
+      switchMap((res) => {
+        // Handle 200+empty case: treat as NOT_READY if jobId is available
+        const summaryHtml = res?.readme_summary_html || '';
+        if (!summaryHtml && jobId) {
+          // Empty response with active job - enter polling chain
+          return this.jobPollingService.pollRepoReady(username, jobId, repoName).pipe(
+            tap((status) => {
+              this.jobStatus = status.status;
+            }),
+            switchMap(() => this.repoBundle.getReadmeSummary(username, repoName)),
+            catchError(() => {
+              // Failed even after polling
+              return of({ readme_summary_html: '' } as ReadmeSummaryResponse);
+            }),
+            takeUntil(this.destroy$)
+          );
+        }
+        // Non-empty response or no job_id - return as-is
+        return of(res);
+      }),
       catchError((error) => {
-        // Check if error is NOT_READY (404) and we have a job_id
+        // Check if error is NOT_READY (404)
         const isNotReady = error?.status === 404 || error?.error?.error_code === 'NOT_READY';
         
         if (isNotReady && jobId) {
-          // Show generating message and poll until files are ready
-          this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>Generating summary… Please wait.</p>');
-          
-          // Poll until files are ready, then retry
-          return this.jobPollingService.waitForFilesReady(username, jobId).pipe(
+          // Poll until this repo is ready, then retry
+          return this.jobPollingService.pollRepoReady(username, jobId, repoName).pipe(
+            tap((status) => {
+              this.jobStatus = status.status;
+            }),
             switchMap(() => this.repoBundle.getReadmeSummary(username, repoName)),
             catchError(() => {
               // Failed even after polling
@@ -161,11 +185,13 @@ export class ProjectComponent implements OnInit, OnDestroy {
           this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>No README summary available yet.</p>');
         }
         this.summaryLoading = false;
+        this.jobStatus = null;
       },
       error: (err) => {
         this.summaryLoading = false;
         this.summaryError = 'Failed to load README summary.';
         this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>README summary unavailable.</p>');
+        this.jobStatus = null;
       }
     });
   }

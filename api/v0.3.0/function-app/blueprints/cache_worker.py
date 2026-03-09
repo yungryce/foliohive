@@ -23,6 +23,7 @@ from foliohive_shared import (
     SummaryManager,
     table_manager,
 )
+from foliohive_shared.ai.data_filter import get_config_extractor
 
 logger = logging.getLogger("foliohive.cache_worker")
 logger.setLevel(logging.INFO)
@@ -30,9 +31,34 @@ logger.propagate = True
 
 bp = func.Blueprint()
 
-STANDARD_CONFIG_FETCH_LIMIT = 20
-STANDARD_CONFIG_MAX_CHARS = 4000
-READ_ME_EXCERPT_MAX_CHARS = 4096
+
+# ---------------------------------------------------------------------------
+# Config Extraction
+# ---------------------------------------------------------------------------
+def _extract_config_payloads(
+    config_files: Dict[str, str],
+) -> Dict[str, Any]:
+    """Extract structured payloads from raw config file contents."""
+    extracted_config_files: Dict[str, Any] = {}
+
+    for filename, content in config_files.items():
+        extractor = get_config_extractor(filename)
+        if extractor is None:
+            logger.warning("No extractor found for file %s; skipping", filename)
+            continue
+
+        extractor_key = getattr(extractor, "__name__", None) if extractor else None
+        extracted = extractor(content or "")
+        if extracted is None:
+            logger.warning("Extractor for %s returned None for file %s; skipping", extractor_key, filename)
+            continue
+
+        extracted_config_files[filename] = extracted
+        status = "failed" if isinstance(extracted, dict) and extracted.get("error") else "extracted"
+        if status == "failed":
+            logger.warning("Extraction failed for file %s with extractor %s: %s", filename, extractor_key, extracted.get("error"))
+
+    return extracted_config_files
 
 
 # ---------------------------------------------------------------------------
@@ -91,109 +117,30 @@ def _fetch_file_content(
 
     repo_manager = _get_repo_manager(username)
 
-    mode = "rest"
-    if os.getenv("ENABLE_CONFIG_DISCOVERY_GRAPHQL", "false").lower() == "true":
-        mode = "graphql"
-
     # Fetch files from GitHub (in-memory only)
-    # Use default_branch from queue message to avoid redundant metadata API call
     discovery = repo_manager.get_repo_blob_files(
         username=username,
         repo=repo_name,
-        mode=mode,
         ref=ref,
         purpose="file_cache",
         job_id=job_id,
-        limit=STANDARD_CONFIG_FETCH_LIMIT,
-        max_chars=STANDARD_CONFIG_MAX_CHARS,
-        readme_max_chars=READ_ME_EXCERPT_MAX_CHARS,
     )
 
     config_files = discovery.get("config_files", {})
-    readme_files = discovery.get("readme_files", {})
     primary_readme = discovery.get("primary_readme", "")
-    api_usage = discovery.get("api_usage", {})
-    paths_discovered = discovery.get("paths_discovered", 0)
-    
-    # Validate file fetch completeness (only if paths were discovered)
-    total_discovered = len(config_files) + len(readme_files)
-    file_targets = api_usage.get("file_targets", {})
-    requested_count = len([ft for ft in file_targets.values() if ft.get("selected")])
-    missing_count = max(0, requested_count - total_discovered) if requested_count > 0 else 0
-    
-    if paths_discovered > 0:  # Only validate fetch if paths were discovered
-        if missing_count > 0 or requested_count != total_discovered:
-            logger.warning(
-                "[FILE_FETCH_VALIDATION] repo=%s mode=%s discovered=%d requested=%d returned=%d missing=%d readme_found=%s",
-                repo_name, mode, paths_discovered, requested_count, total_discovered, missing_count, bool(primary_readme)
-            )
-        else:
-            logger.info(
-                "[FILE_FETCH_VALIDATION] repo=%s mode=%s discovered=%d requested=%d returned=%d complete=True readme_found=%s",
-                repo_name, mode, paths_discovered, requested_count, total_discovered, bool(primary_readme)
-            )
+    readme_files = discovery.get("readme_files", {})
     
     # Extract config signals (in-memory only, no blob persistence)
-    extracted_config_content = repo_manager.extract_config_payloads(config_files)
-    
-    # Serialize extracted dicts to JSON strings for consistent token estimation
-    # build_repo_context() expects string values for accurate token counting
-    serialized_config_files = {}
-    for filename, payload in extracted_config_content.items():
-        if isinstance(payload, dict):
-            serialized_config_files[filename] = json.dumps(payload)
-        else:
-            # Fallback for non-dict payloads (shouldn't occur, but defensive)
-            serialized_config_files[filename] = str(payload)
-    extracted_config_content = serialized_config_files
-    
-    logger.info(
-        "[EXTRACTION_COMPLETE] repo=%s extracted=%d total_discovered=%d",
-        repo_name,
-        len(extracted_config_content),
-        len(config_files),
-    )
-    
-    # Log if proceeding with partial data
-    has_readme = bool(primary_readme)
-    config_count = len(extracted_config_content)
-    expected_configs = len(config_files)  # Pre-extraction count
-    
-    # Categorize the data quality
-    if paths_discovered == 0:
-        data_quality = "no_paths"
-    elif not has_readme and config_count == 0:
-        data_quality = "metadata_only"
-    elif not has_readme:
-        data_quality = "partial_no_readme"
-    elif config_count < expected_configs:
-        data_quality = "partial_incomplete_configs"
-    elif missing_count > 0:
-        data_quality = "fetch_failures"
-    else:
-        data_quality = "complete"
-    
-    if data_quality != "complete":
-        logger.warning(
-            "[DATA_QUALITY] repo=%s quality=%s discovered=%d readme=%s configs=%d/%d missing_files=%d",
-            repo_name, data_quality, paths_discovered, has_readme, config_count, expected_configs, missing_count
-        )
-    
-    logger.info(
-        "[FETCH_COMPLETE] repo=%s readme_length=%d extracted_configs=%s api_usage_summary=%s",
-        repo_name,
-        len(primary_readme),
-        list(extracted_config_content.keys()),
-        {
-            "total_requests": api_usage.get("totals", {}).get("requests", 0),
-            "cache_hits": sum(ft.get("cache_hits", 0) for ft in api_usage.get("file_targets", {}).values())
-        },
-    )
+    extracted_config_content = _extract_config_payloads(config_files)
+    serialized_config_files = {
+        filename: json.dumps(payload)
+        for filename, payload in extracted_config_content.items()
+    }
 
     return {
-        "readme_content": primary_readme,
-        "config_content": extracted_config_content,
-        "api_usage": api_usage,
+        "primary_readme_content": primary_readme,
+        "config_content": serialized_config_files,
+        "readme_content": readme_files,
     }
 
 
@@ -372,16 +319,6 @@ def process_cache_job(msg: func.QueueMessage) -> None:
         # Fetch files and extract signals (in-memory only)
         fetch_result = _fetch_file_content(username, repo_name, job_id=job_id, ref=branch_ref)
 
-        # Log extracted config content
-        extracted_config_content = fetch_result.get("config_content", {})
-        for config_name, config_payload in extracted_config_content.items():
-            logger.info(
-                "[EXTRACTED_CONFIG] repo=%s config=%s payload=%s",
-                repo_name,
-                config_name,
-                json.dumps(config_payload, indent=2) if isinstance(config_payload, dict) else str(config_payload),
-            )
-
         summary_ready = False
         summary_failed = False
         
@@ -402,10 +339,6 @@ def process_cache_job(msg: func.QueueMessage) -> None:
 
         cache_key = summary_manager.build_repo_micro_summary_cache_key(repo_name, fingerprint)
         table_manager.register_pending_cache_summary(username, repo_name, fingerprint, cache_key)
-        logger.info(
-            "[CACHE_REGISTRATION] repo=%s fingerprint=%s cache_key=%s status=pending",
-            repo_name, fingerprint, cache_key
-        )
 
         summary_result = summary_manager.generate_repo_micro_summary(
             repo_name=repo_name,
@@ -421,17 +354,19 @@ def process_cache_job(msg: func.QueueMessage) -> None:
                     "forks": metadata_row.get("forks_count", 0),
                 },
             },
-            readme_content=fetch_result.get("readme_content"),
+            primary_readme_content=fetch_result.get("primary_readme_content"),
             config_content=fetch_result.get("config_content", {}),
+            secondary_readme_content=list(fetch_result.get("readme_content", {}).values()), 
         )
-        logger.info("[MICRO_SUMMARY_RESULT] repo=%s result_keys=%s", repo_name, sorted(summary_result.keys()))
         
+        error_msg = None
         if summary_result.get("summary"):
             summary_ready = True
             logger.info("[MICRO_SUMMARY] Generated for %s/%s", username, repo_name)
         else:
             summary_failed = True
-            logger.warning("[MICRO_SUMMARY] Failed for %s/%s reason=%s", username, repo_name, summary_result.get("reason") or summary_result.get("error"))
+            error_msg = summary_result.get("error")
+            logger.warning("[MICRO_SUMMARY] Failed for %s/%s error=%s", username, repo_name, error_msg)
         
         # Update progress tracking (status: synced → summary_ready or failed)
         _update_cache_progress(
@@ -442,6 +377,7 @@ def process_cache_job(msg: func.QueueMessage) -> None:
             summary_ready=summary_ready,
             message_id=queue_message_id,
             trace_id=trace_id,
+            error=error_msg,
         )
 
     except ValueError as ve:

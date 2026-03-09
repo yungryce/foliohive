@@ -2,7 +2,7 @@ import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
-import { Subject, takeUntil, switchMap, catchError, of } from 'rxjs';
+import { Subject, takeUntil, switchMap, catchError, of, tap } from 'rxjs';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { RepoBundleService } from '../services/repo-bundle.service';
 import { JobPollingService } from '../services/job-polling.service';
@@ -11,6 +11,7 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { CandidateListComponent } from '../shared/candidate-list.component';
+import { JobStatusBadgeComponent } from '../shared/job-status-badge.component';
 
 interface SuggestedRepo {
   name: string;
@@ -20,7 +21,7 @@ interface SuggestedRepo {
 @Component({
   selector: 'app-ai',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterModule, CandidateListComponent],
+  imports: [CommonModule, FormsModule, RouterModule, CandidateListComponent, JobStatusBadgeComponent],
   templateUrl: './ai.component.html',
   styleUrls: ['./ai.component.css'],
 })
@@ -40,6 +41,8 @@ export class AiComponent implements OnInit, OnDestroy {
   activeUsername: string | null = null;
   activeJobId: string | null = null;
   skillsText: string = '';
+  summaryReady = false;
+  jobStatus: string | null = null;
 
   suggested: SuggestedRepo[] = [];
   noRepositories = false;
@@ -97,6 +100,8 @@ export class AiComponent implements OnInit, OnDestroy {
     this.answerHtml = null;
     this.repositoriesUsed = [];
     this.error = '';
+    this.summaryReady = false;
+    this.jobStatus = null;
 
     // Load metadata to check if repos exist and get job_id
     this.repoService.getCandidateMetadata(username, undefined, true).subscribe({
@@ -105,14 +110,44 @@ export class AiComponent implements OnInit, OnDestroy {
         this.noRepositories = !hasRepos;
         this.activeJobId = bundle?.job_id || null;
         
+        // Start with summaryReady = false; polling will update it if needed
+        this.summaryReady = false;
+        
         if (hasRepos) {
           this.loadSuggestions();
+          
+          // If we have a job_id, start polling for summaries
+          if (this.activeJobId) {
+            this.pollForSummaries(username, this.activeJobId);
+          }
         }
       },
       error: () => {
         this.noRepositories = true;
       }
     });
+  }
+
+  private pollForSummaries(username: string, jobId: string): void {
+    this.jobPollingService.waitForFilesReady(username, jobId)
+      .pipe(
+        tap((status) => {
+          this.jobStatus = status.status;
+        }),
+        takeUntil(this.destroy$)
+      )
+      .subscribe({
+        next: (status) => {
+          if (status?.summary_ready) {
+            this.summaryReady = true;
+            this.jobStatus = null;
+          }
+        },
+        error: () => {
+          // Polling failed or timed out
+          this.jobStatus = null;
+        }
+      });
   }
 
   private loadSuggestions(): void {
@@ -167,6 +202,10 @@ export class AiComponent implements OnInit, OnDestroy {
       this.error = 'No repositories found for this candidate.';
       return;
     }
+    if (!this.summaryReady) {
+      this.error = 'Portfolio data is not ready yet. Please wait for processing to complete.';
+      return;
+    }
     if (!q) {
       this.error = 'Enter a question.';
       return;
@@ -179,17 +218,11 @@ export class AiComponent implements OnInit, OnDestroy {
     // Optimistically try to get answer
     this.ai.askPortfolio({ query: q, username }).pipe(
       catchError((error) => {
-        // Check if error is NOT_READY (404) and we have a job_id
+        // Check if error is NOT_READY (404) - this should be rare since we waited for summary_ready
         const isNotReady = error?.status === 404 || error?.error?.error_code === 'NOT_READY';
         
         if (isNotReady && this.activeJobId) {
-          // Show generating message and poll until files are ready
-          const generatingMsg = 'Generating answer… Please wait while we prepare your portfolio data.';
-          const rawHtml = marked.parse(generatingMsg, { async: false }) as string;
-          const clean = DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } }) as string;
-          this.answerHtml = this.sanitizer.bypassSecurityTrustHtml(clean);
-          
-          // Poll until files are ready, then retry
+          // Fallback: poll again then retry
           return this.jobPollingService.waitForFilesReady(username, this.activeJobId).pipe(
             switchMap(() => this.ai.askPortfolio({ query: q, username })),
             catchError(() => {

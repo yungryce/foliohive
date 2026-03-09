@@ -14,6 +14,13 @@ logger.setLevel(logging.INFO)
 logger.propagate = True
 
 USERNAME_REQUIRED_ERROR = "Username is required"
+FILE_FETCH_MODE = "graphql" if os.getenv("ENABLE_CONFIG_DISCOVERY_GRAPHQL", "false").lower() == "true" else "rest"
+# Max character limits for file content to manage token budgets and ensure we get some content even for large files.
+STANDARD_CONFIG_MAX_CHARS = 2048
+READ_ME_EXCERPT_MAX_CHARS = 4096
+# Static caps for file discovery (config_files=5, readme=1 primary + 3 others)
+CONFIG_FILES_CAP = 5
+README_FILES_CAP = 4
 
 _NON_BUNDLE_CACHE_PREFIXES = (
     "repo_metadata:",
@@ -147,8 +154,6 @@ class GitHubRepoManager:
         if not username:
             raise ValueError(USERNAME_REQUIRED_ERROR)
 
-        logger.info("Using ref '%s' for repo tree of %s/%s", ref, username, repo)
-
         endpoint = f"repos/{username}/{repo}/git/trees/{ref}"
         tree_data = self.api.make_request(
             'GET',
@@ -180,7 +185,8 @@ class GitHubRepoManager:
         path_index: Set[str],
         file_candidates: Sequence[str],
         readme_candidates: Sequence[str],
-        limit: int,
+        config_cap: int,
+        readme_cap: int,
         max_dirs_per_depth: int = 25,
         max_total_dirs: int = 200,
     ) -> List[str]:
@@ -199,10 +205,6 @@ class GitHubRepoManager:
         config_files: List[str] = []
         readme_files: List[str] = []
         primary_readme_found = False
-        
-        # Caps: primary=1, other_readmes=3, config_files=5
-        readme_cap = 4  # 1 primary + 3 others
-        config_cap = 5
 
         for fixed in fixed_targets:
             if fixed in path_index and fixed not in seen:
@@ -291,20 +293,17 @@ class GitHubRepoManager:
         username: Optional[str],
         repo: str,
         *,
-        mode: str = "rest",
         ref: Optional[str] = None,
         purpose: str = "file_cache",
         job_id: Optional[str] = None,
-        limit: int = 20,
-        max_chars: int = 4000,
-        readme_max_chars: int = 4096,
     ) -> Dict[str, Any]:
         """Discover config files + README files level-by-level with minimal API calls."""
+        
         username = username or self.username
         if not username:
             raise ValueError(USERNAME_REQUIRED_ERROR)
 
-        file_candidates = get_standard_config_file_candidates(limit=limit)
+        file_candidates = get_standard_config_file_candidates()
         readme_candidates = ["README.md", "README.rst", "README.txt", "readme.md"]
         readme_set = {name.lower() for name in readme_candidates}
 
@@ -317,7 +316,8 @@ class GitHubRepoManager:
             path_index=path_index_set,
             file_candidates=file_candidates,
             readme_candidates=readme_candidates,
-            limit=limit,
+            config_cap=CONFIG_FILES_CAP,
+            readme_cap=README_FILES_CAP,
         )
         if not target_paths:
             return {
@@ -330,12 +330,7 @@ class GitHubRepoManager:
         config_files: Dict[str, str] = {}
         readme_files: Dict[str, str] = {}
 
-        if mode not in {"rest", "graphql"}:
-            logger.warning("Unknown config discovery mode '%s'; defaulting to rest", mode)
-            mode = "rest"
-
-        if mode == "graphql":
-            # Fetch paths in chunks to manage query complexity
+        if FILE_FETCH_MODE == "graphql":
             chunks = list(self._chunk_paths(target_paths, chunk_size=50))
             content_map = {}
             
@@ -354,7 +349,6 @@ class GitHubRepoManager:
                 )
                 content_map.update(chunk_results)
         else:
-            logger.info("Using REST API for blob fetch in %s/%s for %d paths", username, repo, len(target_paths))
             content_map = {}
             for path in target_paths:
                 endpoint = f"repos/{username}/{repo}/contents/{path}"
@@ -374,31 +368,33 @@ class GitHubRepoManager:
             if not content:
                 continue
             if os.path.basename(path).lower() in readme_set:
-                readme_files[path] = content[:readme_max_chars]
+                readme_files[path] = content[:READ_ME_EXCERPT_MAX_CHARS]
             else:
-                config_files[path] = content[:max_chars]
+                config_files[path] = content[:STANDARD_CONFIG_MAX_CHARS]
 
-        primary_readme = ""
-        if readme_files:
-            primary_readme = readme_files.get("README.md") or next(iter(readme_files.values()))
+        if "README.md" in readme_files:
+            primary_readme = readme_files.pop("README.md")
+        elif readme_files:
+            first_key = next(iter(readme_files))
+            primary_readme = readme_files.pop(first_key)
 
         logger.info(
-            "Discovery complete for %s/%s mode=%s candidates=%d found=%d readme=%d config=%d primary_readme=%s",
+            "Discovery complete for %s/%s mode=%s candidates=%d found=%d readme=%d config=%d primary_readme=%s missing=%d",
             username,
             repo,
-            mode,
+            FILE_FETCH_MODE,
             len(target_paths),
             len(config_files) + len(readme_files),
             len(readme_files),
             len(config_files),
             bool(primary_readme),
+            len(target_paths) - (len(config_files) + len(readme_files)),
         )
 
         return {
             "config_files": config_files,
             "readme_files": readme_files,
             "primary_readme": primary_readme,
-            "paths_discovered": len(target_paths),
         }
 
 
@@ -474,35 +470,6 @@ class GitHubRepoManager:
         return result
 
 
-    def extract_config_payloads(
-        self,
-        config_files: Dict[str, str],
-    ) -> tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
-        """Extract structured payloads from raw config file contents."""
-        extracted_config_files: Dict[str, Any] = {}
-
-        for filename, content in config_files.items():
-            extractor = get_config_extractor(filename)
-            if extractor is None:
-                logger.warning("No extractor found for file %s; skipping", filename)
-                continue
-
-            extractor_key = getattr(extractor, "__name__", None) if extractor else None
-            extracted = extractor(content or "")
-            if extracted is None:
-                logger.warning("Extractor for %s returned None for file %s; skipping", extractor_key, filename)
-                continue
-            logger.info("Extracted config file %s with extractor %s: keys=%s", filename, extractor_key, list(extracted.keys()) if isinstance(extracted, dict) else type(extracted))
-            logger.info("Extracted content for %s: %s", filename, str(extracted)[:500])  # Log a snippet of the extracted content
-
-            extracted_config_files[filename] = extracted
-            status = "failed" if isinstance(extracted, dict) and extracted.get("error") else "extracted"
-            if status == "failed":
-                logger.warning("Extraction failed for file %s with extractor %s: %s", filename, extractor_key, extracted.get("error"))
-
-        return extracted_config_files
-
-
     @staticmethod
     def _build_directory_levels(paths: Iterable[str]) -> Dict[int, Set[str]]:
         levels: Dict[int, Set[str]] = {0: {""}}
@@ -572,63 +539,24 @@ class GitHubRepoManager:
             + " } }"
         )
 
-        logger.info(
-            "[GRAPHQL_QUERY] query=%s owner=%s repo=%s paths=%d ref=%s",
-            query, owner, repo, len(paths), ref
-        )
-
         payload = self.api.make_request_gql(
             query=query,
             variables={"owner": owner, "name": repo},
             purpose="graphql_blob_batch",
         )
 
-        if not isinstance(payload, dict):
-            logger.warning(
-                "[GRAPHQL_FETCH_FAILED] repo=%s/%s paths=%d reason=invalid_payload",
-                owner, repo, len(paths)
-            )
-            return {path: None for path in paths}
-
-        # Check for GraphQL errors in response
-        errors = payload.get("errors")
-        if errors and isinstance(errors, list):
-            error_messages = [e.get("message", str(e)) for e in errors[:3]]
-            logger.warning(
-                "[GRAPHQL_PARTIAL_ERRORS] repo=%s/%s paths=%d error_count=%d sample_errors=%s",
-                owner, repo, len(paths), len(errors), error_messages
-            )
-
         repo_data = payload.get("data", {}).get("repository")
         if not isinstance(repo_data, dict):
-            logger.warning(
-                "[GRAPHQL_FETCH_FAILED] repo=%s/%s paths=%d reason=invalid_repository_data",
-                owner, repo, len(paths)
-            )
             return {path: None for path in paths}
 
         results: Dict[str, Optional[str]] = {}
-        none_count = 0
         for alias, path in alias_map.items():
             node = repo_data.get(alias)
             if not isinstance(node, dict) or node.get("isBinary"):
                 results[path] = None
-                none_count += 1
-                if not isinstance(node, dict):
-                    logger.info("[GRAPHQL_BLOB_NULL] repo=%s/%s path=%s reason=null_node", owner, repo, path)
-                elif node.get("isBinary"):
-                    logger.info("[GRAPHQL_BLOB_BINARY] repo=%s/%s path=%s", owner, repo, path)
                 continue
             text = node.get("text")
             results[path] = text if isinstance(text, str) else None
-            if text is None:
-                none_count += 1
-                logger.info("[GRAPHQL_BLOB_NULL] repo=%s/%s path=%s reason=null_text", owner, repo, path)
-        
-        if none_count > 0:
-            logger.info(
-                "[GRAPHQL_FETCH_SUMMARY] repo=%s/%s requested=%d fetched=%d failed=%d",
-                owner, repo, len(paths), len(paths) - none_count, none_count
-            )
         
         return results
+    

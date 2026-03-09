@@ -74,46 +74,7 @@ class AIAssistant:
         text = "\n".join(part for part in parts if isinstance(part, str) and part)
         return len(text) // 4 if text else 0
     
-    def _validate_response(self, response, request_id: str, max_tokens: int) -> tuple[bool, Optional[str], str]:
-        """
-        Validate OpenAI response for content and completion status.
-        
-        Args:
-            response: OpenAI chat completion response object
-            request_id: Request ID for logging
-            max_tokens: Maximum tokens configured for this request
-            
-        Returns:
-            Tuple of (is_valid, content, warning_message)
-            - is_valid: True if response has valid content
-            - content: Response content (None if invalid)
-            - warning_message: Warning/error message if any issues detected
-        """
-        if not response or not response.choices:
-            return False, None, "OpenAI API returned empty response"
-        
-        choice = response.choices[0]
-        content = choice.message.content
-        finish_reason = choice.finish_reason
-        
-        # Check for truncation (hit max_completion_tokens limit)
-        if finish_reason == "length":
-            warning = f"Response truncated (hit max_completion_tokens={max_tokens}). Returned {len(content) if content else 0} chars."
-            logger.warning("Request ID: %s - %s", request_id, warning)
-            if not content or not content.strip():
-                return False, None, warning
-            return True, content, warning
-        
-        # Check for None content
-        if content is None:
-            return False, None, "OpenAI returned None content (possible API issue)"
-        
-        # Check for empty response
-        if not content.strip():
-            return False, None, "OpenAI returned empty response"
-        
-        return True, content, None
-    
+
     # ---------------------------------------------------------------------------
     # Core method to call OpenAI API with prepared messages and handle response
     # ---------------------------------------------------------------------------
@@ -127,6 +88,7 @@ class AIAssistant:
         model_tier: str = "default",
         max_completion_tokens: int = 1500,
         *,
+        response_format: Optional[Dict[str, Any]] = None,
         purpose: str = "unknown",
         job_id: Optional[str] = None,
         repo_name: Optional[str] = None,
@@ -162,11 +124,7 @@ class AIAssistant:
         )
 
         if not self.client:
-            tracker.record_error(
-                "ai_service_not_configured",
-                message="OPENAI client unavailable. Check OPENAI_API_KEY and client initialization.",
-            )
-            return "I'm sorry, but the AI service is not configured. Please check OPENAI_API_KEY."
+            raise Exception("AI service not configured. Please check OPENAI_API_KEY.")
         
         try:
             logger.info("Request ID: %s - Calling OpenAI API (model: %s, max_tokens: %d)", request_id, model_name, max_completion_tokens)
@@ -177,12 +135,21 @@ class AIAssistant:
                     {"role": "user", "content": query}
                 ],
                 max_completion_tokens=max_completion_tokens,
+                **({"response_format": response_format} if response_format else {}), 
                 stream=False
             )
 
             usage = getattr(response, "usage", None)
             choice = response.choices[0] if getattr(response, "choices", None) else None
             finish_reason = getattr(choice, "finish_reason", None)
+            content = choice.message.content
+
+            if finish_reason == "length":
+                raise Exception("Response truncated due to length limits")
+            
+            if content is None or (isinstance(content, str) and not content.strip()):
+                raise Exception("AI response was empty or whitespace")
+            
             tracker.record_result(
                 prompt_tokens=getattr(usage, "prompt_tokens", None),
                 completion_tokens=getattr(usage, "completion_tokens", None),
@@ -191,33 +158,11 @@ class AIAssistant:
                 was_truncated=finish_reason == "length",
                 status="completed",
             )
-            
-            # Validate response before processing
-            is_valid, ai_response, warning = self._validate_response(response, request_id, max_completion_tokens)
-            
-            if warning:
-                logger.warning("Request ID: %s - %s", request_id, warning)
-            
-            if not is_valid:
-                if finish_reason == "length":
-                    tracker.record_error("response_truncated", message=warning or "Response truncated", finish_reason=finish_reason)
-                elif ai_response is None:
-                    tracker.record_error("empty_response", message=warning or "Empty or invalid response", finish_reason=finish_reason)
-                else:
-                    tracker.record_error("invalid_response", message=warning or "Invalid AI response", finish_reason=finish_reason)
-                return f"Unable to generate a complete response from the AI service. {warning or 'Please try again.'}"
-            
-            # Log response preview safely
-            preview = ai_response[:200].replace("\n", " ") if ai_response else "<empty>"
-            logger.info("[response preview] %s", preview)
-            
-            actual_tokens = response.usage.completion_tokens if response.usage else 0
-            logger.info("Request ID: %s - Received AI response (%s chars, %d actual tokens) from %s", request_id, len(ai_response), actual_tokens, model_name)
-            return ai_response
+            return content
+        
         except Exception as e:
             tracker.record_error("openai_error", message=str(e))
-            logger.error("Request ID: %s - OpenAI API error (%s): %s", request_id, model_name, str(e))
-            return f"I encountered an error while processing your query with the AI service: {str(e)}"
+            raise
 
     # ---------------------------------------------------------------------------
     # Public methods to generate specific summaries (README, profile) using the core API call method
@@ -251,22 +196,22 @@ class AIAssistant:
             f"{readme_text}"
         )
         request_id = f"readme-{int(time.time())}"
-        result = self.call_ai_api(
-            system_message,
-            query,
-            request_id,
-            model_tier=model_tier,
-            max_completion_tokens=4000,
-            purpose=purpose,
-            job_id=job_id,
-            repo_name=repo_name,
-        )
         
-        # Check if result is an error message from call_ai_api
-        if "Unable to generate" in result or "encountered an error" in result:
-            return f"<p><strong>Note:</strong> {result}</p>"
-        
-        return result
+        try:
+            result = self.call_ai_api(
+                system_message,
+                query,
+                request_id,
+                model_tier=model_tier,
+                max_completion_tokens=4000,
+                purpose=purpose,
+                job_id=job_id,
+                repo_name=repo_name,
+            )
+            return result
+        except Exception as e:
+            logger.error("Error summarizing README for %s: %s", repo_name, str(e))
+            return f"<p>Error generating README summary: {str(e)}</p>"
 
     def summarize_profile_html(
         self,
@@ -292,22 +237,22 @@ class AIAssistant:
         system_message = self._build_profile_summary_system(username or self.username)
         query = json.dumps(profile_payload, ensure_ascii=False)
         request_id = f"profile-{int(time.time())}"
-        result = self.call_ai_api(
-            system_message,
-            query,
-            request_id,
-            model_tier=model_tier,
-            max_completion_tokens=6000,
-            purpose=purpose,
-            job_id=job_id,
-            repo_name=username or self.username,
-        )
         
-        # Check if result is an error message from call_ai_api
-        if "Unable to generate" in result or "encountered an error" in result:
-            return f"<p><strong>Note:</strong> {result}</p>"
-        
-        return result
+        try:
+            result = self.call_ai_api(
+                system_message,
+                query,
+                request_id,
+                model_tier=model_tier,
+                max_completion_tokens=6000,
+                purpose=purpose,
+                job_id=job_id,
+                repo_name=username or self.username,
+            )
+            return result
+        except Exception as e:
+            logger.error("Error summarizing profile for %s: %s", username or self.username, str(e))
+            return f"<p>Error generating profile summary: {str(e)}</p>"
 
     def summarize_query_html(
         self,
@@ -403,33 +348,37 @@ class AIAssistant:
             return {"error": "ai_service_not_configured"}
 
         system_message = self._build_repo_micro_summary_system(repo_name)
-        query = self._build_repo_micro_summary_user(repo_context)
+        query = (
+            "Generate a repository micro-summary from this context JSON.\n\n"
+            + json.dumps(repo_context, ensure_ascii=False)
+        )
         request_id = f"repo-micro-{int(time.time())}"
         logger.info("Generating micro-summary for repo: %s with context keys: %s", repo_name, list(repo_context.keys()))
-        result = self.call_ai_api(
-            system_message,
-            query,
-            request_id,
-            model_tier=model_tier,
-            max_completion_tokens=2000,
-            purpose=purpose,
-            job_id=job_id,
-            repo_name=repo_name,
-        )
-
-        if "Unable to generate" in result or "encountered an error" in result:
-            logger.error("Error generating micro-summary for repo: %s - %s", repo_name, result)
-            return {"error": result}
-
+        
         try:
+            result = self.call_ai_api(
+                system_message,
+                query,
+                request_id,
+                model_tier=model_tier,
+                max_completion_tokens=3000,
+                response_format={"type": "json_object"},
+                purpose=purpose,
+                job_id=job_id,
+                repo_name=repo_name,
+            )
+            # Parse JSON response
             parsed = json.loads(result)
             if not isinstance(parsed, dict):
                 logger.error("Invalid JSON root for repo: %s - %s", repo_name, result[:300])
                 return {"error": "invalid_json_root", "raw_sample": result[:300]}
             return parsed
+        except json.JSONDecodeError as e:
+            logger.error("JSON parse error for repo: %s - %s", repo_name, str(e))
+            return {"error": "invalid_json_response", "details": str(e)}
         except Exception as e:
-            logger.error("Exception parsing JSON for repo: %s - %s", repo_name, str(e))
-            return {"error": "invalid_json", "raw_sample": result[:300]}
+            logger.error("Error generating micro-summary for repo: %s - %s", repo_name, str(e))
+            return {"error": str(e)}
 
     def summarize_profile_aggregation_json(
         self,
@@ -449,23 +398,29 @@ class AIAssistant:
         system_message = self._build_profile_aggregation_system(username)
         query = json.dumps({"username": username, "micro_summaries": micro_summaries}, ensure_ascii=False)
         request_id = f"profile-agg-{int(time.time())}"
-        result = self.call_ai_api(
-            system_message,
-            query,
-            request_id,
-            model_tier=model_tier,
-            max_completion_tokens=2500,
-            purpose=purpose,
-            job_id=job_id,
-            repo_name=username,
-        )
+        
         try:
+            result = self.call_ai_api(
+                system_message,
+                query,
+                request_id,
+                model_tier=model_tier,
+                max_completion_tokens=2500,
+                purpose=purpose,
+                job_id=job_id,
+                repo_name=username,
+            )
             parsed = json.loads(result)
             if isinstance(parsed, dict):
                 return parsed
+            logger.error("Invalid JSON root for profile aggregation: %s - %s", username, result[:300])
+            return {"error": "invalid_json_root", "raw_sample": result[:300]}
+        except json.JSONDecodeError as e:
+            logger.error("JSON parse error for profile aggregation: %s - %s", username, str(e))
+            return {"error": "invalid_json_response", "details": str(e)}
         except Exception as e:
-            logger.error("Exception parsing JSON for profile aggregation: %s - %s", username, str(e))
-        return {"error": "invalid_json", "raw_sample": result[:300]}
+            logger.error("Exception in profile aggregation for %s: %s", username, str(e))
+            return {"error": str(e)}
 
     def summarize_query_from_summaries(
         self,
@@ -490,23 +445,33 @@ class AIAssistant:
             "selected_repo_summaries": selected_repo_summaries,
         }
         request_id = f"query-summaries-{int(time.time())}"
-        result = self.call_ai_api(
-            system_message,
-            json.dumps(payload, ensure_ascii=False),
-            request_id,
-            model_tier=model_tier,
-            max_completion_tokens=2500,
-            purpose=purpose,
-            job_id=job_id,
-        )
-        return {
-            "response": result,
-            "repositories_used": [
-                {"name": item.get("repo_name")} for item in selected_repo_summaries if item.get("repo_name")
-            ],
-            "total_repositories": len(selected_repo_summaries),
-            "query": query,
-        }
+        
+        try:
+            result = self.call_ai_api(
+                system_message,
+                json.dumps(payload, ensure_ascii=False),
+                request_id,
+                model_tier=model_tier,
+                max_completion_tokens=2500,
+                purpose=purpose,
+                job_id=job_id,
+            )
+            return {
+                "response": result,
+                "repositories_used": [
+                    {"name": item.get("repo_name")} for item in selected_repo_summaries if item.get("repo_name")
+                ],
+                "total_repositories": len(selected_repo_summaries),
+                "query": query,
+            }
+        except Exception as e:
+            logger.error("Error generating query response: %s", str(e))
+            return {
+                "response": {"error": str(e)},
+                "repositories_used": [],
+                "total_repositories": len(selected_repo_summaries),
+                "query": query,
+            }
 
     def expand_micro_summary_to_html(
         self,
@@ -543,22 +508,24 @@ class AIAssistant:
         }
         request_id = f"expand-micro-{int(time.time())}"
         
-        result = self.call_ai_api(
-            system_message,
-            json.dumps(payload, ensure_ascii=False),
-            request_id,
-            model_tier=model_tier,
-            max_completion_tokens=3000,
-            purpose=purpose,
-            job_id=job_id,
-            repo_name=repo_name,
-        )
-
-        # Result should be HTML; validate basic structure
-        if not result or result.startswith("{"):
-            return "<p>Failed to generate expanded summary.</p>"
-        
-        return result
+        try:
+            result = self.call_ai_api(
+                system_message,
+                json.dumps(payload, ensure_ascii=False),
+                request_id,
+                model_tier=model_tier,
+                max_completion_tokens=3000,
+                purpose=purpose,
+                job_id=job_id,
+                repo_name=repo_name,
+            )
+            # Result should be HTML; validate basic structure
+            if not result or result.startswith("{"):
+                return "<p>Failed to generate expanded summary.</p>"
+            return result
+        except Exception as e:
+            logger.error("Error expanding micro-summary for %s: %s", repo_name, str(e))
+            return f"<p>Error generating expanded summary: {str(e)}</p>"
 
     # ---------------------------------------------------------------------------
     # Helper methods to build system prompts for different tasks
@@ -702,30 +669,37 @@ class AIAssistant:
         return system_template
 
     def _build_repo_micro_summary_system(self, repo_name: Optional[str] = None) -> str:
-        """Build system prompt for strict JSON repo micro-summary output."""
+        """Build system prompt for JSON repo micro-summary output."""
         label = repo_name or "the repository"
         return (
             f"You analyze {label} and return JSON only.\n"
-            "Do not return markdown, prose, or code fences.\n"
-            "Output must be valid JSON object with exactly these top-level keys:\n"
-            "overview, key_features, tech_stack, architecture_patterns, skill_signals\n"
-            "Schema constraints:\n"
+            "Do not return markdown, prose, or code fences.\n\n"
+            "INPUT CONTEXT STRUCTURE:\n"
+            "The input is a JSON object containing repository metadata and file contents:\n"
+            "- repo_name: string (repository name)\n"
+            "- description: string (repository description from GitHub)\n"
+            "- languages: array (programming languages used, by frequency)\n"
+            "- topics: array (GitHub topics/tags)\n"
+            "- stats: object (GitHub metrics: stars, forks, issues, watchers)\n"
+            "- readme_chunk: string (primary README.md content, chunked to fit token budget)\n"
+            "- config_chunks: array of {filename, content} objects (extracted config files: package.json, requirements.txt, Dockerfile, pom.xml, etc.)\n"
+            "- secondary_readme_chunks: array of {index, content} (additional README files like readme.rst, README.txt, etc., if present)\n\n"
+            "ANALYSIS INSTRUCTIONS:\n"
+            "1. Use readme_chunk as primary source for project overview, features, and purpose.\n"
+            "2. Use config_chunks to infer tech stack, dependencies, build process, containerization, orchestration.\n"
+            "3. Use secondary_readme_chunks only for supplementary details if primary README is incomplete.\n"
+            "4. Combine all evidence to assess architecture, patterns, and skill signals.\n"
+            "5. Be specific: reference actual tools, frameworks, and practices found in the configs and README.\n\n"
+            "OUTPUT SCHEMA:\n"
+            "Return valid JSON object with exactly these top-level keys:\n"
+            "overview, key_features, tech_stack_assessment, architecture_patterns, skill_signals\n"
+            "Constraints:\n"
             "- overview: string (2-3 sentences max)\n"
-            "- key_features: array of short strings\n"
-            "- tech_stack: object with languages/frameworks/tools arrays\n"
-            "- architecture_patterns: array of short strings\n"
-            "- skill_signals: array of objects {skill, confidence, evidence}\n"
-            "- confidence must be number between 0 and 1\n"
-            "Keep response concise and under 2000 tokens.\n"
-        )
-
-    def _build_repo_micro_summary_user(self, repo_context: Dict[str, Any]) -> str:
-        """Build user message for repo micro-summary generation."""
-        return (
-            "Generate a repository micro-summary from this context JSON.\n"
-            "Use README and extracted config evidence where present.\n"
-            "Return JSON only.\n\n"
-            + json.dumps(repo_context, ensure_ascii=False)
+            "- key_features: array of short strings (5 max)\n"
+            "- tech_stack_assessment: string (2-3 sentences max)\n"
+            "- architecture_patterns: array of short strings (max 3 items)\n"
+            "- skill_signals: array of objects {skill, confidence, style} where confidence and style are 0-1 floats (max 6 items)\n"
+            "Keep response concise; must be under 2000 tokens.\n"
         )
 
     def _build_profile_aggregation_system(self, username: Optional[str] = None) -> str:

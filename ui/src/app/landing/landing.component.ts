@@ -2,16 +2,17 @@ import { Component, inject, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { Subject, takeUntil } from 'rxjs';
+import { Subject, takeUntil, tap } from 'rxjs';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { RepoBundleService, JobStatusResponse } from '../services/repo-bundle.service';
 import { JobPollingService } from '../services/job-polling.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
+import { JobStatusBadgeComponent } from '../shared/job-status-badge.component';
 
 @Component({
   selector: 'app-landing',
   standalone: true,
-  imports: [CommonModule, FormsModule, CandidateListComponent],
+  imports: [CommonModule, FormsModule, CandidateListComponent, JobStatusBadgeComponent],
   templateUrl: './landing.component.html',
   styleUrls: ['./landing.component.css'],
 })
@@ -29,6 +30,7 @@ export class LandingComponent implements OnInit, OnDestroy {
   // Progress tracking
   buildProgress = 0;
   statusMessage = '';
+  jobStatus: string | null = null;
   
   ngOnInit(): void {
     this.syncStoredCandidates();
@@ -79,7 +81,14 @@ export class LandingComponent implements OnInit, OnDestroy {
    */
   private pollUntilMetadataReady(username: string, jobId: string): void {
     this.jobPollingService.waitForMetadataReady(username, jobId)
-      .pipe(takeUntil(this.destroy$))
+      .pipe(
+        tap((status: JobStatusResponse) => {
+          if (status) {
+            this.jobStatus = status.status;
+          }
+        }),
+        takeUntil(this.destroy$)
+      )
       .subscribe({
         next: (status: JobStatusResponse) => {
           if (!status) return;
@@ -104,6 +113,7 @@ export class LandingComponent implements OnInit, OnDestroy {
           this.loading = false;
           this.buildProgress = 0;
           this.statusMessage = '';
+          this.jobStatus = null;
           this.error = 'Build timed out. Please try again.';
         },
         complete: () => {
@@ -112,6 +122,7 @@ export class LandingComponent implements OnInit, OnDestroy {
             this.loading = false;
             this.buildProgress = 0;
             this.statusMessage = '';
+            this.jobStatus = null;
             this.error = 'Build did not complete in time. Please try again.';
           }
         }

@@ -354,6 +354,17 @@ def process_sync_job(msg: func.QueueMessage) -> None:
         fetch_result = _fetch_repo_metadata(username, repo_name, fingerprint, job_id=job_id)
         logger.info("[SYNC] Metadata sync completed for job=%s repo=%s", job_id, repo_name)
         
+        # Update status to 'synced' BEFORE enqueuing cache (eliminates race condition)
+        # This ensures RepoSyncStatus exists with correct status before cache_worker reads it
+        logger.info("[STATUS_UPDATE] Marking repo as synced before cache enqueue for job=%s repo=%s", job_id, repo_name)
+        _update_job_progress(
+            job_id,
+            username,
+            repo_name,
+            sync_failed=False,
+            message_id=message_id,
+        )
+        
         # Enqueue file caching job (async background task)
         logger.info("[CACHE] Enqueuing file cache for job=%s repo=%s", job_id, repo_name)
         default_branch = fetch_result.get("default_branch")
@@ -368,15 +379,16 @@ def process_sync_job(msg: func.QueueMessage) -> None:
         if enqueued:
             logger.info("[CACHE_ENQUEUED] job=%s repo=%s - File caching job enqueued", job_id, repo_name)
         else:
-            logger.warning("[CACHE_ENQUEUE_FAILED] job=%s repo=%s - Failed to enqueue cache job", job_id, repo_name)
- 
-        _update_job_progress(
-            job_id,
-            username,
-            repo_name,
-            sync_failed=False,
-            message_id=message_id,
-        )
+            # Cache enqueue failed - mark status as failed instead of synced
+            logger.warning("[CACHE_ENQUEUE_FAILED] job=%s repo=%s - Failed to enqueue cache job, marking sync failed", job_id, repo_name)
+            _update_job_progress(
+                job_id,
+                username,
+                repo_name,
+                sync_failed=True,
+                message_id=message_id,
+                error="Cache enqueue failed",
+            )
     except ValueError as ve:
         if job_id and username and repo_name:
             _update_job_progress(

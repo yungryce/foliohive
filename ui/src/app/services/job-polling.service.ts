@@ -160,4 +160,44 @@ export class JobPollingService {
       }, true) // inclusive=true to emit the ready status
     );
   }
+
+  /**
+   * Poll until a specific repository's summary is ready, then complete.
+   * Checks repo_details.summary_ready array to see if the repo name is present.
+   * Use when you need to wait for a single repo micro-summary before fetching.
+   * 
+   * @param username - GitHub username
+   * @param jobId - Job ID to poll
+   * @param repoName - Repository name to wait for
+   * @param options - Polling configuration
+   * @returns Observable<JobStatusResponse> completing when repo summary is ready
+   */
+  pollRepoReady(
+    username: string,
+    jobId: string,
+    repoName: string,
+    options: PollOptions = {}
+  ): Observable<JobStatusResponse> {
+    return this.pollJobStatus(username, jobId, options).pipe(
+      takeWhile((status) => {
+        if (!status) {
+          console.warn(`[pollRepoReady] null status for repo=${repoName}`);
+          return false;
+        }
+        
+        // Complete when this repo is in summary_ready or job failed
+        const isRepoReady = status.repo_details?.summary_ready?.includes(repoName) ?? false;
+        if (isRepoReady) {
+          this.stop$.next();  // Signal root polling to stop
+          return false; // Stop and emit this final value
+        }
+        if (status.status === 'failed') {
+          this.stop$.next();  // Signal root polling to stop
+          return false;
+        }
+        console.debug(`[pollRepoReady] waiting: repo=${repoName}, status=${status.status}, ready=${status.repo_details?.summary_ready?.length}/${status.progress?.total}`);
+        return true; // Continue polling
+      }, true) // inclusive=true to emit the ready status
+    );
+  }
 }
