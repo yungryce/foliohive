@@ -21,7 +21,7 @@ export interface CandidateProfileResponse {
 export interface CandidateSummaryResponse {
   username: string;
   job_id?: string;
-  summary_html?: string;
+  summary_markdown?: string;
   based_on?: {
     profile_fingerprint?: string;
     job_id?: string;

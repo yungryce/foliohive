@@ -79,7 +79,6 @@ class JobMetadataRow:
     username: str  # PartitionKey
     job_id: str  # RowKey
     status: str = "queued" # queued | syncing | metadata_ready | caching_started | completed | failed
-    bundle_fingerprint: Optional[str] = None
     force_refresh: bool = False
     last_requeue_at: Optional[str] = None
     trace_id: Optional[str] = None
@@ -92,12 +91,15 @@ class JobMetadataRow:
 class RepoLanguagesRow:
     """Per-repo language statistics - normalized from RepoMetadata.languages.
     
-    PartitionKey: "{job_id}|{repo_name}"
-    RowKey: language
+    Partitioned by repo_name for efficient queries of all languages for a specific repo.
+    
+    PartitionKey: repo_name (groups all languages for a repo across jobs)
+    RowKey: {Language} (unique language name for the repo)
+    Fields: job_id, repo_name, language, bytes_count, percentage
     """
 
-    job_id: str
     repo_name: str
+    job_id: str
     language: str
     bytes_count: int
     percentage: Optional[float] = None
@@ -110,13 +112,16 @@ class RepoGitHubMetadataRow:
     """GitHub-specific metadata - normalized from RepoMetadata.metadata.
     
     Includes fingerprint for content versioning and cache invalidation.
+    Tied to a specific job_id for data provenance and freshness validation.
     
     PartitionKey: username (groups all repos for a user)
     RowKey: repo_name (unique repository name)
+    Foreign Key: job_id → JobMetadataRow (only latest job per user is valid)
     """
 
-    username: str  # PartitionKey
+    job_id: str  # PartitionKey
     repo_name: str  # RowKey
+    username: str
     fingerprint: str  # Content fingerprint for versioning
     description: Optional[str] = None
     topics: Optional[List[str]] = None
@@ -169,13 +174,13 @@ class RepoCacheSummaryRow:
     Stores metadata about generated micro-summaries for cache invalidation
     and existence verification before blob access.
     
-    PartitionKey: username (groups all cached summaries for a user)
-    RowKey: repo_name|fingerprint (unique per repo version)
+    PartitionKey: job_id (groups all cached summaries for a job)
+    RowKey: repo_name
     """
     
-    username: str  # PartitionKey
-    repo_name: str  # Part of RowKey
-    fingerprint: str  # Part of RowKey - snapshot of repo state
+    repo_name: str  # PartitionKey
+    fingerprint: str  # RowKey
+    job_id: str  # Foreign key to JobMetadataRow - syncing job that generated this cache
     cache_key: str  # Full blob storage key
     summary_blob_uri: Optional[str] = None  # Direct reference to blob
     cache_status: str = "valid"  # valid | stale | expired
@@ -539,7 +544,6 @@ class TableManager:
             "PartitionKey": row.username,
             "RowKey": row.job_id,
             "status": row.status,
-            "bundle_fingerprint": row.bundle_fingerprint or "",
             "force_refresh": bool(row.force_refresh),
             "last_requeue_at": _azure_safe_timestamp(row.last_requeue_at) if row.last_requeue_at else "",
             "trace_id": row.trace_id or "",
@@ -632,7 +636,6 @@ class TableManager:
             payload.pop(meta_key, None)
         payload["username"] = payload.get("PartitionKey")
         payload["job_id"] = payload.get("RowKey")
-        payload["bundle_fingerprint"] = payload.get("bundle_fingerprint") or None
         payload["trace_id"] = payload.get("trace_id") or None
         payload["request_id"] = payload.get("request_id") or None
         payload["force_refresh"] = bool(payload.get("force_refresh"))
@@ -653,8 +656,9 @@ class TableManager:
             return
         now = _azure_safe_timestamp()
         entity: Dict[str, Any] = {
-            "PartitionKey": row.username,
+            "PartitionKey": row.job_id,
             "RowKey": row.repo_name,
+            "username": row.username,
             "fingerprint": row.fingerprint,
             "description": (row.description or "")[:4096],
             "topics": _safe_json_dump_limited(row.topics or [], label="github_metadata.topics"),
@@ -678,10 +682,30 @@ class TableManager:
         table.upsert_entity(entity, mode=UpdateMode.REPLACE)
         logger.info("[TABLE_UPSERT_GITHUB_METADATA] user=%s repo=%s", row.username, row.repo_name)
 
-    def get_repo_github_metadata(self, username: str, repo_name: str) -> Optional[Dict[str, Any]]:
+    def query_repo_github_metadata_by_username(self, username: str) -> List[Dict[str, Any]]:
+        """Query all GitHub metadata for a specific username.
+        
+        Uses filter expression instead of PartitionKey (less efficient but necessary
+        for freshness checks before job_id is created).
+        
+        Args:
+            username: GitHub username (stored as field, not partition key)
+        
+        Returns:
+            List of deserialized metadata dicts for all user repositories
+        """
+        table = self._get_table_client(self.table_names.repo_github_metadata)
+        if not table:
+            return []
+        
+        filter_str = f"username eq '{username}'"
+        entities = list(table.list_entities(filter=filter_str))
+        return [self._deserialize_repo_github_metadata(e) for e in entities]
+
+    def get_repo_github_metadata(self, job_id: str, repo_name: str) -> Optional[Dict[str, Any]]:
         """Get GitHub metadata for a repository.
         
-        PartitionKey: username
+        PartitionKey: job_id
         RowKey: repo_name
         Returns: Deserialized metadata dict or None if not found
         """
@@ -689,12 +713,12 @@ class TableManager:
         if not table:
             return None
         try:
-            entity = table.get_entity(partition_key=username, row_key=repo_name)
+            entity = table.get_entity(partition_key=job_id, row_key=repo_name)
         except ResourceNotFoundError:
             return None
         return self._deserialize_repo_github_metadata(entity)
 
-    def query_repo_github_metadata(self, username: str) -> List[Dict[str, Any]]:
+    def query_repo_github_metadata(self, job_id: str) -> List[Dict[str, Any]]:
         """Query all GitHub metadata for a user's repositories.
         
         PartitionKey: username
@@ -703,62 +727,16 @@ class TableManager:
         table = self._get_table_client(self.table_names.repo_github_metadata)
         if not table:
             return []
-        filter_str = f"PartitionKey eq '{username}'"
+        filter_str = f"PartitionKey eq '{job_id}'"
         entities = list(table.list_entities(filter=filter_str))
         return [self._deserialize_repo_github_metadata(e) for e in entities]
 
-    def touch_repo_github_metadata_batch(self, username: str, repo_names: List[str]) -> int:
-        """Update last_accessed_at for multiple repos in batch.
-        
-        Used to track read operations for cleanup logic. Updates access timestamp
-        without modifying other fields.
-        
-        Args:
-            username: GitHub username (PartitionKey)
-            repo_names: List of repository names to touch
-            
-        Returns:
-            Number of repos successfully touched
-        """
-        if not repo_names:
-            return 0
-        
-        table = self._get_table_client(self.table_names.repo_github_metadata)
-        if not table:
-            return 0
-        
-        now = _azure_safe_timestamp()
-        count = 0
-        
-        for repo_name in repo_names:
-            try:
-                # Partial update - only touch last_accessed_at
-                entity = {
-                    "PartitionKey": username,
-                    "RowKey": repo_name,
-                    "last_accessed_at": now,
-                }
-                table.update_entity(entity, mode=UpdateMode.MERGE)
-                count += 1
-            except ResourceNotFoundError:
-                # Repo metadata doesn't exist yet - skip (will be created on sync)
-                pass
-            except Exception as exc:
-                logger.warning(
-                    "[TOUCH_GITHUB_METADATA] Failed user=%s repo=%s: %s",
-                    username, repo_name, exc
-                )
-        
-        if count > 0:
-            logger.info("[TOUCH_GITHUB_METADATA] user=%s touched=%d total=%d", username, count, len(repo_names))
-        
-        return count
 
     def _deserialize_repo_github_metadata(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
-        payload["username"] = payload.pop("PartitionKey", None)
+        payload["job_id"] = payload.pop("PartitionKey", None)
         payload["repo_name"] = payload.pop("RowKey", None)
         try:
             payload["topics"] = json.loads(payload.get("topics") or "[]")
@@ -925,10 +903,10 @@ class TableManager:
             return
         
         now = _azure_safe_timestamp()
-        row_key = f"{row.repo_name}|{row.fingerprint}"
         entity = {
-            "PartitionKey": row.username,
-            "RowKey": row_key,
+            "PartitionKey": row.repo_name,
+            "RowKey": row.fingerprint,
+            "job_id": row.job_id,
             "cache_key": row.cache_key,
             "summary_blob_uri": row.summary_blob_uri or "",
             "cache_status": row.cache_status,
@@ -939,11 +917,11 @@ class TableManager:
         }
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
         logger.info(
-            "[TABLE_UPSERT_CACHE_SUMMARY] user=%s repo=%s fingerprint=%s status=%s",
-            row.username, row.repo_name, row.fingerprint, row.cache_status
+            "[TABLE_UPSERT_CACHE_SUMMARY] job_id=%s repo=%s fingerprint=%s status=%s",
+            row.job_id, row.repo_name, row.fingerprint, row.cache_status
         )
 
-    def register_pending_cache_summary(self, username: str, repo_name: str, fingerprint: str, cache_key: str) -> None:
+    def register_pending_cache_summary(self, username: str, repo_name: str, fingerprint: str, job_id: str, cache_key: str) -> None:
         """Register pending micro-summary cache entry (status=pending).
         
         Call this before generation starts to track cache entry existence.
@@ -954,10 +932,10 @@ class TableManager:
             return
         
         now = _azure_safe_timestamp()
-        row_key = f"{repo_name}|{fingerprint}"
         entity = {
-            "PartitionKey": username,
-            "RowKey": row_key,
+            "PartitionKey": repo_name,
+            "RowKey": fingerprint,
+            "job_id": job_id,
             "cache_key": cache_key,
             "cache_status": "pending",
             "created_at": now,
@@ -975,7 +953,7 @@ class TableManager:
         if not table:
             return None
         
-        row_key = f"{repo_name}|{fingerprint}"
+        row_key = f"{repo_name}"
         try:
             entity = table.get_entity(partition_key=username, row_key=row_key)
             # Update accessed_at on cache hit
@@ -984,6 +962,35 @@ class TableManager:
             return self._deserialize_cache_summary(entity)
         except ResourceNotFoundError:
             return None
+
+    def list_valid_cache_summaries(self, repo_name: str) -> List[Dict[str, Any]]:
+        """List all valid (non-pending, non-stale) micro-summary cache entries for a user.
+
+        Returns only entries with cache_status == 'valid', which indicates
+        the micro-summary blob was successfully generated and is ready to use.
+
+        Args:
+            username: GitHub username (PartitionKey)
+
+        Returns:
+            List of dicts with repo_name, fingerprint, and cache_key fields
+        """
+        table = self._get_table_client(self.table_names.repo_cache_summary)
+        if not table:
+            return []
+        try:
+            entities = table.list_entities(
+                filter=f"PartitionKey eq '{repo_name}' and cache_status eq 'valid'"
+            )
+            results = [self._deserialize_cache_summary(e) for e in entities]
+            logger.info(
+                "[TABLE_LIST_VALID_CACHE_SUMMARIES] user=%s found=%d",
+                username, len(results)
+            )
+            return results
+        except Exception as exc:
+            logger.warning("[TABLE_LIST_VALID_CACHE_SUMMARIES] Failed for user=%s: %s", repo_name, exc)
+            return []
 
     def invalidate_cache_summary(self, username: str, repo_name: str, old_fingerprint: str) -> None:
         """Mark summary as stale when fingerprint changes."""
@@ -1057,21 +1064,18 @@ class TableManager:
     def upsert_repo_languages(self, row: RepoLanguagesRow) -> None:
         """Store language statistics for a repository.
         
-        PartitionKey: "{job_id}|{repo_name}"
+        PartitionKey: repo_name
         RowKey: language
-        Required fields: job_id, repo_name, language, bytes_count
+        Latest job's data overwrites previous job's data for same language in same repo.
         """
         table = self._get_table_client(self.table_names.repo_languages)
         if not table:
             return
         now = _azure_safe_timestamp()
-        partition_key = f"{row.job_id}|{row.repo_name}"
         entity: Dict[str, Any] = {
-            "PartitionKey": partition_key,
+            "PartitionKey": row.repo_name,
             "RowKey": row.language,
             "job_id": row.job_id,
-            "repo_name": row.repo_name,
-            "language": row.language,
             "bytes_count": int(row.bytes_count or 0),
             "percentage": float(row.percentage or 0.0),
             "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
@@ -1107,62 +1111,79 @@ class TableManager:
         logger.info("[TABLE_UPSERT_LANGUAGES] total=%d succeeded=%d", len(rows), success_count)
 
     def delete_repo_languages(self, job_id: str, repo_name: str) -> None:
-        """Delete language entries for a repository within a specific job.
+        """Delete all language entries for a repository.
         
-        PartitionKey: "{job_id}|{repo_name}".
+        Deletes all languages for a repo regardless of job_id.
+        Used before re-syncing a repo to clear old language data.
+        
+        PartitionKey: repo_name
+        RowKey: language (any)
         """
         table = self._get_table_client(self.table_names.repo_languages)
         if not table:
             return
 
-        partition_key = f"{job_id}|{repo_name}"
-        filter_str = f"PartitionKey eq '{partition_key}'"
-        existing = list(table.list_entities(filter=filter_str))
+        # Query all languages for this repo partition
+        safe_repo_name = repo_name.replace("'", "''")
+        filter_str = f"PartitionKey eq '{safe_repo_name}'"
+        existing = list(table.list_entities(filter=filter_str, select=["PartitionKey", "RowKey"]))
         
         if existing:
-            # Simple individual deletion
             for e in existing:
                 try:
                     table.delete_entity(partition_key=e["PartitionKey"], row_key=e["RowKey"])
                 except Exception as exc:
                     logger.warning(
-                        "[TABLE_DELETE_LANGUAGE_FAILED] job=%s repo=%s error=%s",
-                        job_id, repo_name, exc
+                        "[TABLE_DELETE_LANGUAGE_FAILED] repo=%s language=%s error=%s",
+                        repo_name, e.get("RowKey"), exc
                     )
-            logger.info("[TABLE_DELETE_REPO_LANGUAGES] job=%s repo=%s count=%d", job_id, repo_name, len(existing))
+            logger.info("[TABLE_DELETE_REPO_LANGUAGES] repo=%s count=%d", repo_name, len(existing))
 
-    def query_repo_languages(self, job_id: str) -> Dict[str, List[Dict[str, Any]]]:
-        """Query all language statistics for a specific job.
+    def query_all_repo_languages(self, job_id: str) -> Dict[str, List[Dict[str, Any]]]:
+        """Query all language statistics for all repos in a job.
         
-        Returns a dictionary mapping repo_name to list of language dicts.
+        Full table scan filtering by job_id column.
+        Since schema stores latest job only, this returns currently active languages.
+        
+        Args:
+            job_id: Job ID to filter by (column-based filter)
+        
+        Returns:
+            Dictionary mapping repo_name -> list of language dicts for that repo
         """
         table = self._get_table_client(self.table_names.repo_languages)
         if not table:
             return {}
 
-        # PartitionKey format is "{job_id}|{repo_name}", so query the job prefix range.
-        lower_bound = f"{job_id}|"
-        upper_bound = f"{job_id}}}"
-        filter_str = f"PartitionKey ge '{lower_bound}' and PartitionKey lt '{upper_bound}'"
+        by_repo: Dict[str, List[Dict[str, Any]]] = {}
+        
+        # Full table scan filtering by job_id column
+        filter_str = f"job_id eq '{job_id}'"
         entities = list(table.list_entities(filter=filter_str))
         
-        by_repo: Dict[str, List[Dict[str, Any]]] = {}
+        # Group results by repo_name (PartitionKey)
         for entity in entities:
             deserialized = self._deserialize_repo_languages(entity)
             repo_name = deserialized.get("repo_name")
             if repo_name:
-                by_repo.setdefault(repo_name, []).append(deserialized)
+                if repo_name not in by_repo:
+                    by_repo[repo_name] = []
+                by_repo[repo_name].append(deserialized)
         
+        logger.info("[QUERY_REPO_LANGUAGES] job_id=%s repos=%d", job_id, len(by_repo))
         return by_repo
 
-    def get_repo_languages(self, job_id: str, repo_name: str) -> List[Dict[str, Any]]:
-        """Query language statistics for a specific repo in a job.
+    def get_repo_languages(self, repo_name: str, job_id: str) -> List[Dict[str, Any]]:
+        """Query language statistics for a specific repo.
 
-        PartitionKey: "{job_id}|{repo_name}".
+        Returns all languages for a repo. Since schema stores latest job only,
+        this returns current languages 
+        
+        PartitionKey: repo_name
+        RowKey: language (any)
         
         Args:
-            job_id: Job ID (PartitionKey)
-            repo_name: Repository name to filter on
+            repo_name: Repository name (PartitionKey)
             
         Returns:
             List of language dicts for the repo, empty list if none found
@@ -1171,14 +1192,14 @@ class TableManager:
         if not table:
             return []
 
-        partition_key = f"{job_id}|{repo_name}"
-        safe_partition_key = partition_key.replace("'", "''")
-        filter_str = f"PartitionKey eq '{safe_partition_key}'"
-
+        # Simple partition query - returns all languages for this repo
+        safe_repo_name = repo_name.replace("'", "''")
+        filter_str = f"PartitionKey eq '{safe_repo_name}'"
         entities = list(table.list_entities(filter=filter_str))
+        
         logger.info(
-            "[GET_REPO_LANGUAGES] job=%s repo=%s partition_key=%s filtered_count=%d",
-            job_id, repo_name, partition_key, len(entities)
+            "[GET_REPO_LANGUAGES] repo=%s language_count=%d",
+            repo_name, len(entities)
         )
 
         languages = []
@@ -1190,26 +1211,21 @@ class TableManager:
 
 
     def _deserialize_repo_languages(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        """Deserialize RepoLanguagesRow from Azure Table entity.
+        
+        PartitionKey = repo_name
+        RowKey = language
+        job_id = regular column (latest job that processed this language)
+        """
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
 
-        partition_key = payload.pop("PartitionKey", None)
-        row_key = payload.pop("RowKey", None)
-
-        parsed_job_id = None
-        parsed_repo_name = None
-        if partition_key and "|" in partition_key:
-            parsed_job_id, parsed_repo_name = partition_key.split("|", 1)
-
-        job_id = payload.get("job_id") or parsed_job_id
-        repo_name = payload.get("repo_name") or parsed_repo_name
-        language = payload.get("language") or row_key
-
-        payload["job_id"] = job_id
-        payload["repo_name"] = repo_name
-        payload["language"] = language
-        payload["repo_language_key"] = f"{repo_name}|{language}" if repo_name and language else row_key
+        payload["language"] = payload.pop("RowKey", None)
+        payload["repo_name"] = payload.pop("PartitionKey", None)
+        payload["job_id"] = payload.get("job_id") or None
+        payload["bytes_count"] = int(payload.get("bytes_count", 0))
+        payload["percentage"] = float(payload.get("percentage", 0.0))
         payload["created_at"] = _restore_iso_timestamp(payload.get("created_at"))
         payload["updated_at"] = _restore_iso_timestamp(payload.get("updated_at"))
         return payload
@@ -1317,24 +1333,9 @@ class TableManager:
                     if not job_id:
                         continue
                     
-                    # 1. Delete RepoLanguages for this job (partition-scoped delete)
-                    lang_table = self._get_table_client(self.table_names.repo_languages)
-                    if lang_table:
-                        try:
-                            lower_bound = f"{job_id}|"
-                            upper_bound = f"{job_id}}}"
-                            lang_entities = list(lang_table.query_entities(
-                                f"PartitionKey ge '{lower_bound}' and PartitionKey lt '{upper_bound}'",
-                                select=["PartitionKey", "RowKey"]
-                            ))
-                            for lang_e in lang_entities:
-                                try:
-                                    lang_table.delete_entity(lang_e["PartitionKey"], lang_e["RowKey"])
-                                    total_deleted += 1
-                                except Exception:
-                                    pass
-                        except Exception as exc:
-                            logger.warning("[CLEANUP_LANGUAGES] job=%s error=%s", job_id, exc)
+                    # Note: RepoLanguages is not deleted here. Per the schema design,
+                    # only the latest job's language data is kept (overwrites previous).
+                    # Old job data is automatically stale and can be ignored.
                     
                     # 2. Delete RepoSyncStatus for this job (partition-scoped delete)
                     status_table = self._get_table_client(self.table_names.repo_sync_status)

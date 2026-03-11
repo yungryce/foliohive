@@ -56,7 +56,7 @@ MODEL_ASSIGNMENTS = {
 TOKEN_BUDGETS = {
     "profile": {
         "metadata": 3000,      # Profile + repo metadata
-        "readme": 25000,       # 8-10 repos with rich README context
+        "readme": 8000,       # 8-10 repos with rich README context
         "config": 15000,       # Config files for comprehensive skill inference
         "reserve": 2000,       # Safety margin for prompt overhead
         # Total: ~45k tokens (gpt-5-nano with caching)
@@ -151,26 +151,160 @@ class SummaryManager:
         """
         self.username = username
         self.ai_assistant = AIAssistant(username=username)
+        self.table_manager = get_table_manager()
 
     # ---------------------------------------------------------------------------
     # Public API - High-Level Summary Methods
     # ---------------------------------------------------------------------------
+
+
+    def generate_repo_micro_summary(
+        self,
+        *,
+        username: str,
+        repo_name: str,
+        fingerprint: str,
+        job_id: Optional[str] = None,
+        repo_metadata: Dict[str, Any],
+        primary_readme_content: Optional[str],
+        config_content: Optional[Dict[str, str]],
+        secondary_readme_content: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Generate and cache JSON micro-summary.
+        
+        Assumes cache entry was registered with pending status before calling.
+        Updates status to 'valid' on success or leaves as 'pending' on failure.
+        """
+        
+        # Check cache table first
+        cached = self.get_cache_repo_micro_summary(username, repo_name, fingerprint)
+        if cached:
+            logger.info(f"Cache hit for micro-summary of {repo_name} (fingerprint: {fingerprint})")
+            return {"cache_hit": True, "summary": True, "tokens_estimated": 0}
+        
+        token_budget = TOKEN_BUDGETS["default"]  # Use default budget for micro-summary generation
+
+        context = self.build_repo_context(
+            repo_metadata=repo_metadata,
+            primary_readme_content=primary_readme_content,
+            config_files=config_content or {},
+            secondary_readme_content=secondary_readme_content or [],
+            token_budget=token_budget,
+        )
+        logger.info(f"Context built for micro-summary of {repo_name} (fingerprint: {fingerprint}) with estimated tokens: {context.get('tokens_estimated', 0)}")
+
+
+        summary = self.ai_assistant.summarize_repo_micro_summary_json(
+            repo_name=repo_name,
+            repo_context=context,
+            model_tier=MODEL_ASSIGNMENTS["readme"],
+            purpose="get_repo_micro_summary",
+            job_id=job_id,
+        )
+
+        logger.info(f"Micro-summary generation attempted for {repo_name} (fingerprint: {fingerprint}) - validating response")
+        if "error" not in summary:
+            # Validate schema before caching
+            validation = self._validate_micro_summary_schema(summary, repo_name)
+            if validation.get("status") != "valid":
+                error_code = validation.get("error", "schema_validation_failed")
+                logger.error(f"Schema validation failed for {repo_name}: {error_code}")
+                return {
+                    "cache_hit": False,
+                    "summary": False,
+                    "error": error_code,
+                    "tokens_estimated": context.get("tokens_estimated", 0),
+                }
+            
+            key = self.build_repo_micro_summary_cache_key(repo_name, fingerprint)
+            cache_manager.save(key, summary)
+
+            table_manager = get_table_manager()
+            cache_row = RepoCacheSummaryRow(
+                username=self.username,
+                repo_name=repo_name,
+                fingerprint=fingerprint,
+                cache_key=key,
+                cache_status="valid",
+                generated_at=datetime.now(timezone.utc).isoformat(),
+            )
+            table_manager.upsert_cache_summary(cache_row)
+            
+            return {
+                "cache_hit": False,
+                "summary": True,
+                "tokens_estimated": context.get("tokens_estimated", 0),
+            }
+        
+        # summarize_repo_micro_summary_json always returns dict (with error key on failure)
+        last_error = summary.get("error")
+        return {
+            "cache_hit": False,
+            "summary": False,
+            "error": last_error,
+            "tokens_estimated": context.get("tokens_estimated", 0),
+        }
+
+
+    def expand_repo_micro_summary(
+        self,
+        *,
+        repo_name: str,
+        job_id: str,
+    ) -> Dict[str, Any]:
+        """Expand micro-summary into detailed HTML summary for repo detail view.
+        
+        This takes a concise micro-summary and enriches it with deeper analysis
+        and recruiting insights for the single-repo view.
+        
+        Args:
+            username: GitHub username
+            repo_name: Repository name
+            job_id: Job ID for cache invalidation
+            
+        Returns:
+            Dict with summary_html (cached) and metadata
+        """
+        
+        start_time = time.time()
+        summary_type = "repo"
+
+        repo_metadata = self.table_manager.get_repo_github_metadata(job_id, repo_name)
+        if repo_metadata.get("job_id") == job_id:
+            repo_metadata_fingerprint = repo_metadata.get("fingerprint") if repo_metadata else None
+            cached = self.get_cache_repo_micro_summary(repo_name, repo_metadata_fingerprint)
+            if cached:
+                expanded_markdown = self.ai_assistant.expand_repo(
+                    username=self.username,
+                    repo_name=repo_name,
+                    micro_summary=cached,
+                    repo_metadata=repo_metadata,
+                    model_tier=MODEL_ASSIGNMENTS.get("readme", "default"),
+                    purpose="expand_repo_micro_summary",
+                )
+
+            metadata = {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "job_id": job_id,
+                "summary_type": summary_type,
+                "generation_time_ms": int((time.time() - start_time) * 1000),
+            }
+            return {"summary_markdown": expanded_markdown, "metadata": metadata}
+        return None
+    
+
     def get_or_generate_profile_summary(
         self,
         *,
         job_id: str,
         profile: Dict[str, Any],
-        repo_rows: List[Dict[str, Any]],
-        statistics: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Get cached or generate new profile summary.
         
         Args:
+            username: GitHub username
             job_id: Job ID for cache invalidation
             profile: GitHub user profile dict
-            repo_rows: List of repository metadata rows
-            languages_by_repo: Languages data by repo name
-            statistics: Aggregated statistics
             
         Returns:
             Dict with summary_html, metadata (cache_hit, tokens, etc.)
@@ -178,117 +312,42 @@ class SummaryManager:
         start_time = time.time()
         summary_type = "profile"
 
-        micro_summaries: List[Dict[str, Any]] = []
-        for repo in repo_rows:
-            logger.info(f"Processing repo {repo.get('repo_name') or repo.get('name')} for profile summary aggregation")
-            repo_name = repo.get("repo_name") or repo.get("name")
-            fingerprint = repo.get("fingerprint")
-            if not repo_name or not fingerprint:
-                continue
-            cached = self.get_cache_repo_micro_summary(repo_name, fingerprint)
-            if not cached:
-                logger.warning(f"Missing micro-summary for {repo_name} (fingerprint: {fingerprint}) - skipping in profile aggregation")
-                continue
-            micro_summaries.append(
-                {
-                    "repo_name": repo_name,
-                    "fingerprint": fingerprint,
-                    "micro_summary": cached,
-                }
-            )
-
-        aggregate = self.aggregate_profile_from_summaries(
-            micro_summaries=micro_summaries,
+        micro_summaries = self._load_cached_micro_summaries(job_id)
+        aggregate = self.aggregate_micro_summaries(micro_summaries=micro_summaries)
+        
+        # Second-stage AI summarization: aggregate + profile → markdown narrative
+        summary_markdown = self.ai_assistant.summarize_profile(
+            username=self.username,
             profile=profile,
-            statistics=statistics,
+            aggregate=aggregate,
+            model_tier=MODEL_ASSIGNMENTS["profile"],
+            purpose="get_profile_summary",
+            job_id=job_id,
         )
-        summary_html = self.format_profile_html(aggregate)
 
         metadata = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "job_id": job_id,
             "summary_type": summary_type,
-            "repos_included": len(micro_summaries),
-            "repos_total": len(repo_rows),
+            "repos_total": len(micro_summaries),
             "generation_time_ms": int((time.time() - start_time) * 1000),
         }
-        return {"summary_html": summary_html, "metadata": metadata, "aggregate": aggregate}
+        return {"summary_markdown": summary_markdown, "metadata": metadata}
 
-    # # This would be refactored to retrieve micr_summary cached to 
-    # def get_or_generate_readme_summary(
-    #     self,
-    #     *,
-    #     job_id: str,
-    #     repo_name: str,
-    #     repo_metadata: Dict[str, Any],
-    #     repo_files: Dict[str, Any]
-    # ) -> Dict[str, Any]:
-    #     """Get cached or generate new README summary.
-        
-    #     Args:
-    #         job_id: Job ID for cache invalidation
-    #         repo_name: Repository name
-    #         repo_metadata: Repository metadata dict
-    #         repo_files: Dict with {readme_content, readme_files, config_files}
-            
-    #     Returns:
-    #         Dict with summary_html, metadata (cache_hit, tokens, etc.)
-    #     """
-    #     start_time = time.time()
-    #     summary_type = "readme"
-        
-        
-    #     # Generate summary with appropriate model tier
-    #     model_tier = MODEL_ASSIGNMENTS.get(summary_type, "default")
-    #     summary_html = self.ai_assistant.summarize_readme_html(
-    #         readme_text=readme_content,
-    #         repo_name=repo_name,
-    #         model_tier=model_tier,
-    #         purpose="get_or_generate_readme_summary",
-    #         job_id=job_id,
-    #     )
-        
-    #     metadata = {
-    #         "generated_at": datetime.now(timezone.utc).isoformat(),
-    #         "job_id": job_id,
-    #         "summary_type": summary_type,
-    #         "repo_name": repo_name,
-    #         "tokens_estimated": context.get("tokens_estimated", 0),
-    #         "files_included": len(config_files) + 1,  # +1 for README
-    #         "generation_time_ms": int((time.time() - start_time) * 1000),
-    #     }
-        
-    #     # Track metrics
-    #     self.track_generation_metrics(
-    #         summary_type,
-    #         start_time,
-    #         metadata["tokens_estimated"],
-    #         metadata["files_included"],
-    #         cache_hit=False
-    #     )
-        
-    #     return {
-    #         "summary_html": summary_html,
-    #         "metadata": metadata
-    #     }
 
     def get_or_generate_query_response(
         self,
         *,
         job_id: str,
         query: str,
-        repo_rows: List[Dict[str, Any]],
-        repo_files: Dict[str, Dict[str, Any]],
+        profile: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Get cached or generate new query response with multi-repo context.
         
         Args:
             job_id: Job ID for cache invalidation
             query: User query string
-            repo_rows: List of repository metadata rows (pre-selected by strategy)
-            repo_files: Dict of {repo_name: {readme, configs}} file contents
-            selection_strategy: Strategy used for repo selection (for logging/metadata)
-            max_repos: Maximum repos (for logging/metadata)
+            profile: GitHub user profile dict
             
         Returns:
             Dict with response (markdown), repositories_used, metadata
@@ -296,75 +355,36 @@ class SummaryManager:
         start_time = time.time()
         summary_type = "query"
 
-        micro_summaries: List[Dict[str, Any]] = []
-        for repo in repo_rows:
-            repo_name = repo.get("repo_name") or repo.get("name")
-            fingerprint = repo.get("fingerprint")
-            if not repo_name or not fingerprint:
-                continue
-            cached = self.get_cache_repo_micro_summary(repo_name, fingerprint)
-            if not cached:
-                continue
-            micro_summaries.append(
-                {
-                    "repo_name": repo_name,
-                    "fingerprint": fingerprint,
-                    "micro_summary": cached,
-                    "repo_metadata": repo,
-                }
-            )
+        micro_summaries = self._load_cached_micro_summaries(job_id=job_id)
+        aggregate = self.aggregate_micro_summaries(micro_summaries=micro_summaries)
 
-        aggregate = self.aggregate_profile_from_summaries(micro_summaries=micro_summaries)
-        result = self.query_from_summaries(
+        result = self.ai_assistant.summarize_query(
             query=query,
-            profile_aggregate=aggregate,
-            repo_micro_summaries=micro_summaries,
-            max_repos=get_file_budget("query").get("max_repos", 8),
+            profile=profile,
+            aggregate=aggregate,
+            model_tier=MODEL_ASSIGNMENTS["query"],
+            purpose="get_query_response",
+            job_id=job_id,
         )
-        result["metadata"] = {
+
+        metadata = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "job_id": job_id,
             "summary_type": summary_type,
+            "repos_total": len(micro_summaries),
             "generation_time_ms": int((time.time() - start_time) * 1000),
         }
+        result["metadata"] = metadata
         return result
 
-    def build_profile_aggregate_cache_key(self, fingerprint: str) -> str:
-        safe = str(fingerprint).replace("/", "_").replace(" ", "_")
-        return f"profile_aggregate:{self.username}:{safe}"
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-    def build_profile_html_cache_key(self, fingerprint: str) -> str:
-        safe = str(fingerprint).replace("/", "_").replace(" ", "_")
-        return f"profile_html:{self.username}:{safe}"
-
-    def build_query_response_cache_key(self, query_fingerprint: str) -> str:
-        safe = str(query_fingerprint).replace("/", "_").replace(" ", "_")
-        return f"query_response:{self.username}:{safe}"
-
-    def calculate_fingerprint(self, summary_type: str, inputs: List[Dict[str, Any]]) -> str:
-        """Calculate stable fingerprint from structured inputs for cache invalidation."""
-        normalized_inputs: List[Dict[str, Any]] = []
-        for item in inputs or []:
-            if not isinstance(item, dict):
-                continue
-            if item.get("fingerprint"):
-                normalized_inputs.append({"fingerprint": str(item.get("fingerprint"))})
-                continue
-            normalized_inputs.append(item)
-        payload = {
-            "summary_type": summary_type,
-            "username": self.username,
-            "inputs": normalized_inputs,
-        }
-        blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
-
-    def aggregate_profile_from_summaries(
+    def aggregate_micro_summaries(
         self,
         *,
         micro_summaries: List[Dict[str, Any]],
-        profile: Optional[Dict[str, Any]] = None,
-        statistics: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Aggregate repo micro-summaries into profile-level JSON."""
         skills: Dict[str, Dict[str, Any]] = {}
@@ -448,8 +468,6 @@ class SummaryManager:
                 "architecture_patterns": architecture_list,
                 "repo_count": len(included_repos),
             },
-            "profile": profile or {},
-            "statistics": statistics or {},
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -457,104 +475,6 @@ class SummaryManager:
         cache_manager.save(self.build_profile_aggregate_cache_key(fingerprint), aggregate)
         return aggregate
 
-    def format_profile_html(self, aggregate_profile: Dict[str, Any]) -> str:
-        """Render HTML from profile aggregate JSON only (no AI call)."""
-        if not aggregate_profile:
-            return "<p>No profile aggregate available.</p>"
-
-        profile = aggregate_profile.get("profile") or {}
-        name = profile.get("name") or self.username
-        skills = aggregate_profile.get("skills") or []
-        domains = aggregate_profile.get("domains") or []
-        patterns = (aggregate_profile.get("experience_signals") or {}).get("architecture_patterns", [])
-
-        def _list_items(items: List[str]) -> str:
-            if not items:
-                return "<li>No data available.</li>"
-            return "".join(f"<li>{item}</li>" for item in items)
-
-        top_skills = [
-            f"<strong>{item.get('skill')}</strong> (freq: {item.get('frequency')}, score: {item.get('score')})"
-            for item in skills[:8]
-        ]
-        top_domains = [f"{item.get('domain')} ({item.get('count')})" for item in domains[:8]]
-        top_patterns = [f"{item.get('pattern')} ({item.get('count')})" for item in patterns[:8]]
-
-        html = (
-            f"<h2>Overview</h2><p>{name} has evidence across {len(aggregate_profile.get('repos_included', []))} repositories.</p>"
-            f"<h3>Skills</h3><ul>{_list_items(top_skills)}</ul>"
-            f"<h3>Domains</h3><ul>{_list_items(top_domains)}</ul>"
-            f"<h3>Experience Signals</h3><ul>{_list_items(top_patterns)}</ul>"
-        )
-
-        fingerprint = self.calculate_fingerprint("profile_html", [aggregate_profile])
-        cache_manager.save(self.build_profile_html_cache_key(fingerprint), {"summary_html": html})
-        return html
-
-    def query_from_summaries(
-        self,
-        *,
-        query: str,
-        profile_aggregate: Dict[str, Any],
-        repo_micro_summaries: List[Dict[str, Any]],
-        max_repos: int = 5,
-    ) -> Dict[str, Any]:
-        """Answer query using only aggregate profile + repo micro-summaries."""
-        query_tokens = {token for token in (query or "").lower().split() if token}
-
-        ranked: List[Dict[str, Any]] = []
-        for item in repo_micro_summaries:
-            micro = item.get("micro_summary") or {}
-            haystack_parts: List[str] = []
-            for key in ("overview",):
-                value = micro.get(key)
-                if isinstance(value, str):
-                    haystack_parts.append(value.lower())
-            for section in ("key_features", "architecture_patterns"):
-                for value in micro.get(section, []) or []:
-                    haystack_parts.append(str(value).lower())
-            tech = micro.get("tech_stack") or {}
-            for section in ("languages", "frameworks", "tools"):
-                for value in tech.get(section, []) or []:
-                    haystack_parts.append(str(value).lower())
-            haystack = " ".join(haystack_parts)
-            score = sum(1 for token in query_tokens if token in haystack)
-            ranked.append({**item, "relevance": score})
-
-        ranked.sort(key=lambda row: row.get("relevance", 0), reverse=True)
-        selected = [row for row in ranked if row.get("relevance", 0) > 0][:max_repos]
-        if not selected:
-            selected = ranked[:max_repos]
-
-        highlights = []
-        for row in selected:
-            repo_name = row.get("repo_name")
-            micro = row.get("micro_summary") or {}
-            overview = str(micro.get("overview") or "No overview available.")
-            highlights.append(f"- **{repo_name}**: {overview}")
-
-        top_skills = [item.get("skill") for item in (profile_aggregate.get("skills") or [])[:6] if item.get("skill")]
-        response_text = (
-            f"Query: {query}\n\n"
-            f"Top profile skills: {', '.join(top_skills) if top_skills else 'No skills aggregated yet.'}\n\n"
-            "Relevant repositories:\n"
-            + ("\n".join(highlights) if highlights else "- No matching repository summaries available.")
-        )
-
-        query_fingerprint = self.calculate_fingerprint(
-            "query",
-            [{"query": query}, profile_aggregate, {"repos": [row.get("repo_name") for row in selected]}],
-        )
-        response_payload = {
-            "response": response_text,
-            "repositories_used": [
-                {"name": row.get("repo_name"), "relevance": row.get("relevance", 0)} for row in selected
-            ],
-            "total_repositories": len(repo_micro_summaries),
-            "query": query,
-        }
-        cache_manager.save(self.build_query_response_cache_key(query_fingerprint), response_payload)
-        return response_payload
 
     def build_repo_micro_summary_cache_key(self, repo_name: str, fingerprint: str) -> str:
         """Build cache key for micro-summary blob storage.
@@ -570,13 +490,73 @@ class SummaryManager:
         safe_fingerprint = str(fingerprint).replace("/", "_").replace(" ", "_")
         return f"repo_micro_summary:{self.username}:{safe_repo}:{safe_fingerprint}"
 
+    def build_profile_aggregate_cache_key(self, fingerprint: str) -> str:
+        safe = str(fingerprint).replace("/", "_").replace(" ", "_")
+        return f"profile_aggregate:{self.username}:{safe}"
+
+    def build_expanded_summary_cache_key(self, repo_name: str, fingerprint: str) -> str:
+        """Build cache key for expanded repo summary HTML."""
+        safe_repo = str(repo_name).replace("/", "_").replace(" ", "_")
+        safe_fingerprint = str(fingerprint).replace("/", "_").replace(" ", "_")
+        return f"repo_expanded_summary:{self.username}:{safe_repo}:{safe_fingerprint}"
+
+    def calculate_fingerprint(self, summary_type: str, inputs: List[Dict[str, Any]]) -> str:
+        """Calculate stable fingerprint from structured inputs for cache invalidation."""
+        normalized_inputs: List[Dict[str, Any]] = []
+        for item in inputs or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("fingerprint"):
+                normalized_inputs.append({"fingerprint": str(item.get("fingerprint"))})
+                continue
+            normalized_inputs.append(item)
+        payload = {
+            "summary_type": summary_type,
+            "username": self.username,
+            "inputs": normalized_inputs,
+        }
+        blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+    def _load_cached_micro_summaries(self, job_id: str) -> List[Dict[str, Any]]:
+        """Load micro-summaries from cache using repository metadata rows.
+        
+        Args:
+            job_id: Job ID for which to load micro-summaries
+            
+        Returns:
+            List of loaded micro-summaries with repo_name, fingerprint, and micro_summary data
+        """
+        all_repos = self.table_manager.query_repo_github_metadata(job_id) 
+        for repo in all_repos if repo.get("job_id") == job_id else []:
+            repo_name = repo.get("repo_name")
+            fingerprint = repo.get("fingerprint")
+
+            valid_summaries = self.table_manager.list_valid_cache_summaries(self.username)
+            micro_summaries: List[Dict[str, Any]] = []
+
+            if valid_summaries and valid_summaries.get("repo_name") == repo_name and valid_summaries.get("fingerprint") == fingerprint and valid_summaries.get("status") == "valid":
+
+                cache_key = valid_summaries.get("cache_key")
+
+                # Cache entry exists and is valid - fetch from blob
+                cached = cache_manager.get(cache_key)
+                if cached.get("status") == "valid":
+                    data = cached.get("data")
+
+                micro_summaries.append(data) if isinstance(data, dict) else None
+                return micro_summaries
+            
+        return None
+        
+
     def get_cache_repo_micro_summary(self, repo_name: str, fingerprint: str) -> Optional[Dict[str, Any]]:
         """Get micro-summary from cache with table validation."""
-        # First check table for cache entry existence
-        table_manager = get_table_manager()
-        cache_entry = table_manager.get_cache_summary(self.username, repo_name, fingerprint)
-        
-        if not cache_entry:
+
+
+        cache_entry = self.table_manager.get_cache_summary(self.username, repo_name, fingerprint)
+        if not cache_entry or cache_entry.get("cache_status") != "valid":
             return None  # Not cached or stale
         
         # Cache entry exists and is valid - fetch from blob
@@ -587,147 +567,6 @@ class SummaryManager:
             return data if isinstance(data, dict) else None
         
         return None
-
-    def generate_repo_micro_summary(
-        self,
-        *,
-        repo_name: str,
-        fingerprint: str,
-        job_id: Optional[str] = None,
-        repo_metadata: Dict[str, Any],
-        primary_readme_content: Optional[str],
-        config_content: Optional[Dict[str, str]],
-        secondary_readme_content: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """Generate and cache JSON micro-summary.
-        
-        Assumes cache entry was registered with pending status before calling.
-        Updates status to 'valid' on success or leaves as 'pending' on failure.
-        """
-        
-        # Check cache table first
-        cached = self.get_cache_repo_micro_summary(repo_name, fingerprint)
-        if cached:
-            logger.info(f"Cache hit for micro-summary of {repo_name} (fingerprint: {fingerprint})")
-            return {"cache_hit": True, "summary": True, "tokens_estimated": 0}
-        
-        token_budget = TOKEN_BUDGETS["default"]  # Use default budget for micro-summary generation
-
-        context = self.build_repo_context(
-            repo_metadata=repo_metadata,
-            primary_readme_content=primary_readme_content,
-            config_files=config_content or {},
-            secondary_readme_content=secondary_readme_content or [],
-            token_budget=token_budget,
-        )
-        logger.info(f"Context built for micro-summary of {repo_name} (fingerprint: {fingerprint}) with estimated tokens: {context.get('tokens_estimated', 0)}")
-
-
-        summary = self.ai_assistant.summarize_repo_micro_summary_json(
-            repo_name=repo_name,
-            repo_context=context,
-            model_tier=MODEL_ASSIGNMENTS["readme"],
-            purpose="get_repo_micro_summary",
-            job_id=job_id,
-        )
-
-        logger.info(f"Micro-summary generation attempted for {repo_name} (fingerprint: {fingerprint}) - validating response")
-        if "error" not in summary:
-            key = self.build_repo_micro_summary_cache_key(repo_name, fingerprint)
-            cache_manager.save(key, summary)
-
-            table_manager = get_table_manager()
-            cache_row = RepoCacheSummaryRow(
-                username=self.username,
-                repo_name=repo_name,
-                fingerprint=fingerprint,
-                cache_key=key,
-                cache_status="valid",
-                generated_at=datetime.now(timezone.utc).isoformat(),
-            )
-            table_manager.upsert_cache_summary(cache_row)
-            
-            return {
-                "cache_hit": False,
-                "summary": True,
-                "tokens_estimated": context.get("tokens_estimated", 0),
-            }
-        
-        # summarize_repo_micro_summary_json always returns dict (with error key on failure)
-        last_error = summary.get("error")
-        return {
-            "cache_hit": False,
-            "summary": False,
-            "error": last_error,
-            "tokens_estimated": context.get("tokens_estimated", 0),
-        }
-
-    def build_expanded_summary_cache_key(self, repo_name: str, fingerprint: str) -> str:
-        """Build cache key for expanded repo summary HTML."""
-        safe_repo = str(repo_name).replace("/", "_").replace(" ", "_")
-        safe_fingerprint = str(fingerprint).replace("/", "_").replace(" ", "_")
-        return f"repo_expanded_summary:{self.username}:{safe_repo}:{safe_fingerprint}"
-
-    def expand_repo_micro_summary(
-        self,
-        *,
-        repo_name: str,
-        micro_summary: Dict[str, Any],
-        repo_metadata: Dict[str, Any],
-        fingerprint: str,
-    ) -> Dict[str, Any]:
-        """Expand micro-summary into detailed HTML summary for repo detail view.
-        
-        This takes a concise micro-summary and enriches it with deeper analysis
-        and recruiting insights for the single-repo view.
-        
-        Args:
-            repo_name: Repository name
-            micro_summary: Cached micro-summary dict
-            repo_metadata: Repository metadata (name, description, language, etc.)
-            fingerprint: Repo fingerprint for cache invalidation
-            
-        Returns:
-            Dict with summary_html (cached) and metadata
-        """
-        logger.info(f"Expanding micro-summary for {repo_name} (fingerprint: {fingerprint})")
-        cache_key = self.build_expanded_summary_cache_key(repo_name, fingerprint)
-        cached = cache_manager.get(cache_key)
-        if cached.get("status") == "valid":
-            cached_html = cached.get("data", {})
-            return {
-                "cache_hit": True,
-                "summary_html": cached_html.get("summary_html", ""),
-                "metadata": {"generated_at": cached_html.get("generated_at")},
-            }
-
-        # AI call to expand micro-summary into detailed HTML
-        start_time = time.time()
-        expanded_html = self.ai_assistant.expand_micro_summary_to_html(
-            repo_name=repo_name,
-            micro_summary=micro_summary,
-            repo_metadata=repo_metadata,
-            model_tier=MODEL_ASSIGNMENTS.get("readme", "default"),
-            purpose="expand_repo_micro_summary",
-        )
-
-        # Cache the expanded summary
-        generated_at = datetime.now(timezone.utc).isoformat()
-        cache_payload = {
-            "summary_html": expanded_html,
-            "generated_at": generated_at,
-            "micro_summary_fingerprint": fingerprint,
-        }
-        cache_manager.save(cache_key, cache_payload)
-
-        return {
-            "cache_hit": False,
-            "summary_html": expanded_html,
-            "metadata": {
-                "generated_at": generated_at,
-                "generation_time_ms": int((time.time() - start_time) * 1000),
-            },
-        }
 
     # ---------------------------------------------------------------------------
     # Token Estimation & Chunking Utilities
@@ -907,181 +746,74 @@ class SummaryManager:
         logger.info("[Context] %s", context)
         return context
 
-    # def build_profile_context(
-    #     self,
-    #     profile: Dict[str, Any],
-    #     repo_rows: List[Dict[str, Any]],
-    #     repo_files: Dict[str, Dict[str, Any]],
-    #     statistics: Dict[str, Any],
-    #     token_budget: Dict[str, int]
-    # ) -> Dict[str, Any]:
-    #     """Build profile context with multiple repos.
-        
-    #     Args:
-    #         profile: GitHub user profile data
-    #         repo_rows: List of top repository metadata dicts
-    #         repo_files: Dict of {repo_name: {readme, configs}} file contents
-    #         statistics: Aggregated statistics
-    #         token_budget: Token budget allocation dict
-            
-    #     Returns:
-    #         Structured profile context dict with chunked content
-    #     """
-    #     context = {
-    #         "username": self.username,
-    #         "profile": {
-    #             "name": profile.get("name"),
-    #             "bio": profile.get("bio"),
-    #             "location": profile.get("location"),
-    #             "company": profile.get("company"),
-    #             "blog": profile.get("blog"),
-    #             "public_repos": profile.get("public_repos"),
-    #             "followers": profile.get("followers"),
-    #             "following": profile.get("following"),
-    #         },
-    #         "statistics": statistics,
-    #         "repositories": [],
-    #     }
-        
-    #     tokens_used = self.estimate_tokens(json.dumps(context))
-        
-    #     # Calculate per-repo budgets
-    #     num_repos = len(repo_rows)
-    #     readme_budget_per_repo = token_budget.get("readme", 0) // max(num_repos, 1)
-    #     config_budget_per_repo = token_budget.get("config", 0) // max(num_repos, 1)
-        
-    #     # Build context for each repo
-    #     for repo in repo_rows:
-    #         repo_name = repo.get("repo_name")
-    #         if not repo_name:
-    #             continue
-            
-    #         files = repo_files.get(repo_name, {})
-    #         readme = files.get("readme_content", "")
-    #         configs = files.get("config_files", [])
-            
-    #         # Build mini repo context
-    #         repo_context = {
-    #             "name": repo_name,
-    #             "description": repo.get("description", ""),
-    #             # "primary_language": repo.get("primary_language"),
-    #             "languages": repo.get("languages", [])[:3],  # Top 3
-    #             # "topics": repo.get("topics", [])[:5],  # Top 5
-    #             # "stars": repo.get("stats", {}).get("stars", 0),
-    #             # "forks": repo.get("stats", {}).get("forks", 0),
-    #         }
-            
-    #         # Add chunked README
-    #         if readme and readme_budget_per_repo > 0:
-    #             repo_context["readme_chunk"] = self.chunk_readme(readme, readme_budget_per_repo)
-            
-    #         # Add chunked configs
-    #         if configs and config_budget_per_repo > 0:
-    #             config_chunks = []
-    #             # configs is now a dict {filename: content}
-    #             budget_per_file = config_budget_per_repo // max(len(configs), 1)
-                
-    #             for filename, content in configs.items():
-    #                 if filename and content:
-    #                     chunked = self.chunk_config_file(filename, content, budget_per_file)
-    #                     config_chunks.append({
-    #                         "filename": filename,
-    #                         "content": chunked
-    #                     })
-                
-    #             repo_context["config_chunks"] = config_chunks
-            
-    #         context["repositories"].append(repo_context)
-    #         tokens_used += self.estimate_tokens(json.dumps(repo_context))
-        
-    #     context["tokens_estimated"] = tokens_used
-    #     return context
 
-    # def build_query_bundle_context(
-    #     self,
-    #     query: str,
-    #     repo_rows: List[Dict[str, Any]],
-    #     repo_files: Dict[str, Dict[str, Any]],
-    #     token_budget: Dict[str, int],
-    # ) -> Dict[str, Any]:
-    #     """Build query context with multiple repo summaries.
+    # ---------------------------------------------------------------------------
+    # Schema Validation
+    # ---------------------------------------------------------------------------
+    
+    def _validate_micro_summary_schema(self, micro_summary: Dict[str, Any], repo_name: str) -> Dict[str, Any]:
+        """Validate micro-summary JSON structure before caching.
         
-    #     Args:
-    #         query: User query string
-    #         repo_rows: List of repository metadata rows (already pre-selected by strategy)
-    #         repo_files: Dict of {repo_name: {readme, configs}} file contents
-    #         token_budget: Token budget allocation dict
+        Checks for required top-level keys and expected types. Does not deeply validate
+        nested content — focuses on structural integrity to prevent cache poisoning.
+        
+        Args:
+            micro_summary: Parsed JSON micro-summary dict
+            repo_name: Repository name for logging
             
-    #     Returns:
-    #         Structured query context dict with chunked multi-repo content
-    #     """
+        Returns:
+            Dict with status 'valid' or 'invalid' and optional error details
+        """
+        if not isinstance(micro_summary, dict):
+            logger.warning("Micro-summary for %s is not a dict: %s", repo_name, type(micro_summary))
+            return {"status": "invalid", "error": "root_not_dict"}
         
-    #     # Use pre-selected repos directly (selection done in endpoint via _select_repos_for_context)
-    #     context = {
-    #         "query": query,
-    #         "repositories": [],
-    #     }
+        required_keys = {"overview", "key_features", "tech_stack", "architecture_patterns", "skill_signals"}
+        missing = required_keys - set(micro_summary.keys())
+        if missing:
+            logger.warning("Micro-summary for %s missing keys: %s", repo_name, missing)
+            return {"status": "invalid", "error": f"missing_keys:{','.join(sorted(missing))}"}
         
-    #     tokens_used = self.estimate_tokens(json.dumps({"query": query}))
+        # Validate key field types
+        if not isinstance(micro_summary.get("overview"), str):
+            logger.warning("Micro-summary for %s: overview is not string", repo_name)
+            return {"status": "invalid", "error": "overview_not_string"}
         
-    #     # Calculate per-repo budgets
-    #     num_repos = len(repo_rows)
-    #     if num_repos == 0:
-    #         context["tokens_estimated"] = tokens_used
-    #         return context
+        if not isinstance(micro_summary.get("key_features"), list):
+            logger.warning("Micro-summary for %s: key_features is not list", repo_name)
+            return {"status": "invalid", "error": "key_features_not_list"}
         
-    #     readme_budget_per_repo = token_budget.get("readme", 0) // num_repos
-    #     config_budget_per_repo = token_budget.get("config", 0) // num_repos
+        if not isinstance(micro_summary.get("tech_stack"), dict):
+            logger.warning("Micro-summary for %s: tech_stack is not dict", repo_name)
+            return {"status": "invalid", "error": "tech_stack_not_dict"}
         
-    #     # Build context for each repo (already selected)
-    #     for repo in repo_rows:
-    #         repo_name = repo.get("repo_name") or repo.get("name")
-    #         if not repo_name:
-    #             continue
-            
-    #         files = repo_files.get(repo_name, {})
-    #         readme = files.get("readme_content", "")
-    #         configs = files.get("config_files", [])
-            
-    #         # Build mini repo summary
-    #         repo_summary = {
-    #             "name": repo_name,
-    #             "description": repo.get("description", "")[:200],  # Truncate descriptions
-    #             "primary_language": repo.get("primary_language"),
-    #             "stars": repo.get("stars_count", 0),
-    #             "forks": repo.get("forks_count", 0),
-    #             "last_updated": repo.get("github_updated_at", ""),
-    #         }
-            
-    #         # Add chunked README if available
-    #         if readme and readme_budget_per_repo > 0:
-    #             repo_summary["readme_summary"] = self.chunk_readme(readme, readme_budget_per_repo)
-            
-    #         # Add chunked configs if available
-    #         if configs and config_budget_per_repo > 0:
-    #             config_summaries = []
-    #             # configs is now a dict {filename: content}
-    #             configs_list = list(configs.items())[:2]  # Max 2 config files per repo for query
-    #             budget_per_file = config_budget_per_repo // max(len(configs_list), 1)
-                
-    #             for filename, content in configs_list:
-    #                 if filename and content:
-    #                     chunked = self.chunk_config_file(filename, content, budget_per_file)
-    #                     config_summaries.append({
-    #                         "filename": filename,
-    #                         "content": chunked
-    #                     })
-                
-    #             if config_summaries:
-    #                 repo_summary["config_summaries"] = config_summaries
-            
-    #         context["repositories"].append(repo_summary)
-    #         tokens_used += self.estimate_tokens(json.dumps(repo_summary))
+        tech_stack = micro_summary.get("tech_stack", {})
+        expected_tech_keys = {"languages", "frameworks", "tools"}
+        for key in expected_tech_keys:
+            if not isinstance(tech_stack.get(key), list):
+                logger.warning("Micro-summary for %s: tech_stack.%s is not list", repo_name, key)
+                return {"status": "invalid", "error": f"tech_stack_{key}_not_list"}
         
-    #     context["tokens_estimated"] = tokens_used
-    #     context["repos_included"] = len(context["repositories"])
- 
-    #     return context
+        if not isinstance(micro_summary.get("architecture_patterns"), list):
+            logger.warning("Micro-summary for %s: architecture_patterns is not list", repo_name)
+            return {"status": "invalid", "error": "architecture_patterns_not_list"}
+        
+        if not isinstance(micro_summary.get("skill_signals"), list):
+            logger.warning("Micro-summary for %s: skill_signals is not list", repo_name)
+            return {"status": "invalid", "error": "skill_signals_not_list"}
+        
+        # Validate skill_signals items have required fields
+        for idx, signal in enumerate(micro_summary.get("skill_signals", [])):
+            if not isinstance(signal, dict):
+                logger.warning("Micro-summary for %s: skill_signals[%d] is not dict", repo_name, idx)
+                return {"status": "invalid", "error": f"skill_signals_item_not_dict"}
+            if "skill" not in signal or "confidence" not in signal:
+                logger.warning("Micro-summary for %s: skill_signals[%d] missing skill or confidence", repo_name, idx)
+                return {"status": "invalid", "error": "skill_signals_missing_fields"}
+        
+        logger.info("Micro-summary for %s schema validation passed", repo_name)
+        return {"status": "valid"}
+
 
     # ---------------------------------------------------------------------------
     # Metrics & Observability

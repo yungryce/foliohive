@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import random
 import uuid
 from collections import defaultdict
 from dataclasses import asdict, dataclass
@@ -25,8 +24,8 @@ from foliohive_shared import (
     queue_manager,
     table_manager,
     SummaryManager,
-    get_file_budget,
     JobMetadataRow,
+    RepoGitHubMetadataRow,
     RepoSyncStatusRow,
     UserProfileRow,
 )
@@ -48,6 +47,7 @@ class CandidateContext:
     job: Optional[Dict[str, Any]]
     job_id: Optional[str]
     username: str
+    status: Optional[str] = None
 
 
 logger = logging.getLogger("foliohive.api_gateway")
@@ -189,64 +189,6 @@ def _parse_iso(timestamp: Optional[str]) -> datetime:
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
-def _select_repos_for_context(
-    repo_rows: List[Dict[str, Any]],
-    strategy: str = "recent",
-    max_repos: int = 8,
-) -> List[Dict[str, Any]]:
-    """Select repos based on strategy for early context building.
-    
-    Centralizes repo selection to avoid redundant file fetching and duplication.
-    Used in endpoints to select which repos to fetch file contents for.
-    
-    Args:
-        repo_rows: List of repository metadata rows
-        strategy: Selection strategy (recent, random, top_starred)
-        max_repos: Maximum number of repos to select
-    
-    Returns:
-        Selected repo rows (filtered and sorted per strategy)
-    """
-    
-    if not repo_rows:
-        return []
-    
-    if strategy == "recent":
-        # Sort by last updated (most recent first)
-        def get_update_time(repo: Dict[str, Any]) -> datetime:
-            updated = repo.get("github_updated_at") or repo.get("updated_at", "")
-            if not updated:
-                return datetime.min
-            try:
-                # Handle ISO format with +00:00 or Z
-                updated = updated.replace("+00:00", "").replace("Z", "")
-                return datetime.fromisoformat(updated)
-            except Exception:
-                return datetime.min
-        
-        sorted_repos = sorted(repo_rows, key=get_update_time, reverse=True)
-        return sorted_repos[:max_repos]
-    
-    elif strategy == "random":
-        # Random sample for diversity
-        if len(repo_rows) <= max_repos:
-            return repo_rows
-        return random.sample(repo_rows, max_repos)
-    
-    elif strategy == "top_starred":
-        # Sort by stars (most starred first)
-        sorted_repos = sorted(
-            repo_rows,
-            key=lambda r: r.get("stars_count", 0),
-            reverse=True
-        )
-        return sorted_repos[:max_repos]
-    
-    else:
-        # Default to recent
-        logger.warning("Unknown selection strategy '%s', defaulting to 'recent'", strategy)
-        return _select_repos_for_context(repo_rows, "recent", max_repos)
-
 # ---------------------------------------------------------------------------
 # Candidate Context Preparation
 # ---------------------------------------------------------------------------
@@ -299,16 +241,19 @@ def _prepare_candidate_context(
     resolved_job_id = job_id or req.params.get("job_id")
     job = _fetch_candidate_jobs(username, job_id=resolved_job_id)
     final_job_id = job.get("job_id") if job else None
+    resolved_username = job.get("username") if job else None 
+    status = job.get("status") if job else None
     
     # Record session tracking if enabled
     if record_session:
-        table_manager.upsert_session_candidate(session_id, username, final_job_id)
+        table_manager.upsert_session_candidate(session_id, resolved_username, final_job_id)
     
     return CandidateContext(
         trace=trace,
         job=job,
         job_id=final_job_id,
-        username=username,
+        username=resolved_username,
+        status=status,
     )
 
 
@@ -372,126 +317,76 @@ def _get_or_refresh_user_profile(username: str) -> Optional[Dict[str, Any]]:
 # Core Logic Helpers
 # ---------------------------------------------------------------------------
 
-def _query_repo_rows(
-    username: str,
-    job_id: Optional[str] = None,
-    repo_names: Optional[List[str]] = None,
-) -> List[Dict[str, Any]]:
-    """Query repo GitHub metadata from table storage.
 
-    Queries RepoGitHubMetadata table (which now contains fingerprint).
-    Uses RepoSyncStatus to map job_id to repo names in normalized schema.
-
-    Args:
-        username: Required username filter
-        job_id: Job ID to get repos for (queries RepoSyncStatus first)
-        repo_names: Optional list of specific repo names to retrieve
-
-    Returns:
-        List of GitHub metadata dicts with fingerprint
-    """
-    try:
-        target_repo_names = repo_names
-        
-        if job_id and not target_repo_names:
-            status_rows = table_manager.list_repo_statuses(job_id)
-            target_repo_names = [
-                row["repo_name"] for row in status_rows
-                if row.get("status") in ("synced", "summary_ready") and row.get("repo_name")
-            ]
-        
-        # Single query for all repos (avoids duplication)
-        all_repos = table_manager.query_repo_github_metadata(username)
-        
-        # Determine repos to track for cleanup (either filtered or all)
-        repos_to_touch = target_repo_names or [
-            repo.get("repo_name") for repo in all_repos if repo.get("repo_name")
-        ]
-        
-        # Track access in batch (touch either filtered or all repos)
-        if repos_to_touch:
-            table_manager.touch_repo_github_metadata_batch(username, repos_to_touch)
-        
-        # Filter results if target repos specified, else return all
-        if target_repo_names:
-            target_set = set(target_repo_names)
-            return [repo for repo in all_repos if repo.get("repo_name") in target_set]
-        
-        return all_repos
-            
-    except Exception:
-        logger.warning(
-            "Failed to query GitHub metadata for user=%s job=%s", 
-            username, job_id or "none", exc_info=True
-        )
-        return []
-
-
-def _build_repo_detail_entry(
-    repo_names: Union[str, List[str]],
+def _get_single_repo_entry(
+    repo_name: str,
     *,
     ctx: CandidateContext,
 ) -> Dict[str, Any]:
-    """Build one or many repo detail entries using normalized tables.
+    """Get metadata entry for a single repository.
     
-    Consolidates metadata and language lookups to avoid redundant queries when
-    multiple repos are requested. Callers needing a single repo can pass a
-    string; batch callers can pass a list of repo names.
-
     Args:
-        repo_names: Repository name or list of names
+        repo_name: A specific repository name
         ctx: Candidate context with resolved job_id and username
     
     Returns:
-        Dict with job_id, repo_entry (first), and entries (all repos processed)
+        Single repo entry dict with metadata and languages, or empty dict if not found
     """
-    # Normalize input to a list while preserving order
-    target_names: List[str] = []
-    if isinstance(repo_names, str) and repo_names:
-        target_names = [repo_names]
-    elif isinstance(repo_names, list):
-        target_names = [name for name in repo_names if name]
+
+    # Query for the specific repo
+    repo_data = table_manager.get_repo_github_metadata(ctx.job_id, repo_name)
+    if repo_data.get("job_id") != ctx.job_id:
+        return {}
+
+    github_metadata = repo_data
+    languages = table_manager.get_repo_languages(repo_name)
+
+    entry = _build_repo_statistics(languages=languages, github_metadata=github_metadata)
+    if not entry.get("name"):
+        entry["name"] = repo_name
 
     logger.info(
-        "Preparing to build repo detail entry: username=%s job_id=%s repo_count=%d requested_repos=%s",
-        ctx.username, ctx.job_id, len(target_names) if target_names else 0, target_names or "all"
+        "Single repo entry built: username=%s job_id=%s repo=%s",
+        ctx.username, ctx.job_id, repo_name
     )
 
-    repo_rows: List[Dict[str, Any]] = []
-    if target_names:
-        repo_rows = _query_repo_rows(ctx.username, job_id=ctx.job_id, repo_names=target_names)
-    elif ctx.job_id:
-        repo_rows = _query_repo_rows(ctx.username, job_id=ctx.job_id)
-        target_names = [row.get("repo_name") for row in repo_rows if row.get("repo_name")]
+    return entry
 
-    if not target_names:
-        return {"job_id": ctx.job_id, "repo_entry": {}, "entries": []}
 
-    logger.info(
-        "Building repo detail entry: username=%s job_id=%s repos=%d",
-        ctx.username, ctx.job_id, len(target_names)
-    )
+def _get_repos_entries(
+    ctx: CandidateContext,
+) -> List[Dict[str, Any]]:
+    """Get metadata entries for multiple repositories in a job.
+    
+    Args:
+        ctx: Candidate context with resolved job_id and username
+    
+    Returns:
+        List of repo entry dicts with metadata and languages
+    """
 
-    # Single query for metadata and languages (if job-scoped)
-    languages_by_repo = table_manager.query_repo_languages(ctx.job_id) if ctx.job_id else {}
+    all_repos = table_manager.query_repo_github_metadata(ctx.job_id) 
+    if not all_repos:
+        return []
+
+    # Fetch all languages for this job (single query)
+    languages_by_repo = table_manager.query_all_repo_languages(ctx.job_id) if ctx.job_id else {} 
 
     entries: List[Dict[str, Any]] = []
-    for name in target_names:
-        github_metadata = next((row for row in repo_rows if row.get("repo_name") == name), None)
-        languages = languages_by_repo.get(name)
+    for github_metadata in all_repos:
+        repo_name = github_metadata.get("repo_name")
+        if not repo_name:
+            continue
 
-        entry = _build_repo_statistics(languages=languages, github_metadata=github_metadata)
-        if not entry.get("name"):
-            entry["name"] = name
-        entries.append(entry)
+        languages = languages_by_repo.get(repo_name)
+        entries.append(_build_repo_statistics(languages=languages, github_metadata=github_metadata))
 
-    primary_entry = entries[0] if entries else {}
+    logger.info(
+        "Repo entries built: username=%s job_id=%s repos=%d",
+        ctx.username, ctx.job_id, len(entries)
+    )
 
-    return {
-        "job_id": ctx.job_id,
-        "repo_entry": primary_entry,
-        "entries": entries,
-    }
+    return entries
 
 
 def _build_repo_statistics(
@@ -546,12 +441,12 @@ def _build_repo_statistics(
         # Map GitHub metadata to expected frontend structure
         entry["metadata"] = {
             "description": github_metadata.get("description"),
-            "fingerprint": github_metadata.get("fingerprint"),
             "watchers_count": github_metadata.get("watchers", 0),
             "open_issues_count": github_metadata.get("open_issues", 0),
             "topics": topics,
             "license_name": github_metadata.get("license_name"),
         }
+        entry["fingerprint"] = github_metadata.get("fingerprint")
         
     return entry
 
@@ -576,12 +471,16 @@ def _get_portfolio_bundle(
             - languages_by_repo: Dict mapping repo_name to language data
             - statistics: Aggregated portfolio statistics
     """
-    repo_rows = _query_repo_rows(username, job_id=job_id)
-    languages_by_repo = table_manager.query_repo_languages(job_id) if job_id else {}
-    statistics = _aggregate_portfolio_statistics(repo_rows, languages_by_repo)
+
+    all_repos = table_manager.query_repo_github_metadata(job_id)
+    if not all_repos:
+        return []
+
+    languages_by_repo = table_manager.query_all_repo_languages(job_id) if job_id else {}
+    statistics = _aggregate_portfolio_statistics(all_repos, languages_by_repo)
     
     return {
-        "repo_rows": repo_rows,
+        "repo_rows": all_repos,
         "languages_by_repo": languages_by_repo,
         "statistics": statistics,
     }
@@ -657,7 +556,7 @@ def _persist_job_metadata(
     """Persist job metadata - list fields removed in normalized schema.
     
     Creates or updates a job metadata row. Generates created_at timestamp if not provided.
-    Preserves existing bundle_fingerprint, trace_id, and request_id on updates.
+    Preserves existing trace_id, and request_id on updates.
     """
     if not created_at:
         created_at = datetime.now(timezone.utc).isoformat()
@@ -667,7 +566,6 @@ def _persist_job_metadata(
         username=username,
         job_id=job_id,
         status=status,
-        bundle_fingerprint=(existing.get("bundle_fingerprint") if existing else None),
         force_refresh=force_refresh if not existing else bool(existing.get("force_refresh") or force_refresh),
         created_at=(existing.get("created_at") if existing else created_at) or created_at,
         updated_at=existing.get("updated_at") if existing else None,
@@ -675,6 +573,59 @@ def _persist_job_metadata(
         request_id=request_id if not existing else (existing.get("request_id") or request_id),
     )
     table_manager.upsert_job_metadata(row)
+
+
+def _update_valid_repos_job_id(
+    username: str,
+    valid_repos: List[Dict[str, Any]],
+    job_id: str,
+) -> None:
+    """Update job_id for valid (non-stale) repositories.
+    
+    Associates valid repos with the current job even though they don't require
+    re-syncing. This prevents drift where valid repos retain old job_id while
+    stale repos get the new job_id, ensuring all repos for a candidate are
+    tied to the same job_id for consistent data provenance.
+    
+    Args:
+        username: GitHub username
+        valid_repos: List of repo metadata dicts for repos that passed freshness check
+        job_id: Current job ID to associate with repos
+    """
+    for repo_metadata in valid_repos:
+        repo_name = repo_metadata.get("name")
+        if not repo_name:
+            continue
+        
+        # Fetch existing metadata and update job_id
+        existing = table_manager.get_repo_github_metadata(job_id, repo_name)
+        if existing:
+            # Reconstruct row with updated job_id while preserving all other fields
+            updated_row = RepoGitHubMetadataRow(
+                job_id=job_id,  # Update to current job_id
+                repo_name=repo_name,
+                username=username,
+                fingerprint=existing.get("fingerprint"),
+                description=existing.get("description"),
+                topics=existing.get("topics"),
+                html_url=existing.get("html_url"),
+                homepage_url=existing.get("homepage_url"),
+                stars_count=existing.get("stars_count", 0),
+                forks_count=existing.get("forks_count", 0),
+                watchers=existing.get("watchers", 0),
+                open_issues=existing.get("open_issues", 0),
+                primary_language=existing.get("primary_language"),
+                is_fork=existing.get("is_fork", False),
+                is_archived=existing.get("is_archived", False),
+                license_name=existing.get("license_name"),
+                github_created_at=existing.get("github_created_at"),
+                github_updated_at=existing.get("github_updated_at"),
+                github_pushed_at=existing.get("github_pushed_at"),
+                default_branch=existing.get("default_branch"),
+                created_at=existing.get("created_at"),
+                last_accessed_at=existing.get("last_accessed_at"),
+            )
+            table_manager.upsert_repo_github_metadata(updated_row)
 
 
 def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
@@ -701,17 +652,12 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
     }
 
     # Query cached fingerprints from GitHub metadata table
-    github_metadata_rows = table_manager.query_repo_github_metadata(username)
+    github_metadata_rows = table_manager.query_repo_github_metadata_by_username(username)
     cached_fingerprints = {
         row.get("repo_name"): row.get("fingerprint")
         for row in github_metadata_rows
         if row.get("repo_name") and row.get("fingerprint")
     }
-
-    # Track access for cleanup logic (batch update to minimize writes)
-    accessed_repo_names = [row.get("repo_name") for row in github_metadata_rows if row.get("repo_name")]
-    if accessed_repo_names:
-        table_manager.touch_repo_github_metadata_batch(username, accessed_repo_names)
 
     stale_repos: List[Dict[str, Any]] = []
     valid_repos: List[Dict[str, Any]] = []
@@ -892,8 +838,10 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
         request_id=trace.get("request_id"),
     )
 
-    # Create pending status rows for all repos upfront (before enqueuing)
-    # This provides full audit trail: pending → synced → cached
+    # Update valid repos' job_id so they're associated with the current job
+    _update_valid_repos_job_id(username, valid_repos, job_id)
+
+    # Create pending status rows for repos that need to be queued/synced
     for repo_metadata in repos_to_queue:
         repo_name = repo_metadata.get("name")
         if repo_name:
@@ -1090,72 +1038,25 @@ def get_candidate_repos_metadata(req: func.HttpRequest) -> func.HttpResponse:
         return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400, error_code="VALIDATION_ERROR")
 
     ctx = _prepare_candidate_context(req, username)
-
     logger.info("Fetching candidate metadata: username=%s job_id=%s", username, ctx.job_id)
 
-    # Try table storage first (most recent data)
-    if ctx.job_id:
+    if ctx.job_id and ctx.username and ctx.status in ("metadata_ready", "caching_started", "completed"):
         job = ctx.job or {}
         
-        # Validation: log table state before building repo detail entries
-        # Diagnose data loss between RepoSyncStatus and RepoGitHubMetadata
-        try:
-            # Count total repos in RepoGitHubMetadata for this user
-            logger.info("Validating table state for candidate metadata: username=%s job_id=%s", username, ctx.job_id)
-
-            all_github_metadata = table_manager.query_repo_github_metadata(username)
-            total_github_metadata_count = len(all_github_metadata) if all_github_metadata else 0
-            
-            # Count repos with synced/cached status for this job
-            status_rows = table_manager.list_repo_statuses(ctx.job_id)
-            synced_repos = [
-                row.get("repo_name") for row in status_rows
-                if row.get("status") in ("synced", "cached") and row.get("repo_name")
-            ]
-            cached_repos = [row.get("repo_name") for row in status_rows
-                if row.get("status") == "cached" and row.get("repo_name")]
-            
-            synced_count = len(synced_repos)
-            cached_count = len(cached_repos)
-            
-            # Count how many of the synced/cached repos have metadata
-            synced_cached_with_metadata = sum(
-                1 for repo_name in synced_repos
-                if any(m.get("repo_name") == repo_name for m in all_github_metadata)
-            )
-            
-            logger.info(
-                "[TABLE_VALIDATION] username=%s job_id=%s github_metadata_total=%d synced_count=%d cached_count=%d synced_cached_with_metadata=%d",
-                username, ctx.job_id, total_github_metadata_count, synced_count, cached_count, synced_cached_with_metadata
-            )
-            
-            if synced_count > synced_cached_with_metadata:
-                logger.warning(
-                    "[TABLE_DATA_GAP] username=%s job_id=%s missing_metadata_count=%d gaps=%s",
-                    username, ctx.job_id,
-                    synced_count - synced_cached_with_metadata,
-                    [r for r in synced_repos if not any(m.get("repo_name") == r for m in all_github_metadata)][:10]
-                )
-        except Exception as exc:
-            logger.warning("Failed to validate table state: %s", exc, exc_info=True)
+        # Fetch repo metadata for this job (filters by job_id)
+        entries = _get_repos_entries(ctx)
         
-        detail_bundle = _build_repo_detail_entry([], ctx=ctx)
-        entries = detail_bundle.get("entries", [])
-        
-        payload = {
-            "username": ctx.username,
-            "job_id": job.get("job_id") or ctx.job_id,
-            "fingerprint": job.get("bundle_fingerprint"),
-            "last_modified": _restore_iso_timestamp(job.get("updated_at")) or job.get("updated_at"),
-            "status": job.get("status"),
-            "data": entries,
-        }
-        logger.info("Candidate metadata fetched from tables: username=%s job_id=%s repos=%d",
-                    ctx.username, ctx.job_id, len(entries))
-
-        if payload.get("data"):
-            logger.info("Returning candidate metadata from tables: username=%s job_id=%s repos=%d",
+        if entries:
+            payload = {
+                "username": ctx.username,
+                "job_id": job.get("job_id") or ctx.job_id,
+                "last_modified": _restore_iso_timestamp(job.get("updated_at")) or job.get("updated_at"),
+                "status": job.get("status"),
+                "data": entries,
+            }
+            logger.info("Candidate metadata fetched from tables: username=%s job_id=%s repos=%d",
                         ctx.username, ctx.job_id, len(entries))
+
             return _create_success_response(payload, request_id=ctx.trace.get("request_id"))
 
         # Job exists but no repo data yet
@@ -1191,38 +1092,37 @@ def get_candidate_repo_metadata(req: func.HttpRequest) -> func.HttpResponse:
         return _create_error_response("Repository name required", 400, error_code="VALIDATION_ERROR")
 
     ctx = _prepare_candidate_context(req, username)
-    if not ctx.job_id:
-        return _create_error_response(
-            f"No candidate found for '{username}'. Trigger refresh first.",
-            404,
-            error_code="NOT_FOUND",
-            request_id=ctx.trace.get("request_id"),
-        )
+    get_repo_status = table_manager.get_repo_status(ctx.job_id, repo)
 
-    job = ctx.job or {}
-    detail_bundle = _build_repo_detail_entry(repo, ctx=ctx)
-    repo_entry = detail_bundle.get("repo_entry", {})
+    if ctx.job_id and ctx.username and ctx.status in ("metadata_ready", "caching_started", "completed") \
+        and get_repo_status and get_repo_status.get("status") in ("synced", "summary_ready"):
+        
+        job = ctx.job or {}
+        repo_entry = _get_single_repo_entry(repo, ctx=ctx)
 
-    if not repo_entry:
+        if repo_entry:
+            payload = {
+                "username": ctx.username,
+                "repo": repo,
+                "job_id": job.get("job_id") or ctx.job_id,
+                "last_modified": _restore_iso_timestamp(job.get("updated_at")) or job.get("updated_at"),
+                "status": job.get("status"),
+                "repo_entry": repo_entry,
+                "data": repo_entry,
+            }
+            return _create_success_response(payload, request_id=ctx.trace.get("request_id"))
         return _create_error_response(
-            f"Repository metadata for '{repo}' not ready",
+            f"Repository '{repo}' for candidate '{username}' not ready (job in progress)",
             404,
             error_code="NOT_READY",
             request_id=ctx.trace.get("request_id"),
         )
-
-    payload = {
-        "username": ctx.username,
-        "repo": repo,
-        "job_id": job.get("job_id") or ctx.job_id,
-        "fingerprint": job.get("bundle_fingerprint"),
-        "last_modified": _restore_iso_timestamp(job.get("updated_at")) or job.get("updated_at"),
-        "status": job.get("status"),
-        "repo_entry": repo_entry,
-        "data": repo_entry,
-    }
-    return _create_success_response(payload, request_id=ctx.trace.get("request_id"))
-
+    return _create_error_response(
+        f"No candidate found for '{username}' or job not ready. Trigger refresh first.",
+        404,
+        error_code="NOT_FOUND",
+        request_id=ctx.trace.get("request_id"),
+    )
 
 @bp.route(route="candidate/{username}/profile", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_profile(req: func.HttpRequest) -> func.HttpResponse:
@@ -1250,6 +1150,58 @@ def get_profile(req: func.HttpRequest) -> func.HttpResponse:
     return _create_success_response(payload, cache_control="no-cache", request_id=ctx.trace.get("request_id"))
 
 
+@bp.route(route="candidate/{username}/{repo}/readme-summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
+    """Generate an AI summary for a repository by expanding cached micro-summary.
+    
+    This endpoint uses the cached micro-summary to generate a detailed HTML summary
+    for the single-repo detail view. No raw file blobs are fetched.
+    """
+    username = req.route_params.get("username")
+    repo = req.route_params.get("repo")
+    if not username:
+        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400, error_code="VALIDATION_ERROR")
+    if not repo:
+        return _create_error_response("Repository name required", 400, error_code="VALIDATION_ERROR")
+
+    ctx = _prepare_candidate_context(req, username)
+    if not ctx.job_id or not ctx.username or not ctx.status in ("completed"):
+        return _create_error_response(
+            f"Candidate '{username}' or repository '{repo}' not ready. Job is in progress.",
+            404,
+            error_code="NOT_READY",
+            request_id=ctx.trace.get("request_id"),
+        )
+    
+    # Query for the specific repo
+    manager = SummaryManager(username=username)
+
+    result = manager.expand_repo_micro_summary(
+        repo_name=repo,
+        job_id=ctx.job_id,
+    )
+    if not result:
+        logger.error("Failed to expand micro-summary for %s/%s: %s", username, repo, str(e))
+        return _create_error_response(
+            "Failed to generate detailed summary",
+            status_code=500,
+            error_code="EXPANSION_FAILED",
+            request_id=ctx.trace.get("request_id"),
+        )
+
+    payload = {
+        "username": username,
+        "repo": repo,
+        "job_id": ctx.job_id,
+        "summary_html": result["summary_html"],
+        "cache_metadata": result.get("metadata", {}),
+        "cache_hit": result.get("cache_hit", False),
+    }
+
+    return _create_success_response(payload
+                                    , cache_control="no-cache")
+
+
 @bp.route(route="candidate/{username}/summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     """Generate an AI summary for a candidate profile (HTML output)."""
@@ -1263,205 +1215,71 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     ctx = _prepare_candidate_context(req, username)
-    
-    # Guard: Only return profile summary when job is fully completed
-    if not ctx.job or ctx.job.get("status") != "completed":
+    if not ctx.job_id or not ctx.username or not ctx.status in ("completed"):
         return _create_error_response(
-            f"Profile summary for '{username}' is not ready. Job is in progress.",
+            f"Candidate '{username}' not ready. Job is in progress.",
             404,
             error_code="NOT_READY",
             request_id=ctx.trace.get("request_id"),
         )
-    
-    # Use unified portfolio data fetcher
-    bundle = _get_portfolio_bundle(username, job_id=ctx.job_id)
-    logger.info("Fetched portfolio bundle for summary generation: repos=%d, languages=%d, stats=%s",
-                len(bundle["repo_rows"]), len(bundle["languages_by_repo"]), bundle["statistics"])
-    logger.info("**** [Bundle Debug] *** /n %s", json.dumps(bundle, indent=2, default=str))
-    
-    if not bundle["repo_rows"]:
-        return _create_error_response(
-            f"No repository data available for '{username}'. Trigger refresh first.",
-            404,
-            error_code="NOT_READY",
-            request_id=ctx.trace.get("request_id"),
-        )
-    
+
     profile = _get_or_refresh_user_profile(username)
-
     manager = SummaryManager(username=username)
-    file_budget = get_file_budget("profile")
-
-    selected_repos = _select_repos_for_context(
-        bundle["repo_rows"], 
-        strategy="recent", 
-        max_repos=file_budget["max_repos"]
-    )
 
     micro = manager.get_or_generate_profile_summary(
         job_id=ctx.job_id,
         profile=profile,
-        repo_rows=selected_repos,
-        statistics=bundle["statistics"]
     )
 
     payload = {
         "username": username,
         "job_id": ctx.job_id,
-        "summary_html": micro.get("summary_html") if micro else None,
+        "summary_markdown": micro.get("summary_markdown") if micro else None,
         "metadata": micro.get("metadata") if micro else {},
-        "aggregate": micro.get("aggregate") if micro else {}
     }
 
     return _create_success_response(payload, cache_control="no-cache", request_id=ctx.trace.get("request_id"))
 
 
-@bp.route(route="candidate/{username}/{repo}/readme-summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
-    """Generate an AI summary for a repository by expanding cached micro-summary.
-    
-    This endpoint uses the cached micro-summary to generate a detailed HTML summary
-    for the single-repo detail view. No raw file blobs are fetched.
-    """
-    username = req.route_params.get("username")
-    repo = req.route_params.get("repo")
-    if not username or not repo:
+@bp.route(route="ai", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
+def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
+    """Process AI query against candidate's portfolio using cached micro-summaries."""
+    query = _parse_json(req.params.get("query"))
+    username = req.params.get("username")
+    if not username:
         return _create_error_response(
-            "Both username and repository name are required",
+            USERNAME_REQUIRED_MESSAGE,
             status_code=400,
             error_code="VALIDATION_ERROR",
             request_id=_get_trace_context(req).get("request_id"),
         )
 
-    ctx = _prepare_candidate_context(req, username)
-
-    # Get repo metadata for context
-    detail = _build_repo_detail_entry(repo, ctx=ctx)
-    repo_entry = detail.get("repo_entry", {})
-    fingerprint = repo_entry.get("fingerprint")
-
-    if not fingerprint:
+    if not query or not query.strip():
         return _create_error_response(
-            "Repository fingerprint not available",
-            status_code=400,
-            error_code="MISSING_FINGERPRINT",
-            request_id=_get_trace_context(req).get("request_id"),
-        )
-
-    # Load cached micro-summary
-    manager = SummaryManager(username=username)
-    micro_summary = manager.get_repo_micro_summary(repo, fingerprint)
-
-    if not micro_summary:
-        return _create_error_response(
-            "Repository micro-summary not ready. Please trigger a refresh first.",
-            status_code=202,
-            error_code="SUMMARY_NOT_READY",
-            request_id=_get_trace_context(req).get("request_id"),
-        )
-
-    logger.info("Loaded micro-summary for repo: %s fingerprint: %s", repo, fingerprint)
-
-    # Expand micro-summary into detailed HTML
-    try:
-        result = manager.expand_repo_micro_summary(
-            repo_name=repo,
-            micro_summary=micro_summary,
-            repo_metadata=repo_entry,
-            fingerprint=fingerprint,
-        )
-    except Exception as e:
-        logger.error("Failed to expand micro-summary for %s/%s: %s", username, repo, str(e))
-        return _create_error_response(
-            "Failed to generate detailed summary",
-            status_code=500,
-            error_code="EXPANSION_FAILED",
-            request_id=_get_trace_context(req).get("request_id"),
-        )
-
-    payload = {
-        "username": username,
-        "repo": repo,
-        "job_id": ctx.job_id,
-        "repo_entry": repo_entry,
-        "summary_html": result["summary_html"],
-        "cache_metadata": result.get("metadata", {}),
-        "cache_hit": result.get("cache_hit", False),
-    }
-
-    return _create_success_response(payload, cache_control="no-cache")
-
-
-@bp.route(route="ai", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
-def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
-    """Process AI query against candidate's portfolio using bundle-level context.
-    
-    Supports selection strategies:
-    - recent: Most recently updated repos (default, shows current work)
-    - random: Random sampling for diversity
-    - top_starred: Most popular repos by stars
-    """
-    body = _parse_json(req)
-    query = body.get("query")
-    username = body.get("username")
-    if not query or not username:
-        return _create_error_response(
-            "Both 'query' and 'username' are required in the request body",
+            "'Query' is required in the request body",
             400,
             error_code="VALIDATION_ERROR",
             request_id=_get_trace_context(req).get("request_id"),
         )
-
-    profile = _get_or_refresh_user_profile(username)
+    
     ctx = _prepare_candidate_context(req, username)
-
-    bundle = _get_portfolio_bundle(username, job_id=ctx.job_id)
-
-    if not bundle["repo_rows"]:
+    if not ctx.job_id or not ctx.username or not ctx.status in ("completed"):
         return _create_error_response(
-            f"No candidate data available for '{username}'. Trigger refresh first.",
+            f"Candidate '{username}' not ready. Job is in progress.",
             404,
             error_code="NOT_READY",
             request_id=ctx.trace.get("request_id"),
         )
 
+    profile = _get_or_refresh_user_profile(username)
+    ctx = _prepare_candidate_context(req, username)
+
     manager = SummaryManager(username=username)
-    file_budget = get_file_budget("query")
 
-    selected_repos = _select_repos_for_context(
-        bundle["repo_rows"], 
-        strategy="recent", 
-        max_repos=file_budget["max_repos"]
-    )
-
-    micro_summaries = []
-    for repo in selected_repos:
-        repo_name = repo.get("repo_name")
-        fingerprint = repo.get("fingerprint")
-        if not repo_name or not fingerprint:
-            continue
-        micro = manager.get_repo_micro_summary(repo_name, fingerprint)
-        if not micro:
-            continue
-        micro_summaries.append(
-            {
-                "repo_name": repo_name,
-                "fingerprint": fingerprint,
-                "repo_metadata": repo,
-                "micro_summary": micro,
-            }
-        )
-
-    aggregate = manager.aggregate_profile_from_summaries(
-        micro_summaries=micro_summaries,
-        profile=profile or {},
-        statistics=bundle.get("statistics") or {},
-    )
-    response = manager.query_from_summaries(
+    response = manager.get_or_generate_query_response(
+        job_id=ctx.job_id,
         query=query,
-        profile_aggregate=aggregate,
-        repo_micro_summaries=micro_summaries,
-        max_repos=file_budget["max_repos"],
+        profile=profile or {},
     )
 
     response.update({"username": username, "job_id": ctx.job_id})

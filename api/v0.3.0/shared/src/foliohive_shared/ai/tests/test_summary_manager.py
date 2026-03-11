@@ -460,7 +460,7 @@ class TestProfileAggregation:
     """Phase 3: aggregate profile JSON from micro-summaries."""
 
     @patch('foliohive_shared.ai.summary_manager.cache_manager.save')
-    def test_aggregate_profile_from_summaries_deduplicates_and_scores(self, mock_save):
+    def test_aggregate_micro_summaries_deduplicates_and_scores(self, mock_save):
         manager = SummaryManager("test_user")
         micro_summaries = [
             {
@@ -486,7 +486,7 @@ class TestProfileAggregation:
             },
         ]
 
-        aggregate = manager.aggregate_profile_from_summaries(micro_summaries=micro_summaries)
+        aggregate = manager.aggregate_micro_summaries(micro_summaries=micro_summaries)
 
         assert aggregate["username"] == "test_user"
         assert len(aggregate["repos_included"]) == 2
@@ -495,28 +495,6 @@ class TestProfileAggregation:
         assert any(item["pattern"] == "microservices" for item in aggregate["experience_signals"]["architecture_patterns"])
         mock_save.assert_called_once()
 
-
-class TestProfileHTMLFormatting:
-    """Phase 3: format profile HTML from aggregate JSON."""
-
-    @patch('foliohive_shared.ai.summary_manager.cache_manager.save')
-    def test_format_profile_html_outputs_required_sections(self, mock_save):
-        manager = SummaryManager("test_user")
-        aggregate = {
-            "profile": {"name": "Test User"},
-            "repos_included": ["repo1"],
-            "skills": [{"skill": "python", "frequency": 2, "score": 1.7}],
-            "domains": [{"domain": "python", "count": 2}],
-            "experience_signals": {"architecture_patterns": [{"pattern": "microservices", "count": 1}]},
-        }
-
-        html = manager.format_profile_html(aggregate)
-
-        assert "<h2>Overview</h2>" in html
-        assert "<h3>Skills</h3>" in html
-        assert "<h3>Domains</h3>" in html
-        assert "<h3>Experience Signals</h3>" in html
-        mock_save.assert_called_once()
 
 
 class TestQueryFromSummaries:

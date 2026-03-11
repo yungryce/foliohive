@@ -294,16 +294,6 @@ class TestCallAIAPI:
 class TestSystemPromptBuilders:
     """Test system prompt building methods."""
 
-    def test_readme_summary_system_prompt(self):
-        """Test README summary system prompt generation."""
-        assistant = AIAssistant(username="test_user")
-        
-        prompt = assistant._build_readme_summary_system("test-repo")
-        
-        assert "test-repo" in prompt.lower()
-        assert "html" in prompt.lower()
-        assert "markdown" not in prompt.lower() or "no markdown" in prompt.lower()
-
     def test_profile_summary_system_prompt(self):
         """Test profile summary system prompt generation."""
         assistant = AIAssistant(username="test_user")
@@ -314,15 +304,6 @@ class TestSystemPromptBuilders:
         assert "profile" in prompt.lower()
         assert "html" in prompt.lower()
         assert "recruiter" in prompt.lower()
-
-    def test_readme_prompt_without_repo_name(self):
-        """Test README prompt with no repo name."""
-        assistant = AIAssistant(username="test_user")
-        
-        prompt = assistant._build_readme_summary_system(None)
-        
-        assert "repository" in prompt.lower()
-        assert prompt is not None
 
 
 class TestModelTierSelection:
@@ -501,14 +482,6 @@ class TestProfileAggregationPrompts:
         assert "do not return markdown" in prompt.lower()
         assert "skills" in prompt.lower()
         assert "domains" in prompt.lower()
-
-    def test_profile_formatter_system_prompt_mentions_html_sections(self):
-        assistant = AIAssistant(username="test_user")
-        prompt = assistant._build_profile_formatter_system("test_user")
-        assert "html" in prompt.lower()
-        assert "overview" in prompt.lower()
-        assert "technical skills" in prompt.lower()
-        assert "recent activity" in prompt.lower()
 
     def test_query_from_summaries_prompt_mentions_repo_evidence(self):
         assistant = AIAssistant(username="test_user")

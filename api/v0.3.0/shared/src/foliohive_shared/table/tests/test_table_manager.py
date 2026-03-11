@@ -194,13 +194,12 @@ def test_job_metadata_roundtrip_and_partial_update(table_manager: TableManager) 
     table_manager.update_job_metadata(
         "alice",
         "job-1",
-        {"status": "metadata_ready", "bundle_fingerprint": "fp_abc", "trace_id": "t1"},
+        {"status": "metadata_ready", "trace_id": "t1"},
     )
 
     stored = table_manager.get_job_metadata("alice", "job-1")
     assert stored is not None
     assert stored["status"] == "metadata_ready"
-    assert stored["bundle_fingerprint"] == "fp_abc"
     assert stored["trace_id"] == "t1"
     assert stored["force_refresh"] is False
 
@@ -261,6 +260,7 @@ def test_repo_github_metadata_topics_and_timestamp_restore(table_manager: TableM
         RepoGitHubMetadataRow(
             username="alice",
             repo_name="api",
+            job_id="job_abc123",
             fingerprint="fp_1",
             description="API repo",
             topics=["azure", "functions"],
@@ -350,16 +350,16 @@ def test_repo_languages_query_delete_and_cleanup(table_manager: TableManager) ->
         )
     )
 
-    by_repo = table_manager.query_repo_languages(job_id)
+    by_repo = table_manager.query_all_repo_languages(job_id)
     assert "api" in by_repo
     assert len(by_repo["api"]) == 2
 
-    single_repo = table_manager.get_repo_languages(job_id, "api")
+    single_repo = table_manager.get_repo_languages("api", job_id)
     assert len(single_repo) == 2
     assert sorted(lang["language"] for lang in single_repo) == ["Python", "TypeScript"]
 
     table_manager.delete_repo_languages(job_id, "api")
-    assert table_manager.query_repo_languages(job_id).get("api") is None
+    assert table_manager.query_all_repo_languages(job_id).get("api") is None
 
     # cleanup: insert 2 old, 1 new
     table_manager.upsert_repo_languages(
@@ -407,11 +407,11 @@ def test_repo_languages_timestamp_restore(table_manager: TableManager) -> None:
         )
     )
 
-    raw = table_manager._get_table_client(table_manager.table_names.repo_languages).entities[("job-3|api", "Python")]
+    raw = table_manager._get_table_client(table_manager.table_names.repo_languages).entities[("api", "job-3|Python")]
     assert ":" not in raw["created_at"]
     assert "+" not in raw["created_at"]
 
-    fetched = table_manager.query_repo_languages("job-3")["api"][0]
+    fetched = table_manager.query_all_repo_languages("job-3")["api"][0]
     assert fetched["created_at"] == created_at
 
 

@@ -324,8 +324,8 @@ def process_cache_job(msg: func.QueueMessage) -> None:
         
         summary_manager = SummaryManager(username=username)
 
-        metadata_row = table_manager.get_repo_github_metadata(username, repo_name) or {}
-        repo_languages_raw = table_manager.get_repo_languages(job_id, repo_name)
+        metadata_row = table_manager.get_repo_github_metadata(job_id, repo_name) or {}
+        repo_languages_raw = table_manager.get_repo_languages(repo_name)
 
         repo_languages = [
             lang for lang in repo_languages_raw
@@ -338,9 +338,10 @@ def process_cache_job(msg: func.QueueMessage) -> None:
         ][:5]  # Top 5 languages
 
         cache_key = summary_manager.build_repo_micro_summary_cache_key(repo_name, fingerprint)
-        table_manager.register_pending_cache_summary(username, repo_name, fingerprint, cache_key)
+        table_manager.register_pending_cache_summary(username, repo_name, fingerprint, job_id, cache_key)
 
         summary_result = summary_manager.generate_repo_micro_summary(
+            username=username,
             repo_name=repo_name,
             fingerprint=fingerprint,
             job_id=job_id,

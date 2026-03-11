@@ -180,8 +180,9 @@ def _persist_repo_metadata(
 
     # 2. Persist GitHub metadata to normalized table (includes fingerprint and default_branch)
     github_row = RepoGitHubMetadataRow(
-        username=username,
+        job_id=job_id,
         repo_name=repo_name,
+        username=username,
         fingerprint=fingerprint,
         description=repo_metadata.get("description"),
         topics=repo_metadata.get("topics", []),

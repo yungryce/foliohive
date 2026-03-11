@@ -95,8 +95,8 @@
             {{ summaryError }}
           </div>
 
-          <div *ngIf="summaryHtml" class="prose max-w-none *:text-(--fg)" [innerHTML]="summaryHtml"></div>
-          <div *ngIf="!summaryHtml && !loadingSummary && !jobStatus" class="text-sm text-(--muted)">
+          <markdown *ngIf="summaryMarkdown" [data]="summaryMarkdown" class="prose max-w-none *:text-(--fg)"></markdown>
+          <div *ngIf="!summaryMarkdown && !loadingSummary && !jobStatus" class="text-sm text-(--muted)">
             Summary not available yet.
           </div>
         </section>
