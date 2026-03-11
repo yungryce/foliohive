@@ -1181,7 +1181,7 @@ def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
         job_id=ctx.job_id,
     )
     if not result:
-        logger.error("Failed to expand micro-summary for %s/%s: %s", username, repo, str(e))
+        logger.error("Failed to expand micro-summary for %s/%s: %s", username, repo)
         return _create_error_response(
             "Failed to generate detailed summary",
             status_code=500,

@@ -985,7 +985,7 @@ class TableManager:
             results = [self._deserialize_cache_summary(e) for e in entities]
             logger.info(
                 "[TABLE_LIST_VALID_CACHE_SUMMARIES] user=%s found=%d",
-                username, len(results)
+                repo_name, len(results)
             )
             return results
         except Exception as exc:
