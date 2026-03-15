@@ -162,7 +162,7 @@ def process_sync_job(msg: func.QueueMessage) -> None:
    - `RepoLanguages` table: Language breakdown
 5. Enqueue cache jobs: One message per repo to `cache-jobs` queue
 6. Update job state: `syncing` → `metadata_ready`
-7. Track progress: `_update_job_progress()` with metrics
+7. Track progress: `_update_sync_progress()` with metrics
 
 **Key Logic**:
 - `_fetch_repo_metadata()`: Calls GitHubRepoManager (REST + GraphQL)

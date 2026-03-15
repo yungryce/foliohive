@@ -12,6 +12,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any, Dict, List, Optional, Union
 
 import azure.functions as func
@@ -334,21 +335,14 @@ def _get_single_repo_entry(
     """
 
     # Query for the specific repo
-    repo_data = table_manager.get_repo_github_metadata(ctx.job_id, repo_name)
-    if repo_data.get("job_id") != ctx.job_id:
-        return {}
-
-    github_metadata = repo_data
+    github_metadata = table_manager.get_repo_github_metadata(ctx.username, repo_name)
     languages = table_manager.get_repo_languages(repo_name)
+    logger.info("[Repo Languages] repo=%s languages=%s", repo_name, languages)
+    logger.info("[GitHub Metadata] repo=%s metadata=%s", repo_name, github_metadata)
 
     entry = _build_repo_statistics(languages=languages, github_metadata=github_metadata)
     if not entry.get("name"):
         entry["name"] = repo_name
-
-    logger.info(
-        "Single repo entry built: username=%s job_id=%s repo=%s",
-        ctx.username, ctx.job_id, repo_name
-    )
 
     return entry
 
@@ -365,12 +359,12 @@ def _get_repos_entries(
         List of repo entry dicts with metadata and languages
     """
 
-    all_repos = table_manager.query_repo_github_metadata(ctx.job_id) 
+    all_repos = table_manager.query_repo_github_metadata(ctx.username) 
     if not all_repos:
         return []
-
-    # Fetch all languages for this job (single query)
+    
     languages_by_repo = table_manager.query_all_repo_languages(ctx.job_id) if ctx.job_id else {} 
+    logger.info("[Repo Languages] job_id=%s repos_with_languages=%s", ctx.job_id, languages_by_repo)
 
     entries: List[Dict[str, Any]] = []
     for github_metadata in all_repos:
@@ -380,11 +374,6 @@ def _get_repos_entries(
 
         languages = languages_by_repo.get(repo_name)
         entries.append(_build_repo_statistics(languages=languages, github_metadata=github_metadata))
-
-    logger.info(
-        "Repo entries built: username=%s job_id=%s repos=%d",
-        ctx.username, ctx.job_id, len(entries)
-    )
 
     return entries
 
@@ -472,7 +461,7 @@ def _get_portfolio_bundle(
             - statistics: Aggregated portfolio statistics
     """
 
-    all_repos = table_manager.query_repo_github_metadata(job_id)
+    all_repos = table_manager.query_repo_github_metadata(username)
     if not all_repos:
         return []
 
@@ -598,13 +587,13 @@ def _update_valid_repos_job_id(
             continue
         
         # Fetch existing metadata and update job_id
-        existing = table_manager.get_repo_github_metadata(job_id, repo_name)
+        existing = table_manager.get_repo_github_metadata(username, repo_name)
         if existing:
             # Reconstruct row with updated job_id while preserving all other fields
             updated_row = RepoGitHubMetadataRow(
-                job_id=job_id,  # Update to current job_id
-                repo_name=repo_name,
                 username=username,
+                repo_name=repo_name,
+                job_id=job_id,  # Update to current job_id
                 fingerprint=existing.get("fingerprint"),
                 description=existing.get("description"),
                 topics=existing.get("topics"),
@@ -652,7 +641,7 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
     }
 
     # Query cached fingerprints from GitHub metadata table
-    github_metadata_rows = table_manager.query_repo_github_metadata_by_username(username)
+    github_metadata_rows = table_manager.query_repo_github_metadata(username)
     cached_fingerprints = {
         row.get("repo_name"): row.get("fingerprint")
         for row in github_metadata_rows
@@ -739,11 +728,6 @@ def get_session_candidates(req: func.HttpRequest) -> func.HttpResponse:
         if latest_job_id:
             job = table_manager.get_job_metadata(username, latest_job_id)
             if not job:
-                # Job doesn't exist - candidate is stale, skip it
-                logger.info(
-                    "Filtering out stale session candidate: session=%s username=%s job_id=%s (job no longer exists)",
-                    session_id, username, latest_job_id
-                )
                 continue
         
         # Candidate is valid (either has no job_id or job exists)
@@ -802,86 +786,97 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
         4. Enqueue sync jobs for stale/all repos
         5. Return job_id and status polling URL
     """
+    started_at = perf_counter()
     username = req.route_params.get("username")
-    if not username:
-        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
-
-    trace = _get_trace_context(req)
-    body = _parse_json(req)
-    force_refresh = bool(body.get("force_refresh", False))
-
+    logger.info("[LATENCY_START] fn=trigger_candidate_refresh username=%s", username)
     try:
-        freshness = _identify_repo_freshness(username, trace=trace)
-    except (ValueError, TypeError, KeyError) as exc:
-        logger.error("Failed to analyze repo freshness: %s", exc, exc_info=True)
-        return _create_error_response("Failed to analyze repositories", 500)
+        if not username:
+            return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
 
-    stale_repos = freshness["stale_repos"]
-    valid_repos = freshness["cached_bundle"]  # Valid (non-stale) repos from cache
+        trace = _get_trace_context(req)
+        body = _parse_json(req)
+        force_refresh = bool(body.get("force_refresh", False))
 
-    # If nothing is stale and not forcing refresh, return early
-    if not stale_repos and not force_refresh:
-        return _create_success_response({"status": "fresh", "repos_count": len(valid_repos)})
+        try:
+            freshness = _identify_repo_freshness(username, trace=trace)
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.error("Failed to analyze repo freshness: %s", exc, exc_info=True)
+            return _create_error_response("Failed to analyze repositories", 500)
 
-    # Determine repos to queue: stale only, or stale + valid if force_refresh
-    repos_to_queue = stale_repos + valid_repos if force_refresh else stale_repos
-    if not repos_to_queue:
-        return _create_success_response({"status": "fresh", "repos_count": 0})
+        stale_repos = freshness["stale_repos"]
+        valid_repos = freshness["cached_bundle"]  # Valid (non-stale) repos from cache
 
-    job_id = str(uuid.uuid4())
+        # If nothing is stale and not forcing refresh, return early
+        if not stale_repos and not force_refresh:
+            return _create_success_response({"status": "fresh", "repos_count": len(valid_repos)})
 
-    _persist_job_metadata(
-        job_id,
-        username,
-        force_refresh=force_refresh,
-        trace_id=trace.get("trace_id"),
-        request_id=trace.get("request_id"),
-    )
+        # Determine repos to queue: stale only, or stale + valid if force_refresh
+        repos_to_queue = stale_repos + valid_repos if force_refresh else stale_repos
+        if not repos_to_queue:
+            return _create_success_response({"status": "fresh", "repos_count": 0})
 
-    # Update valid repos' job_id so they're associated with the current job
-    _update_valid_repos_job_id(username, valid_repos, job_id)
+        job_id = str(uuid.uuid4())
 
-    # Create pending status rows for repos that need to be queued/synced
-    for repo_metadata in repos_to_queue:
-        repo_name = repo_metadata.get("name")
-        if repo_name:
-            table_manager.upsert_repo_status(
-                RepoSyncStatusRow(
-                    job_id=job_id,
-                    repo_name=repo_name,
-                    username=username,
-                    status="pending",
-                )
-            )
-
-    enqueued = 0
-    for repo_metadata in repos_to_queue:
-        repo_name = repo_metadata.get("name")
-        if not repo_name:
-            continue
-
-        repo_fingerprint = repo_metadata.get("fingerprint")
-        if queue_manager.enqueue_sync_job(
+        _persist_job_metadata(
             job_id,
             username,
-            repo_name,
-            repo_fingerprint,
+            force_refresh=force_refresh,
             trace_id=trace.get("trace_id"),
             request_id=trace.get("request_id"),
-            session_id=trace.get("session_id"),
-        ):
-            enqueued += 1
+        )
 
-    if enqueued == 0:
-        return _create_error_response("Failed to enqueue sync jobs", 502)
+        # Update valid repos' job_id so they're associated with the current job
+        _update_valid_repos_job_id(username, valid_repos, job_id)
 
-    response = {
-        "status": "processing",
-        "job_id": job_id,
-        "repos_queued": enqueued,
-        "status_url": f"/api/candidate/{username}/status?job_id={job_id}",
-    }
-    return _create_success_response(response, status_code=202, cache_control="no-cache")
+        # Create pending status rows for repos that need to be queued/synced
+        for repo_metadata in repos_to_queue:
+            repo_name = repo_metadata.get("name")
+            if repo_name:
+                table_manager.upsert_repo_status(
+                    RepoSyncStatusRow(
+                        job_id=job_id,
+                        repo_name=repo_name,
+                        username=username,
+                        status="pending",
+                    )
+                )
+
+        enqueued = 0
+        for repo_metadata in repos_to_queue:
+            repo_name = repo_metadata.get("name")
+            if not repo_name:
+                continue
+
+            repo_fingerprint = repo_metadata.get("fingerprint")
+            if queue_manager.enqueue_sync_job(
+                job_id,
+                username,
+                repo_name,
+                repo_fingerprint,
+                trace_id=trace.get("trace_id"),
+                request_id=trace.get("request_id"),
+                session_id=trace.get("session_id"),
+            ):
+                enqueued += 1
+
+        if enqueued == 0:
+            table_manager.update_job_metadata_conditional(username, job_id, {"status": "failed"})
+            return _create_error_response("Failed to enqueue sync jobs", 502)
+
+        response = {
+            "status": "processing",
+            "job_id": job_id,
+            "repos_queued": enqueued,
+            "status_url": f"/api/candidate/{username}/status?job_id={job_id}",
+        }
+        return _create_success_response(response, status_code=202, cache_control="no-cache")
+    finally:
+        elapsed_ms = (perf_counter() - started_at) * 1000
+        logger.info(
+            "[LATENCY_FINISH] fn=trigger_candidate_refresh username=%s elapsed_ms=%.2f",
+            username,
+            elapsed_ms,
+        )
 
 
 @bp.route(route="candidate/{username}/status", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
@@ -1038,7 +1033,6 @@ def get_candidate_repos_metadata(req: func.HttpRequest) -> func.HttpResponse:
         return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400, error_code="VALIDATION_ERROR")
 
     ctx = _prepare_candidate_context(req, username)
-    logger.info("Fetching candidate metadata: username=%s job_id=%s", username, ctx.job_id)
 
     if ctx.job_id and ctx.username and ctx.status in ("metadata_ready", "caching_started", "completed"):
         job = ctx.job or {}
@@ -1054,8 +1048,6 @@ def get_candidate_repos_metadata(req: func.HttpRequest) -> func.HttpResponse:
                 "status": job.get("status"),
                 "data": entries,
             }
-            logger.info("Candidate metadata fetched from tables: username=%s job_id=%s repos=%d",
-                        ctx.username, ctx.job_id, len(entries))
 
             return _create_success_response(payload, request_id=ctx.trace.get("request_id"))
 
@@ -1090,13 +1082,10 @@ def get_candidate_repo_metadata(req: func.HttpRequest) -> func.HttpResponse:
         return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400, error_code="VALIDATION_ERROR")
     if not repo:
         return _create_error_response("Repository name required", 400, error_code="VALIDATION_ERROR")
-
+    
     ctx = _prepare_candidate_context(req, username)
-    get_repo_status = table_manager.get_repo_status(ctx.job_id, repo)
 
-    if ctx.job_id and ctx.username and ctx.status in ("metadata_ready", "caching_started", "completed") \
-        and get_repo_status and get_repo_status.get("status") in ("synced", "summary_ready"):
-        
+    if ctx.job_id and ctx.username and ctx.status in ("metadata_ready", "caching_started", "completed"):
         job = ctx.job or {}
         repo_entry = _get_single_repo_entry(repo, ctx=ctx)
 
@@ -1157,130 +1146,161 @@ def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
     This endpoint uses the cached micro-summary to generate a detailed HTML summary
     for the single-repo detail view. No raw file blobs are fetched.
     """
+    started_at = perf_counter()
     username = req.route_params.get("username")
     repo = req.route_params.get("repo")
-    if not username:
-        return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400, error_code="VALIDATION_ERROR")
-    if not repo:
-        return _create_error_response("Repository name required", 400, error_code="VALIDATION_ERROR")
+    logger.info("[LATENCY_START] fn=get_repo_summary username=%s repo=%s", username, repo)
+    try:
+        if not username:
+            return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400, error_code="VALIDATION_ERROR")
+        if not repo:
+            return _create_error_response("Repository name required", 400, error_code="VALIDATION_ERROR")
 
-    ctx = _prepare_candidate_context(req, username)
-    if not ctx.job_id or not ctx.username or not ctx.status in ("completed"):
-        return _create_error_response(
-            f"Candidate '{username}' or repository '{repo}' not ready. Job is in progress.",
-            404,
-            error_code="NOT_READY",
-            request_id=ctx.trace.get("request_id"),
+        ctx = _prepare_candidate_context(req, username)
+        if not ctx.job_id or not ctx.username or not ctx.status in ("completed"):
+            return _create_error_response(
+                f"Candidate '{username}' or repository '{repo}' not ready. Job is in progress.",
+                404,
+                error_code="NOT_READY",
+                request_id=ctx.trace.get("request_id"),
+            )
+        
+        # Query for the specific repo
+        manager = SummaryManager(username=username)
+
+        result = manager.expand_repo_micro_summary(
+            repo_name=repo,
+            job_id=ctx.job_id,
         )
-    
-    # Query for the specific repo
-    manager = SummaryManager(username=username)
+        if not result:
+            logger.error("Failed to expand micro-summary for %s/%s", username, repo)
+            return _create_error_response(
+                "Failed to generate detailed summary",
+                status_code=500,
+                error_code="EXPANSION_FAILED",
+                request_id=ctx.trace.get("request_id"),
+            )
 
-    result = manager.expand_repo_micro_summary(
-        repo_name=repo,
-        job_id=ctx.job_id,
-    )
-    if not result:
-        logger.error("Failed to expand micro-summary for %s/%s: %s", username, repo)
-        return _create_error_response(
-            "Failed to generate detailed summary",
-            status_code=500,
-            error_code="EXPANSION_FAILED",
-            request_id=ctx.trace.get("request_id"),
+        payload = {
+            "username": username,
+            "repo": repo,
+            "job_id": ctx.job_id,
+            "readme_summary_markdown": result["summary_markdown"],
+            "cache_metadata": result.get("metadata", {}),
+            "cache_hit": result.get("cache_hit", False),
+        }
+
+        return _create_success_response(payload
+                                        , cache_control="no-cache")
+    finally:
+        elapsed_ms = (perf_counter() - started_at) * 1000
+        logger.info(
+            "[LATENCY_FINISH] fn=get_repo_summary username=%s repo=%s elapsed_ms=%.2f",
+            username,
+            repo,
+            elapsed_ms,
         )
-
-    payload = {
-        "username": username,
-        "repo": repo,
-        "job_id": ctx.job_id,
-        "summary_html": result["summary_html"],
-        "cache_metadata": result.get("metadata", {}),
-        "cache_hit": result.get("cache_hit", False),
-    }
-
-    return _create_success_response(payload
-                                    , cache_control="no-cache")
 
 
 @bp.route(route="candidate/{username}/summary", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
     """Generate an AI summary for a candidate profile (HTML output)."""
+    started_at = perf_counter()
     username = req.route_params.get("username")
-    if not username:
-        return _create_error_response(
-            USERNAME_REQUIRED_MESSAGE,
-            status_code=400,
-            error_code="VALIDATION_ERROR",
-            request_id=_get_trace_context(req).get("request_id")
+    logger.info("[LATENCY_START] fn=get_profile_summary username=%s", username)
+    try:
+        if not username:
+            return _create_error_response(
+                USERNAME_REQUIRED_MESSAGE,
+                status_code=400,
+                error_code="VALIDATION_ERROR",
+                request_id=_get_trace_context(req).get("request_id")
+            )
+
+        ctx = _prepare_candidate_context(req, username)
+        if not ctx.job_id or not ctx.username or not ctx.status in ("completed"):
+            return _create_error_response(
+                f"Candidate '{username}' not ready. Job is in progress.",
+                404,
+                error_code="NOT_READY",
+                request_id=ctx.trace.get("request_id"),
+            )
+
+        profile = _get_or_refresh_user_profile(username)
+        manager = SummaryManager(username=username)
+
+        response = manager.get_or_generate_profile_summary(profile=profile or {}, job_id=ctx.job_id)
+
+        payload = {
+            "username": username,
+            "job_id": ctx.job_id,
+            "summary_markdown": response.get("summary_markdown") if response else None,
+            "metadata": response.get("metadata") if response else {},
+        }
+
+        return _create_success_response(payload, cache_control="no-cache", request_id=ctx.trace.get("request_id"))
+    finally:
+        elapsed_ms = (perf_counter() - started_at) * 1000
+        logger.info(
+            "[LATENCY_FINISH] fn=get_profile_summary username=%s elapsed_ms=%.2f",
+            username,
+            elapsed_ms,
         )
-
-    ctx = _prepare_candidate_context(req, username)
-    if not ctx.job_id or not ctx.username or not ctx.status in ("completed"):
-        return _create_error_response(
-            f"Candidate '{username}' not ready. Job is in progress.",
-            404,
-            error_code="NOT_READY",
-            request_id=ctx.trace.get("request_id"),
-        )
-
-    profile = _get_or_refresh_user_profile(username)
-    manager = SummaryManager(username=username)
-
-    micro = manager.get_or_generate_profile_summary(
-        job_id=ctx.job_id,
-        profile=profile,
-    )
-
-    payload = {
-        "username": username,
-        "job_id": ctx.job_id,
-        "summary_markdown": micro.get("summary_markdown") if micro else None,
-        "metadata": micro.get("metadata") if micro else {},
-    }
-
-    return _create_success_response(payload, cache_control="no-cache", request_id=ctx.trace.get("request_id"))
 
 
 @bp.route(route="ai", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
     """Process AI query against candidate's portfolio using cached micro-summaries."""
-    query = _parse_json(req.params.get("query"))
+    started_at = perf_counter()
     username = req.params.get("username")
-    if not username:
-        return _create_error_response(
-            USERNAME_REQUIRED_MESSAGE,
-            status_code=400,
-            error_code="VALIDATION_ERROR",
-            request_id=_get_trace_context(req).get("request_id"),
+    logger.info("[LATENCY_START] fn=portfolio_query username=%s", username)
+    try:
+        query = _parse_json(req.params.get("query"))
+        if not username:
+            return _create_error_response(
+                USERNAME_REQUIRED_MESSAGE,
+                status_code=400,
+                error_code="VALIDATION_ERROR",
+                request_id=_get_trace_context(req).get("request_id"),
+            )
+
+        if not query or not query.strip():
+            return _create_error_response(
+                "'Query' is required in the request body",
+                400,
+                error_code="VALIDATION_ERROR",
+                request_id=_get_trace_context(req).get("request_id"),
+            )
+        
+        ctx = _prepare_candidate_context(req, username)
+        if not ctx.job_id or not ctx.username or not ctx.status in ("completed"):
+            return _create_error_response(
+                f"Candidate '{username}' not ready. Job is in progress.",
+                404,
+                error_code="NOT_READY",
+                request_id=ctx.trace.get("request_id"),
+            )
+
+        profile = _get_or_refresh_user_profile(username)
+        manager = SummaryManager(username=username)
+
+        response = manager.get_or_generate_query_response(
+            job_id=ctx.job_id,
+            query=query,
+            profile=profile or {},
         )
 
-    if not query or not query.strip():
-        return _create_error_response(
-            "'Query' is required in the request body",
-            400,
-            error_code="VALIDATION_ERROR",
-            request_id=_get_trace_context(req).get("request_id"),
+        payload = {
+            "username": username,
+            "job_id": ctx.job_id,
+            "query_summary": response.get("query_summary") if response else None,
+            "metadata": response.get("metadata") if response else {},
+        }
+        return _create_success_response(payload, cache_control="no-cache", request_id=ctx.trace.get("request_id"))
+    finally:
+        elapsed_ms = (perf_counter() - started_at) * 1000
+        logger.info(
+            "[LATENCY_FINISH] fn=portfolio_query username=%s elapsed_ms=%.2f",
+            username,
+            elapsed_ms,
         )
-    
-    ctx = _prepare_candidate_context(req, username)
-    if not ctx.job_id or not ctx.username or not ctx.status in ("completed"):
-        return _create_error_response(
-            f"Candidate '{username}' not ready. Job is in progress.",
-            404,
-            error_code="NOT_READY",
-            request_id=ctx.trace.get("request_id"),
-        )
-
-    profile = _get_or_refresh_user_profile(username)
-    ctx = _prepare_candidate_context(req, username)
-
-    manager = SummaryManager(username=username)
-
-    response = manager.get_or_generate_query_response(
-        job_id=ctx.job_id,
-        query=query,
-        profile=profile or {},
-    )
-
-    response.update({"username": username, "job_id": ctx.job_id})
-    return _create_success_response(response)

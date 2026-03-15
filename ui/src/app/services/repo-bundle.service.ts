@@ -73,7 +73,7 @@ export interface ReadmeSummaryResponse {
   repo: string;
   job_id?: string;
   repo_entry?: any;
-  readme_summary_html?: string;
+  readme_summary_markdown?: string;
   cache_metadata?: any;
 }
 
@@ -203,13 +203,16 @@ export class RepoBundleService {
    * Throws error for caller to handle (e.g., polling logic).
    */
   getReadmeSummary(username: string, repo: string): Observable<ReadmeSummaryResponse> {
+    console.log(`[getReadmeSummary] Fetching README summary for ${username}/${repo}`);
     const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/${encodeURIComponent(repo)}/readme-summary`;
     return this.http.get<any>(url).pipe(
       map(res => {
         if (res?.status === 'success' && res?.data) return res.data as ReadmeSummaryResponse;
+        console.log(`[getReadmeSummary] Unexpected response format for ${username}/${repo}:`, res);
         return res as ReadmeSummaryResponse;
       }),
       catchError(err => {
+        console.error(`[getReadmeSummary] Error fetching README summary for ${username}/${repo}:`, err);
         // Re-throw error for caller to handle (e.g., polling logic)
         return throwError(() => err);
       })

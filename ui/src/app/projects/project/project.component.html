@@ -36,7 +36,7 @@
           <app-job-status-badge [status]="jobStatus" [loading]="summaryLoading" />
         </div>
         <div *ngIf="summaryError" class="text-sm text-red-500">{{ summaryError }}</div>
-        <div *ngIf="!summaryLoading && !summaryError" [innerHTML]="contentHtml" class="readme-summary"></div>
+        <markdown *ngIf="!summaryLoading && !summaryError" [data]="contentMarkdown" class="readme-summary markdown-content"></markdown>
       </div>
     </section>
   </ng-container>

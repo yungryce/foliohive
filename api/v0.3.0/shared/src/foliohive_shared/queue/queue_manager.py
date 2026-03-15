@@ -61,7 +61,6 @@ class QueueManager:
         if account_url:
             try:
                 credential = DefaultAzureCredential()
-                logger.info("Initializing QueueServiceClient via managed identity")
                 return QueueServiceClient(account_url=account_url, credential=credential)
             except (ClientAuthenticationError, HttpResponseError) as exc:
                 logger.warning("Managed identity queue auth failed: %s", exc)
@@ -70,7 +69,6 @@ class QueueManager:
 
         if connection_string:
             try:
-                logger.info("Initializing QueueServiceClient via connection string")
                 return QueueServiceClient.from_connection_string(connection_string)
             except Exception as exc:  # pragma: no cover - safety net
                 logger.error("QueueServiceClient connection string error: %s", exc)
@@ -87,7 +85,6 @@ class QueueManager:
                 client = self.service_client.get_queue_client(normalized)
                 client.create_queue()
                 self._queue_clients[queue_alias] = client
-                logger.info("Queue ensured: %s", normalized)
             except Exception as exc:
                 if "QueueAlreadyExists" in str(exc):
                     self._queue_clients[queue_alias] = self.service_client.get_queue_client(normalized)
@@ -114,46 +111,19 @@ class QueueManager:
     def send_message(self, queue_alias: str, payload: Dict[str, Any]) -> Optional[str]:
         client = self._get_queue_client(queue_alias)
         if not client:
-            logger.warning("Queue client unavailable for %s", queue_alias)
+            logger.error("Queue client unavailable for %s", queue_alias)
             return None
 
-        # client send message payload
         json_str = json.dumps(payload)
-        json_size = len(json_str.encode('utf-8'))
         
-        # Log message size (Azure Queue 64KB limit for message)
         repo_name = payload.get("repo_name")
         if not repo_name:
-            repo_names = payload.get("repo_names")
-            if isinstance(repo_names, list) and repo_names:
-                repo_name = repo_names[0]
-        repo_name = repo_name or "n/a"
-        job_id = payload.get("job_id") or "n/a"
-        logger.info(
-            "Enqueued message to %s: json_size=%d bytes, repo_name=%s, job_id=%s",
-            queue_alias,
-            json_size,
-            repo_name,
-            job_id
-        )
-        
+            logger.error("Attempting to send message to %s without repo_name in payload", queue_alias)
+            return None
+
         send_result = client.send_message(json_str)
         message_id = _extract_send_message_id(send_result)
 
-        trace_id = payload.get("trace_id")
-        session_id = payload.get("session_id")
-        logger.info(
-            "[QUEUE_ENQUEUE] queue=%s trace_id=%s message_id=%s job_id=%s repo=%s size_bytes=%d session_id=%s",
-            queue_alias,
-            trace_id or "<none>",
-            message_id or "<unknown>",
-            job_id,
-            repo_name,
-            json_size,
-            session_id or "<none>",
-        )
-
-        logger.info("[SEND_DEBUG] repo=%s job=%s message_id=%s - Message sent successfully", repo_name, job_id, message_id)
         return message_id
 
     def enqueue_sync_job(
@@ -179,7 +149,7 @@ class QueueManager:
             bool: True if message was enqueued successfully
         """
         if not repo_name:
-            logger.warning("Cannot enqueue sync job without repo_name")
+            logger.error("Cannot enqueue sync job without repo_name")
             return False
         
         # Construct minimal message with only essential identifiers
@@ -221,7 +191,7 @@ class QueueManager:
             bool: True if message was enqueued successfully
         """
         if not repo_name:
-            logger.warning("Cannot enqueue cache job without repo_name")
+            logger.error("Cannot enqueue cache job without repo_name")
             return False
         
         message = {

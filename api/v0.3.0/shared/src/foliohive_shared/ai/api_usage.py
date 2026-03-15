@@ -16,7 +16,6 @@ def _utcnow_iso() -> str:
 @dataclass
 class AIUsageTracker:
     owner: str
-    request_id: str
     purpose: str
     model_name: str
     model_tier: str
@@ -64,7 +63,19 @@ class AIUsageTracker:
         *,
         message: str = "",
         finish_reason: Optional[str] = None,
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
+        total_tokens: Optional[int] = None,
+        was_truncated: bool = False,
     ) -> None:
+        if prompt_tokens is not None:
+            self.prompt_tokens = int(prompt_tokens or 0)
+        if completion_tokens is not None:
+            self.completion_tokens = int(completion_tokens or 0)
+        if total_tokens is not None:
+            self.total_tokens = int(total_tokens or 0)
+        elif self.prompt_tokens or self.completion_tokens:
+            self.total_tokens = int(self.prompt_tokens + self.completion_tokens)
         self.errors["count"] = int(self.errors.get("count", 0)) + 1
         details = self.errors.setdefault("details", [])
         details.append(
@@ -77,6 +88,7 @@ class AIUsageTracker:
         )
         if finish_reason and not self.finish_reason:
             self.finish_reason = finish_reason
+        self.was_truncated = bool(self.was_truncated or was_truncated)
         self.status = "failed"
         self.updated_at = _utcnow_iso()
         self.persist_request_to_table()
@@ -95,12 +107,18 @@ class AIUsageTracker:
         try:
             from foliohive_shared.table.table_manager import AIRequestUsageRow
 
-            safe_ts = self.started_at.replace(":", "-").replace("+", "_")
             row = AIRequestUsageRow(
                 username=self.owner,
-                operation_key=f"{self.purpose or 'purpose'}|{safe_ts}|{self.request_id}",
+                operation_key="|".join(
+                    part
+                    for part in (
+                        self.purpose or "purpose",
+                        self.started_at,
+                        self.repo_name or self.job_id,
+                    )
+                    if part
+                ),
                 purpose=self.purpose or "unknown",
-                request_id=self.request_id,
                 provider=self.provider,
                 model_name=self.model_name,
                 model_tier=self.model_tier,

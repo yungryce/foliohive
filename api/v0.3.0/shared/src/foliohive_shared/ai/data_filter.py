@@ -15,11 +15,6 @@ except ModuleNotFoundError:  # pragma: no cover
     tomllib = None
 
 
-logger = logging.getLogger("foliohive.data_filter")
-logger.setLevel(logging.INFO)
-logger.propagate = True
-
-
 STANDARD_CONFIG_FILE_CANDIDATES: Sequence[str] = (
     # Docker / Compose
     "Dockerfile",
@@ -130,8 +125,6 @@ def get_standard_config_file_candidates() -> List[str]:
         seen.add(path)
         result.append(path)
     
-    logger.info("Generated count=%d standard config files %s", len(result), result)
-    
     return result
 
 
@@ -141,6 +134,65 @@ def _error_payload(raw_content: str, message: str) -> dict:
         "error": message,
         "raw_sample": sample,
     }
+
+
+def _strip_json_comments_and_trailing_commas(raw_content: str) -> str:
+    text = (raw_content or "").replace("\ufeff", "", 1)
+
+    result_chars: list[str] = []
+    in_string = False
+    escape_next = False
+    index = 0
+    length = len(text)
+
+    while index < length:
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < length else ""
+
+        if in_string:
+            result_chars.append(char)
+            if escape_next:
+                escape_next = False
+            elif char == "\\":
+                escape_next = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+
+        if char == '"':
+            in_string = True
+            result_chars.append(char)
+            index += 1
+            continue
+
+        if char == "/" and next_char == "/":
+            index += 2
+            while index < length and text[index] not in ("\n", "\r"):
+                index += 1
+            continue
+
+        if char == "/" and next_char == "*":
+            index += 2
+            while index + 1 < length and not (text[index] == "*" and text[index + 1] == "/"):
+                index += 1
+            index += 2 if index + 1 < length else 0
+            continue
+
+        result_chars.append(char)
+        index += 1
+
+    without_comments = "".join(result_chars)
+    return re.sub(r",\s*([}\]])", r"\1", without_comments)
+
+
+def _load_json_robust(raw_content: str):
+    raw_text = (raw_content or "").replace("\ufeff", "", 1)
+    try:
+        return json.loads(raw_text)
+    except Exception:
+        sanitized = _strip_json_comments_and_trailing_commas(raw_text)
+        return json.loads(sanitized)
 
 
 def _extract_requirements_txt(raw_content: str) -> dict:
@@ -204,7 +256,7 @@ def _extract_pyproject_toml(raw_content: str) -> dict:
 
 def _extract_package_json(raw_content: str) -> dict:
     try:
-        parsed = json.loads(raw_content or "{}")
+        parsed = _load_json_robust(raw_content or "{}")
     except Exception:
         return _error_payload(raw_content, "invalid_json")
 
@@ -348,7 +400,7 @@ def _extract_bicep(raw_content: str) -> dict:
 def _extract_package_lock_json(raw_content: str) -> dict:
     """Extract top-level dependencies from npm package-lock.json."""
     try:
-        parsed = json.loads(raw_content or "{}")
+        parsed = _load_json_robust(raw_content or "{}")
     except Exception:
         return _error_payload(raw_content, "invalid_json")
 
@@ -414,7 +466,7 @@ def _extract_pnpm_lock_yaml(raw_content: str) -> dict:
 def _extract_tsconfig_json(raw_content: str) -> dict:
     """Extract TypeScript compiler configuration."""
     try:
-        parsed = json.loads(raw_content or "{}")
+        parsed = _load_json_robust(raw_content or "{}")
     except Exception:
         return _error_payload(raw_content, "invalid_json")
 
@@ -764,7 +816,7 @@ def _extract_gemfile(raw_content: str) -> dict:
 
 def _extract_composer_json(raw_content: str) -> dict:
     try:
-        parsed = json.loads(raw_content or "{}")
+        parsed = _load_json_robust(raw_content or "{}")
     except Exception:
         return _error_payload(raw_content, "invalid_json")
 
@@ -779,6 +831,48 @@ def _extract_composer_json(raw_content: str) -> dict:
         "require": sorted(require.keys()) if isinstance(require, dict) else [],
         "require_dev": sorted(require_dev.keys()) if isinstance(require_dev, dict) else [],
         "autoload_keys": sorted(autoload.keys()) if isinstance(autoload, dict) else [],
+    }
+
+
+def _extract_composer_lock(raw_content: str) -> dict:
+    try:
+        parsed = _load_json_robust(raw_content or "{}")
+    except Exception:
+        return _error_payload(raw_content, "invalid_json")
+
+    if not isinstance(parsed, dict):
+        return _error_payload(raw_content, "invalid_json_root")
+
+    package_names: list[str] = []
+    package_dev_names: list[str] = []
+
+    packages = parsed.get("packages", [])
+    if isinstance(packages, list):
+        for pkg in packages:
+            if isinstance(pkg, dict):
+                name = pkg.get("name")
+                if isinstance(name, str) and name:
+                    package_names.append(name)
+
+    packages_dev = parsed.get("packages-dev", [])
+    if isinstance(packages_dev, list):
+        for pkg in packages_dev:
+            if isinstance(pkg, dict):
+                name = pkg.get("name")
+                if isinstance(name, str) and name:
+                    package_dev_names.append(name)
+
+    content_hash = ""
+    metadata = parsed.get("content-hash")
+    if isinstance(metadata, str):
+        content_hash = metadata
+    elif isinstance(parsed.get("metadata"), dict):
+        content_hash = str(parsed["metadata"].get("content-hash", ""))
+
+    return {
+        "packages": package_names,
+        "packages_dev": package_dev_names,
+        "content_hash": content_hash,
     }
 
 
@@ -1095,6 +1189,7 @@ CONFIG_EXTRACTION_SCHEMAS = {
     "cargo.toml": _extract_cargo_toml,
     "gemfile": _extract_gemfile,
     "composer.json": _extract_composer_json,
+    "composer.lock": _extract_composer_lock,
     "dockerfile": _extract_dockerfile,
     "docker-compose.yml": _extract_docker_compose,
     "docker-compose.yaml": _extract_docker_compose,

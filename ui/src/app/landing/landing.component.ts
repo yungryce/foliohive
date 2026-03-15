@@ -104,7 +104,7 @@ export class LandingComponent implements OnInit, OnDestroy {
             this.loading = false;
             this.buildProgress = 100;
             this.statusMessage = 'Ready!';
-            this.router.navigate(['/profile'], { 
+            this.router.navigate(['/projects'], { 
               queryParams: { username, job_id: jobId } 
             });
           }

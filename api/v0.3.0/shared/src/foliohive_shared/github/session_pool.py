@@ -14,9 +14,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
 
-logger = logging.getLogger(__name__)
-
-
 class SessionPool:
     """Factory and pool for consistently-configured HTTP sessions.
     
@@ -46,13 +43,6 @@ class SessionPool:
         self.retry_total = retry_total
         self.retry_backoff_factor = retry_backoff_factor
         self._adapter: Optional[HTTPAdapter] = None
-        logger.info(
-            "[SessionPool.init] pool_connections=%d pool_maxsize=%d retry_total=%d backoff=%f",
-            pool_connections,
-            pool_maxsize,
-            retry_total,
-            retry_backoff_factor,
-        )
 
     def _build_adapter(self) -> HTTPAdapter:
         """Build HTTP adapter with retry and pooling configuration."""
@@ -68,7 +58,6 @@ class SessionPool:
             pool_connections=self.pool_connections,
             pool_maxsize=self.pool_maxsize,
         )
-        logger.info("[SessionPool._build_adapter] adapter created with retry config")
         return adapter
 
     def get_session(self) -> requests.Session:
@@ -83,7 +72,6 @@ class SessionPool:
         session = requests.Session()
         session.mount("https://", self._adapter)
         session.mount("http://", self._adapter)
-        logger.info("[SessionPool.get_session] session created with shared adapter")
         return session
 
 
@@ -124,4 +112,3 @@ def set_session_pool(pool: SessionPool) -> None:
     """
     global _global_pool
     _global_pool = pool
-    logger.info("[SessionPool.set_session_pool] global pool replaced")

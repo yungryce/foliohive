@@ -354,7 +354,7 @@ def test_repo_languages_query_delete_and_cleanup(table_manager: TableManager) ->
     assert "api" in by_repo
     assert len(by_repo["api"]) == 2
 
-    single_repo = table_manager.get_repo_languages("api", job_id)
+    single_repo = table_manager.get_repo_languages("api", repo_name="api")
     assert len(single_repo) == 2
     assert sorted(lang["language"] for lang in single_repo) == ["Python", "TypeScript"]
 

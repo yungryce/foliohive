@@ -189,9 +189,7 @@ class GitHubAPI:
 
         headers = {"Authorization": f"bearer {self.token}"} if self.token else {}
         payload = {"query": query, "variables": variables or {}}
-        repo = variables.get("name") if variables else None
         GRAPHQL_URL = "https://api.github.com/graphql"
-        logger.info("[GITHUB_GRAPHQL_POST] repo=%s purpose=%s", repo, purpose)
 
         try:
             response = self.session.post(GRAPHQL_URL, json=payload, headers=headers, timeout=30)

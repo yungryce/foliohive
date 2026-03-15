@@ -74,6 +74,9 @@ def __getattr__(name: str):
     if name == "RepoSyncStatusRow":
         from foliohive_shared.table import RepoSyncStatusRow
         return RepoSyncStatusRow
+    if name == "RepoGitHubMetadataRow":
+        from foliohive_shared.table import RepoGitHubMetadataRow
+        return RepoGitHubMetadataRow
     if name == "RepoAPIUsageRow":
         from foliohive_shared.table import RepoAPIUsageRow
         return RepoAPIUsageRow

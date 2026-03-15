@@ -3,7 +3,7 @@
 Keep imports light here — import heavy ML dependencies inside functions.
 """
 
-__all__ = ["AIAssistant", "SummaryManager", "AIUsageTracker", "FILE_BUDGETS", "get_file_budget"]
+__all__ = ["AIAssistant", "AIServiceError", "SummaryManager", "AIUsageTracker", "FILE_BUDGETS", "get_file_budget"]
 
 
 def __getattr__(name: str):
@@ -11,6 +11,9 @@ def __getattr__(name: str):
     if name == "AIAssistant":
         from foliohive_shared.ai.ai_assistant import AIAssistant
         return AIAssistant
+    if name == "AIServiceError":
+        from foliohive_shared.ai.ai_assistant import AIServiceError
+        return AIServiceError
     if name == "SummaryManager":
         from foliohive_shared.ai.summary_manager import SummaryManager
         return SummaryManager

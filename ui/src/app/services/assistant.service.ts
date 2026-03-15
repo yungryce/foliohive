@@ -15,14 +15,6 @@ export interface AIAssistantResponse {
   query: string;
 }
 
-export interface ReadmeSummaryResponse {
-  username: string;
-  repo: string;
-  job_id?: string;
-  repo_entry?: any;
-  readme_summary_html?: string;
-}
-
 @Injectable({ providedIn: 'root' })
 export class AIAssistantService {
   private http = inject(HttpClient);
@@ -36,26 +28,18 @@ export class AIAssistantService {
     const url = `${this.config.apiUrl}/ai`;
     return this.http.post<any>(url, req).pipe(
       map(res => {
-        if (res?.status === 'success' && res?.data) return res.data as AIAssistantResponse;
-        return res as AIAssistantResponse;
-      }),
-      catchError(err => {
-        // Re-throw error for caller to handle (e.g., polling logic)
-        return throwError(() => err);
-      })
-    );
-  }
+        const data = res?.status === 'success' && res?.data ? res.data : res;
+        const metadata = data?.metadata || {};
+        const repositoriesUsed = Array.isArray(metadata?.repositories_used)
+          ? metadata.repositories_used
+          : (Array.isArray(metadata?.selected_repositories) ? metadata.selected_repositories : []);
 
-  /**
-   * Gets summary query for a candidate.
-   * Throws error for caller to handle (e.g., polling logic).
-   */
-  getReadmeSummary(username: string, repo: string): Observable<ReadmeSummaryResponse> {
-    const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/${encodeURIComponent(repo)}/readme-summary`;
-    return this.http.get<any>(url).pipe(
-      map(res => {
-        if (res?.status === 'success' && res?.data) return res.data as ReadmeSummaryResponse;
-        return res as ReadmeSummaryResponse;
+        return {
+          response: data?.response || data?.query_summary || '',
+          repositories_used: repositoriesUsed,
+          total_repositories: Number(data?.total_repositories || metadata?.total_repositories || repositoriesUsed.length || 0),
+          query: data?.query || req.query,
+        } as AIAssistantResponse;
       }),
       catchError(err => {
         // Re-throw error for caller to handle (e.g., polling logic)

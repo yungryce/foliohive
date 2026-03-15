@@ -36,7 +36,7 @@ The UI retrieves data via endpoints in `api_gateway.py` to display candidate pro
 **Candidate's Github Data Generation and Processing**
 - User (recruiter) inputs a candidate's Github username to `landing.components.ts` in `ui/src/app/landing/` to start a new sync job.
     - `trigger_candidate_refresh()` in `api_gateway.py` starts job process. Generates new job_id, validates freshness of candidate's Github metadata and enqueues job to refresh candidate data.
-    - `process_sync_job()` in `sync_worker.py` fetches candidate metadata via `_fetch_repo_metadata()` and tracks job status via `_update_job_progress()`. Updates repo status to `synced` and enqueues cache worker jobs before exiting.
+    - `process_sync_job()` in `sync_worker.py` fetches candidate metadata via `_fetch_repo_metadata()` and tracks job status via `_update_sync_progress()`. Updates repo status to `synced` and enqueues cache worker jobs before exiting.
     - `process_cache_job` in `cache_worker.py` generates and caches repo micro-summaries (zero blob caching for files):
         1. Fetch README and config files from GitHub API in-memory only (no blobs persisted).
         2. Extract config signals in-memory using extractors from `data_filter.py` (no raw config blobs stored).
@@ -72,7 +72,7 @@ Client has 4 views that retrives and displays data from the server. These views 
     - Summary-`api/v0.3.0/shared/src/foliohive_shared/ai/summary_manager.py`: query response from `query_from_summaries()` via `api_gateway.portfolio_query()`. Context is built from cached profile aggregate JSON + query-relevant repo micro-summaries only (no raw files).
 
 **Job Status**
-- Job status is tracked and updated by `get_job_status()` in `api_gateway.py` via `table_manager.py` `JobMetadata` and `RepoSyncStatus`. Per-repo statuses updated during `sync_worker._update_job_progress()` and `cache_worker._update_cache_progress()`.
+- Job status is tracked and updated by `get_job_status()` in `api_gateway.py` via `table_manager.py` `JobMetadata` and `RepoSyncStatus`. Per-repo statuses updated during `sync_worker._update_sync_progress()` and `cache_worker._update_cache_progress()`.
 - `JobMetadata` job-level status transitions: `queued → syncing → metadata_ready → caching_started → completed` (or `failed` at any stage).
   - `queued`: Initial state, job created
   - `syncing`: First repo metadata sync started
@@ -136,7 +136,7 @@ Client has 4 views that retrives and displays data from the server. These views 
 - `session-id.interceptor.ts` - Injects `X-Session-Id` header on all HTTP requests
 
 **Known Issues / Technical Notes**
-- UI service `assistant.service.ts` expects response field `readme_summary_html` from `get_repo_summary()` route, but backend returns `summary_html`. This field name mismatch causes the UI to receive `undefined`.
+- UI service `assistant.service.ts` expects response field `readme_summary_markdown` from `get_repo_summary()` route, but backend returns `summary_html`. This field name mismatch causes the UI to receive `undefined`.
 - AI model assignments: all summary types (`profile`, `readme`, `query`, `initial_summary`) default to `gpt-5-nano` tier.
 
 ### NOTES

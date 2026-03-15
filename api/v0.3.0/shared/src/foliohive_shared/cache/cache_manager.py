@@ -43,7 +43,6 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
     try:
         return datetime.fromisoformat(text)
     except ValueError:
-        logger.info("cache-manager: unable to parse iso timestamp %s", value)
         return None
 
 
@@ -99,7 +98,6 @@ class CacheManager:
         if account_url:
             try:
                 credential = DefaultAzureCredential()
-                logger.info("cache-manager: using managed identity for blob access")
                 return BlobServiceClient(account_url=account_url, credential=credential)
             except (ClientAuthenticationError, HttpResponseError) as exc:
                 logger.warning("cache-manager: managed identity auth failed: %s", exc)
@@ -108,7 +106,6 @@ class CacheManager:
 
         if connection_string:
             try:
-                logger.info("cache-manager: using connection string for blob access")
                 return BlobServiceClient.from_connection_string(connection_string)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.error("cache-manager: connection string auth failed: %s", exc)
@@ -167,15 +164,12 @@ class CacheManager:
         if _hot_cache_enabled():
             cached_value = _HOT_CACHE.get(cache_key)
             if cached_value is not None:
-                logger.info("cache-manager: hot cache hit key=%s", cache_key)
                 return {
                     "status": "valid",
                     "data": cached_value,
                     "last_modified": None,
                     "size_bytes": None,
                 }
-            else:
-                logger.info("cache-manager: hot cache miss key=%s", cache_key)
         self._ensure_initialized()
         if not self.use_cache or not self._blob_service_client:
             return {"status": "disabled", "data": None}
@@ -183,7 +177,6 @@ class CacheManager:
         blob_client = self._blob_service_client.get_blob_client(self.container_name, cache_key)
         try:
             if not blob_client.exists():
-                logger.info("cache-manager: blob miss key=%s", cache_key)
                 return {"status": "missing", "data": None}
 
             properties = blob_client.get_blob_properties()
@@ -194,7 +187,7 @@ class CacheManager:
                 try:
                     blob_client.delete_blob()
                 except Exception:  # pragma: no cover - fire-and-forget
-                    logger.info("cache-manager: failed to delete expired key %s", cache_key)
+                    logger.warning("cache-manager: failed to delete expired key %s", cache_key)
                 return {
                     "status": "expired",
                     "data": None,
@@ -206,11 +199,7 @@ class CacheManager:
 
             raw_payload = blob_client.download_blob().readall()
             payload = json.loads(raw_payload)
-            logger.info(
-                "cache-manager: blob hit key=%s size=%s",
-                cache_key,
-                properties.size,
-            )
+
             return {
                 "status": "valid",
                 "data": payload.get("data"),
@@ -230,7 +219,6 @@ class CacheManager:
         if _hot_cache_enabled():
             hot_ttl = ttl if ttl is not None else self.default_ttl
             _HOT_CACHE.set(cache_key, data, ttl=hot_ttl)
-            logger.info("cache-manager: hot cache set key=%s ttl=%s", cache_key, hot_ttl)
         self._ensure_initialized()
         if not self.use_cache or not self._blob_service_client:
             return False
@@ -252,11 +240,6 @@ class CacheManager:
                 overwrite=True,
                 content_settings=ContentSettings(content_type="application/json", content_encoding="utf-8"),
                 metadata=metadata,
-            )
-            logger.info(
-                "cache-manager: blob save key=%s expires_at=%s",
-                cache_key,
-                metadata.get("expires_at") or "<none>",
             )
             return True
         except Exception as exc:
@@ -373,10 +356,6 @@ class CacheManager:
                 if content:
                     display_name = path.split("/")[-1]
                     results[display_name] = content
-                    logger.info(
-                        "Retrieved config from cache: repo=%s path=%s",
-                        repo, path
-                    )
         
         return results
     

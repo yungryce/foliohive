@@ -12,14 +12,17 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections import defaultdict
+from collections import Counter
 from typing import Any, Dict, Optional
+from datetime import datetime, timezone, timedelta
+from time import perf_counter
 
 import azure.functions as func
 
 from foliohive_shared import (
     GitHubAPI,
     GitHubRepoManager,
+    RepoCacheSummaryRow,
     SummaryManager,
     table_manager,
 )
@@ -78,16 +81,6 @@ def _deserialize_message(msg: func.QueueMessage) -> Dict[str, Any]:
         raise ValueError("Queue message body is empty")
 
     payload = json.loads(body_str)
-
-    repo_name = payload.get("repo_name", "unknown")
-    job_id = payload.get("job_id", "unknown")
-    logger.info(
-        "[CACHE_RECV] repo=%s job=%s - Top-level keys: %s",
-        repo_name,
-        job_id,
-        sorted(list(payload.keys())),
-    )
-
     return payload
 
 
@@ -149,7 +142,6 @@ def _update_cache_progress(
     username: str,
     repo_name: str,
     summary_failed: bool = False,
-    summary_ready: bool = False,
     *,
     message_id: Optional[str] = None,
     trace_id: Optional[str] = None,
@@ -160,22 +152,8 @@ def _update_cache_progress(
     Status transitions: synced → summary_ready (or failed).
     Tracks micro-summary caching progress.
     """
-    from datetime import datetime, timezone, timedelta
-
-    _STALE_PENDING_THRESHOLD = timedelta(minutes=30)
-
-    logger.info(
-        "[CACHE_PROGRESS_UPDATE] job=%s repo=%s summary_ready=%s summary_failed=%s message_id=%s trace_id=%s error=%s",
-        job_id,
-        repo_name,
-        summary_ready,
-        summary_failed,
-        message_id or "<unknown>",
-        trace_id or "<none>",
-        error or "<none>",
-    )
     
-    status_value = "failed" if summary_failed else ("summary_ready" if summary_ready else "failed")
+    status_value = "failed" if summary_failed else "summary_ready"
     now = datetime.now(timezone.utc).isoformat()
     
     # Update RepoSyncStatus with cache completion (partial update)
@@ -197,92 +175,46 @@ def _update_cache_progress(
     statuses = table_manager.list_repo_statuses(job_id)
     total_repos = len(statuses)
 
-    status_counts = defaultdict(int)
-    status_lists = defaultdict(list)
-    pending_rows: list = []
-
-    for row in statuses:
-        status = row.get("status")
-        repo = row.get("repo_name")
-
-        if status in ("synced", "summary_ready", "failed"):
-            status_counts[status] += 1
-            status_lists[status].append(repo)
-        elif status == "pending":
-            pending_rows.append(row)
-
-    summary_ready_list = sorted(status_lists.get("summary_ready", []))
-    failed_list = list(sorted(status_lists.get("failed", [])))
-    synced_list = sorted(status_lists.get("synced", []))
-
-    # Safety valve: promote stale pending repos to failed so the job can complete.
-    # A pending repo with no queue message processed after the threshold is assumed dropped.
-    now_utc = datetime.now(timezone.utc)
-    stale_pending: list = []
-    for pending_row in pending_rows:
-        updated_at_str = pending_row.get("updated_at")
-        is_stale = True  # Default: treat as stale when no timestamp
-        if updated_at_str:
-            try:
-                updated_at = datetime.fromisoformat(updated_at_str)
-                is_stale = (now_utc - updated_at) > _STALE_PENDING_THRESHOLD
-            except (ValueError, TypeError):
-                pass  # Can't parse timestamp — treat as stale
-        if is_stale:
-            stale_pending.append(pending_row.get("repo_name"))
-
-    if stale_pending:
+    # Count all states using Counter (Pythonic, single pass)
+    status_counts = Counter(row.get("status") for row in statuses)
+    
+    # Detect and log unknown statuses
+    known_statuses = {"synced", "summary_ready", "failed", "pending"}
+    unknown_statuses = set(status_counts.keys()) - known_statuses
+    for unknown_status in unknown_statuses:
         logger.warning(
-            "[STALE_PENDING] job=%s - %d pending repos exceeded %s threshold, marking failed: %s",
-            job_id, len(stale_pending), _STALE_PENDING_THRESHOLD, stale_pending,
+            "[UNKNOWN_STATUS] job=%s status='%s' count=%d",
+            job_id,
+            unknown_status,
+            status_counts[unknown_status],
         )
-        for stale_repo in stale_pending:
-            table_manager.update_repo_status(
-                job_id,
-                stale_repo,
-                {"status": "failed", "error": "stale: no queue message processed within timeout"},
-            )
-        failed_list.extend(stale_pending)
-        failed_list.sort()
+    
+    # Get counts for known states
+    synced_count = status_counts.get("synced", 0)
+    failed_count = status_counts.get("failed", 0)
+    pending_count = status_counts.get("pending", 0)
+    summary_ready_count = status_counts.get("summary_ready", 0)
     
     logger.info(
         "[CACHE_PROGRESS] job=%s summary_ready=%d failed=%d synced=%d pending=%d total=%d",
         job_id,
-        len(summary_ready_list),
-        len(failed_list),
-        len(synced_list),
-        len(pending_rows),
+        summary_ready_count,
+        failed_count,
+        synced_count,
+        pending_count,
         total_repos,
     )
     
-    # Get current job status to check for transitions
     job = table_manager.get_job_metadata(username, job_id)
     current_status = job.get("status") if job else "queued"
     
-    # Transition: metadata_ready → caching_started when first repo is processed (success or failure)
-    if (len(summary_ready_list) > 0 or len(failed_list) > 0) and current_status == "metadata_ready":
-        logger.info(
-            "[JOB_CACHING_STARTED] job=%s - First repo processed (%d summary_ready, %d failed / %d total)",
-            job_id,
-            len(summary_ready_list),
-            len(failed_list),
-            total_repos,
-        )
-        table_manager.update_job_metadata(username, job_id, {"status": "caching_started"})
-
+    if (summary_ready_count > 0 or failed_count > 0) and current_status in ("syncing", "metadata_ready"):
+        table_manager.update_job_metadata_conditional(username, job_id, {"status": "caching_started"})
     
     # Transition: caching_started → completed when all repos have summary or failed
-    completed_count = len(summary_ready_list) 
-    # completed_count = len(summary_ready_list) + len(failed_list)
+    completed_count = summary_ready_count + failed_count
     if completed_count == total_repos and current_status == "caching_started":
-        logger.info(
-            "[JOB_COMPLETED] job=%s - All micro-summaries processed (%d summary_ready, %d failed)",
-            job_id,
-            len(summary_ready_list),
-            len(failed_list),
-        )
-        table_manager.update_job_metadata(username, job_id, {"status": "completed"})
-
+        table_manager.update_job_metadata_conditional(username, job_id, {"status": "completed"})
 
 
 @bp.queue_trigger(arg_name="msg", queue_name="github-cache", connection="AzureWebJobsStorage")
@@ -294,11 +226,13 @@ def process_cache_job(msg: func.QueueMessage) -> None:
     
     Fingerprint-based cache invalidation avoids regenerating when repo hasn't changed.
     """
+    started_at = perf_counter()
     payload = None
     username = None
     job_id = None
     repo_name = None
     trace_id = None
+    logger.info("[LATENCY_START] fn=process_cache_job")
 
     try:
         payload = _deserialize_message(msg)
@@ -316,29 +250,35 @@ def process_cache_job(msg: func.QueueMessage) -> None:
                 f"Missing required fields: username={username}, job_id={job_id}, repo_name={repo_name}"
             )
 
+        summary_manager = SummaryManager(username=username)
+        summary_failed = False
+
         # Fetch files and extract signals (in-memory only)
         fetch_result = _fetch_file_content(username, repo_name, job_id=job_id, ref=branch_ref)
 
-        summary_ready = False
-        summary_failed = False
-        
-        summary_manager = SummaryManager(username=username)
+        metadata_row = table_manager.get_repo_github_metadata(username, repo_name) or {}
+        repo_languages = table_manager.get_repo_languages(repo_name)
 
-        metadata_row = table_manager.get_repo_github_metadata(job_id, repo_name) or {}
-        repo_languages_raw = table_manager.get_repo_languages(repo_name)
-
-        repo_languages = [
-            lang for lang in repo_languages_raw
-            if lang.get("repo_name") == repo_name
-        ]
-
+        logger.info(
+            "[LANGUAGES] repo=%s languages=%s",
+            repo_name,
+            [(lang.get("language"), lang.get("percentage")) for lang in repo_languages],
+        )
         languages_tuples = [
             (lang.get("language"), lang.get("percentage")) 
             for lang in sorted(repo_languages, key=lambda x: x.get("percentage", 0), reverse=True)
         ][:5]  # Top 5 languages
 
         cache_key = summary_manager.build_repo_micro_summary_cache_key(repo_name, fingerprint)
-        table_manager.register_pending_cache_summary(username, repo_name, fingerprint, job_id, cache_key)
+        pending_cache_entry = RepoCacheSummaryRow(
+            repo_name=repo_name,
+            fingerprint=fingerprint,
+            job_id=job_id,
+            cache_key=cache_key,
+            cache_status="pending",
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        table_manager.upsert_cache_summary(pending_cache_entry)
 
         summary_result = summary_manager.generate_repo_micro_summary(
             username=username,
@@ -357,14 +297,12 @@ def process_cache_job(msg: func.QueueMessage) -> None:
             },
             primary_readme_content=fetch_result.get("primary_readme_content"),
             config_content=fetch_result.get("config_content", {}),
-            secondary_readme_content=list(fetch_result.get("readme_content", {}).values()), 
+            secondary_readme_content=list(fetch_result.get("readme_content", {}).values()),
+            skip_cache_lookup=True,
         )
         
         error_msg = None
-        if summary_result.get("summary"):
-            summary_ready = True
-            logger.info("[MICRO_SUMMARY] Generated for %s/%s", username, repo_name)
-        else:
+        if not summary_result.get("summary"):
             summary_failed = True
             error_msg = summary_result.get("error")
             logger.warning("[MICRO_SUMMARY] Failed for %s/%s error=%s", username, repo_name, error_msg)
@@ -375,7 +313,6 @@ def process_cache_job(msg: func.QueueMessage) -> None:
             username,
             repo_name,
             summary_failed=summary_failed,
-            summary_ready=summary_ready,
             message_id=queue_message_id,
             trace_id=trace_id,
             error=error_msg,
@@ -405,4 +342,13 @@ def process_cache_job(msg: func.QueueMessage) -> None:
                 error=str(exc),
             )
         raise
+    finally:
+        elapsed_ms = (perf_counter() - started_at) * 1000
+        logger.info(
+            "[LATENCY_FINISH] fn=process_cache_job job_id=%s username=%s repo=%s elapsed_ms=%.2f",
+            job_id,
+            username,
+            repo_name,
+            elapsed_ms,
+        )
 

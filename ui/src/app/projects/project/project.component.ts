@@ -1,9 +1,8 @@
 import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, RouterModule } from '@angular/router';
-import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { MarkdownModule } from 'ngx-markdown';
 import { Observable, Subject, catchError, map, of, switchMap, takeUntil, tap } from 'rxjs';
-import DOMPurify from 'dompurify';
 import { CandidateContextService } from '../../services/candidate-context.service';
 import { RepoBundleService, ReadmeSummaryResponse } from '../../services/repo-bundle.service';
 import { JobPollingService } from '../../services/job-polling.service';
@@ -27,13 +26,12 @@ interface RepoDetailVM {
 @Component({
   selector: 'app-project',
   standalone: true,
-  imports: [CommonModule, RouterModule, JobStatusBadgeComponent],
+  imports: [CommonModule, RouterModule, JobStatusBadgeComponent, MarkdownModule],
   templateUrl: './project.component.html',
   styleUrls: ['./project.component.css']
 })
 export class ProjectComponent implements OnInit, OnDestroy {
   private route = inject(ActivatedRoute);
-  private sanitizer = inject(DomSanitizer);
   private candidateContext = inject(CandidateContextService);
   private repoBundle = inject(RepoBundleService);
   private jobPollingService = inject(JobPollingService);
@@ -41,7 +39,7 @@ export class ProjectComponent implements OnInit, OnDestroy {
 
   private readonly destroy$ = new Subject<void>();
 
-  contentHtml: SafeHtml = '';
+  contentMarkdown = '';
   summaryLoading = false;
   summaryError = '';
   jobStatus: string | null = null;
@@ -113,13 +111,8 @@ export class ProjectComponent implements OnInit, OnDestroy {
     const cached = this.cache.get<ReadmeSummaryResponse>(cacheKey);
     
     if (cached) {
-      const summaryHtml = cached?.readme_summary_html || '';
-      if (summaryHtml) {
-        const cleanHtml = DOMPurify.sanitize(summaryHtml, { USE_PROFILES: { html: true } }) as string;
-        this.contentHtml = this.sanitizer.bypassSecurityTrustHtml(cleanHtml);
-      } else {
-        this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>No README summary available yet.</p>');
-      }
+      const summaryMarkdown = cached?.readme_summary_markdown || '';
+      this.contentMarkdown = summaryMarkdown || 'No README summary available yet.';
       this.summaryLoading = false;
       this.jobStatus = null;
       return;
@@ -129,7 +122,7 @@ export class ProjectComponent implements OnInit, OnDestroy {
     this.repoBundle.getReadmeSummary(username, repoName).pipe(
       switchMap((res) => {
         // Handle 200+empty case: treat as NOT_READY if jobId is available
-        const summaryHtml = res?.readme_summary_html || '';
+        const summaryHtml = res?.readme_summary_markdown || '';
         if (!summaryHtml && jobId) {
           // Empty response with active job - enter polling chain
           return this.jobPollingService.pollRepoReady(username, jobId, repoName).pipe(
@@ -139,7 +132,7 @@ export class ProjectComponent implements OnInit, OnDestroy {
             switchMap(() => this.repoBundle.getReadmeSummary(username, repoName)),
             catchError(() => {
               // Failed even after polling
-              return of({ readme_summary_html: '' } as ReadmeSummaryResponse);
+              return of({ readme_summary_markdown: '' } as ReadmeSummaryResponse);
             }),
             takeUntil(this.destroy$)
           );
@@ -160,37 +153,32 @@ export class ProjectComponent implements OnInit, OnDestroy {
             switchMap(() => this.repoBundle.getReadmeSummary(username, repoName)),
             catchError(() => {
               // Failed even after polling
-              return of({ readme_summary_html: '' } as ReadmeSummaryResponse);
+              return of({ readme_summary_markdown: '' } as ReadmeSummaryResponse);
             }),
             takeUntil(this.destroy$)
           );
         }
         
         // Not a NOT_READY error or no job_id - return empty
-        return of({ readme_summary_html: '' } as ReadmeSummaryResponse);
+        return of({ readme_summary_markdown: '' } as ReadmeSummaryResponse);
       }),
       takeUntil(this.destroy$)
     ).subscribe({
       next: (res: ReadmeSummaryResponse) => {
         // Cache successful response (24 hour TTL)
-        if (res?.readme_summary_html) {
+        if (res?.readme_summary_markdown) {
           this.cache.set(cacheKey, res, 24 * 60 * 60 * 1000);
         }
         
-        const summaryHtml = res?.readme_summary_html || '';
-        if (summaryHtml) {
-          const cleanHtml = DOMPurify.sanitize(summaryHtml, { USE_PROFILES: { html: true } }) as string;
-          this.contentHtml = this.sanitizer.bypassSecurityTrustHtml(cleanHtml);
-        } else {
-          this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>No README summary available yet.</p>');
-        }
+        const summaryMarkdown = res?.readme_summary_markdown || '';
+        this.contentMarkdown = summaryMarkdown || 'No README summary available yet.';
         this.summaryLoading = false;
         this.jobStatus = null;
       },
       error: (err) => {
         this.summaryLoading = false;
         this.summaryError = 'Failed to load README summary.';
-        this.contentHtml = this.sanitizer.bypassSecurityTrustHtml('<p>README summary unavailable.</p>');
+        this.contentMarkdown = 'README summary unavailable.';
         this.jobStatus = null;
       }
     });

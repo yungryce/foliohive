@@ -110,7 +110,6 @@ class GitHubRepoManager:
             params={'per_page': per_page},
             purpose=purpose,
         )
-        logger.info("Fetched repos metadata for user %s: count=%d", username, len(repos) if isinstance(repos, list) else 0)
         if not isinstance(repos, list):
             raise ValueError("Invalid response format for repositories metadata")
         if include_languages:
@@ -428,8 +427,6 @@ class GitHubRepoManager:
         path_index_set = set(path_index) if path_index else set()
         api_call_estimate += 1
         readme_exists = bool(path_index_set and "README.md" in path_index_set)
-        if not path_index_set:
-            logger.info("Empty path index for %s/%s; falling back to candidate probes.", username, repo)
 
         result: Dict[str, str] = {}
         for path in candidates:
@@ -452,7 +449,7 @@ class GitHubRepoManager:
                     content = self.api.decode_file_content(file_data)
                 api_call_estimate += 1
             except Exception as exc:  # pragma: no cover - defensive guard
-                logger.info("Skipping config fetch for %s/%s path=%s: %s", username, repo, path, exc)
+                logger.warning("Skipping config fetch for %s/%s path=%s: %s", username, repo, path, exc)
                 continue
             if not content:
                 continue
@@ -519,7 +516,7 @@ class GitHubRepoManager:
             Dict mapping path → content (None if fetch failed)
         """
         if not paths:
-            logger.info("[GRAPHQL_FETCH_EMPTY] repo=%s/%s reason=no_paths", owner, repo)
+            logger.warning("[GRAPHQL_FETCH_EMPTY] repo=%s/%s reason=no_paths", owner, repo)
             return {}
 
         alias_map: Dict[str, str] = {}

@@ -3,13 +3,11 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
 import { Subject, takeUntil, switchMap, catchError, of, tap } from 'rxjs';
+import { MarkdownModule } from 'ngx-markdown';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { RepoBundleService } from '../services/repo-bundle.service';
 import { JobPollingService } from '../services/job-polling.service';
 import { AIAssistantService, AIAssistantResponse } from '../services/assistant.service';
-import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { marked } from 'marked';
-import DOMPurify from 'dompurify';
 import { CandidateListComponent } from '../shared/candidate-list.component';
 import { JobStatusBadgeComponent } from '../shared/job-status-badge.component';
 
@@ -21,7 +19,7 @@ interface SuggestedRepo {
 @Component({
   selector: 'app-ai',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterModule, CandidateListComponent, JobStatusBadgeComponent],
+  imports: [CommonModule, FormsModule, RouterModule, CandidateListComponent, JobStatusBadgeComponent, MarkdownModule],
   templateUrl: './ai.component.html',
   styleUrls: ['./ai.component.css'],
 })
@@ -32,7 +30,6 @@ export class AiComponent implements OnInit, OnDestroy {
   private jobPollingService = inject(JobPollingService);
   private candidateContext = inject(CandidateContextService);
   private ai = inject(AIAssistantService);
-  private sanitizer = inject(DomSanitizer);
 
   private readonly destroy$ = new Subject<void>();
 
@@ -50,7 +47,7 @@ export class AiComponent implements OnInit, OnDestroy {
   query = '';
   loadingAnswer = false;
   error = '';
-  answerHtml: SafeHtml | null = null;
+  answerMarkdown: string | null = null;
   repositoriesUsed: { name: string; relevance_score: number }[] = [];
 
   ngOnInit(): void {
@@ -67,7 +64,7 @@ export class AiComponent implements OnInit, OnDestroy {
         if (!username) {
           this.noRepositories = false;
           this.suggested = [];
-          this.answerHtml = null;
+          this.answerMarkdown = null;
           this.repositoriesUsed = [];
           this.error = '';
           return;
@@ -97,7 +94,7 @@ export class AiComponent implements OnInit, OnDestroy {
     // Reset state
     this.noRepositories = false;
     this.suggested = [];
-    this.answerHtml = null;
+    this.answerMarkdown = null;
     this.repositoriesUsed = [];
     this.error = '';
     this.summaryReady = false;
@@ -212,7 +209,7 @@ export class AiComponent implements OnInit, OnDestroy {
     }
 
     this.loadingAnswer = true;
-    this.answerHtml = null;
+    this.answerMarkdown = null;
     this.repositoriesUsed = [];
 
     // Optimistically try to get answer
@@ -252,9 +249,7 @@ export class AiComponent implements OnInit, OnDestroy {
       next: (res: AIAssistantResponse) => {
         this.loadingAnswer = false;
         this.repositoriesUsed = res.repositories_used || [];
-        const rawHtml = marked.parse(res.response || '', { async: false }) as string;
-        const clean = DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } }) as string;
-        this.answerHtml = this.sanitizer.bypassSecurityTrustHtml(clean);
+        this.answerMarkdown = res.response || null;
       },
       error: () => {
         this.loadingAnswer = false;

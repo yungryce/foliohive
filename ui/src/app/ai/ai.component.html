@@ -83,8 +83,8 @@
         </div>
       </div>
 
-      <article *ngIf="answerHtml" class="rounded-lg border border-(--border) bg-(--card) p-4 mt-6">
-        <div class="prose max-w-none *:text-(--fg)" [innerHTML]="answerHtml"></div>
+      <article *ngIf="answerMarkdown" class="rounded-lg border border-(--border) bg-(--card) p-4 mt-6">
+        <markdown [data]="answerMarkdown" class="markdown-content"></markdown>
       </article>
     </main>
   </div>

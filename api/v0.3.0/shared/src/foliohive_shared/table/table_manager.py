@@ -119,9 +119,9 @@ class RepoGitHubMetadataRow:
     Foreign Key: job_id → JobMetadataRow (only latest job per user is valid)
     """
 
-    job_id: str  # PartitionKey
+    username: str  # PartitionKey
     repo_name: str  # RowKey
-    username: str
+    job_id: str
     fingerprint: str  # Content fingerprint for versioning
     description: Optional[str] = None
     topics: Optional[List[str]] = None
@@ -174,8 +174,8 @@ class RepoCacheSummaryRow:
     Stores metadata about generated micro-summaries for cache invalidation
     and existence verification before blob access.
     
-    PartitionKey: job_id (groups all cached summaries for a job)
-    RowKey: repo_name
+    PartitionKey: repo_name (enables quick lookup of cache status for a repo across jobs)
+    RowKey: fingerprint (unique content fingerprint for the repo version)
     """
     
     repo_name: str  # PartitionKey
@@ -183,7 +183,7 @@ class RepoCacheSummaryRow:
     job_id: str  # Foreign key to JobMetadataRow - syncing job that generated this cache
     cache_key: str  # Full blob storage key
     summary_blob_uri: Optional[str] = None  # Direct reference to blob
-    cache_status: str = "valid"  # valid | stale | expired
+    cache_status: str = "valid"  # pending | valid | failed | stale | expired
     generated_at: Optional[str] = None
     accessed_at: Optional[str] = None  # Track read frequency
     created_at: Optional[str] = None
@@ -223,13 +223,12 @@ class AIRequestUsageRow:
     observability and consistency analysis.
 
     PartitionKey: username (enables querying all AI operations for a user)
-    RowKey: {purpose}|{timestamp}|{request_id}
+    RowKey: {purpose}
     """
 
     username: str  # PartitionKey
     operation_key: str  # RowKey
     purpose: str
-    request_id: str
     provider: str = "openai"
     model_name: Optional[str] = None
     model_tier: Optional[str] = None
@@ -282,6 +281,18 @@ class UserProfileRow:
 
 _AZURE_META_FIELDS = {"etag", "odata.etag", "odata.metadata"}
 _REPO_STATUS_ALLOWED = {"pending", "synced", "summary_ready", "failed"}
+
+# Job status state machine ordering (prevents status regressions across async workers)
+# Transitions: queued → syncing → metadata_ready → caching_started → completed
+# (failed can appear at any stage)
+_JOB_STATUS_ORDER = {
+    "queued": 0,
+    "syncing": 1,
+    "metadata_ready": 2,
+    "caching_started": 3,
+    "completed": 4,
+    "failed": float('inf'),  # Failed can override any state
+}
 
 
 def _utcnow_iso() -> str: 
@@ -413,7 +424,6 @@ class TableManager:
             try:
                 client = self._service_client.get_table_client(name)
                 client.create_table()
-                logger.info("Ensured table %s", name)
             except ResourceExistsError:
                 pass
             except Exception as exc:  # pragma: no cover - safety net
@@ -452,12 +462,6 @@ class TableManager:
             job = self.get_job_metadata(username, job_id)
             if not job:
                 raise ValueError(f"Invalid job_id '{job_id}' for user '{username}' - job not found in JobMetadata")
-            logger.info(
-                "[TABLE_VALIDATE_SESSION_FK] session=%s user=%s job=%s - FK validation passed",
-                session_id,
-                username,
-                job_id,
-            )
 
         now = _azure_safe_timestamp()
         existing_count = 0
@@ -479,13 +483,6 @@ class TableManager:
             "updated_at": now,
         }
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
-        logger.info(
-            "[TABLE_UPSERT_SESSION_CANDIDATE] session=%s user=%s job=%s query_count=%d",
-            session_id,
-            username,
-            job_id or "<none>",
-            existing_count + 1,
-        )
 
     def list_session_candidates(self, session_id: str, *, limit: int = 10) -> List[Dict[str, Any]]:
         """List candidate history for a session.
@@ -533,12 +530,7 @@ class TableManager:
         table = self._get_table_client(self.table_names.job_metadata)
         if not table:
             return
-        logger.info(
-            "[TABLE_UPSERT_JOB_METADATA] user=%s job=%s status=%s",
-            row.username,
-            row.job_id,
-            row.status,
-        )
+
         now = _azure_safe_timestamp()
         entity = {
             "PartitionKey": row.username,
@@ -577,13 +569,6 @@ class TableManager:
         if not existing:
             raise ValueError(f"Cannot update non-existent job: username={username}, job_id={job_id}")
         
-        logger.info(
-            "[TABLE_UPDATE_JOB_METADATA] user=%s job=%s keys=%s",
-            username,
-            job_id,
-            sorted(list(updates.keys())),
-        )
-        
         entity: Dict[str, Any] = {
             "PartitionKey": username,
             "RowKey": job_id,
@@ -597,6 +582,51 @@ class TableManager:
         
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
 
+    def update_job_metadata_conditional(self, username: str, job_id: str, updates: Dict[str, Any]) -> bool:
+        """Update job metadata with state machine validation.
+        
+        Prevents status regressions across async workers by only allowing
+        transitions to equal or higher states in the job workflow.
+        
+        State ordering: queued → syncing → metadata_ready → caching_started → completed
+        Failed state can override any state at any time.
+        
+        Args:
+            username: Job owner
+            job_id: Job identifier
+            updates: Dict of field names to values (must include "status" key)
+        
+        Returns:
+            bool: True if update succeeded, False if blocked by state ordering
+        
+        Raises:
+            ValueError: If job doesn't exist or status not in allowed set
+        """
+        if "status" not in updates:
+            # No status update, proceed with regular update
+            self.update_job_metadata(username, job_id, updates)
+            return True
+        
+        new_status = updates["status"]
+        if new_status not in _JOB_STATUS_ORDER:
+            raise ValueError(f"Invalid job status: {new_status}. Allowed: {set(_JOB_STATUS_ORDER.keys())}")
+        
+        existing = self.get_job_metadata(username, job_id)
+        if not existing:
+            raise ValueError(f"Cannot update non-existent job: username={username}, job_id={job_id}")
+        
+        current_status = existing.get("status", "queued")
+        current_order = _JOB_STATUS_ORDER.get(current_status, -1)
+        new_order = _JOB_STATUS_ORDER[new_status]
+        
+        # Allow transition if: new status is higher/equal in order, or current/new is failed
+        can_transition = (new_order >= current_order) or (new_status == "failed") or (current_status == "failed")
+        
+        if can_transition:
+            self.update_job_metadata(username, job_id, updates)
+            return True
+        else:
+            return False
 
     def get_job_metadata(self, username: str, job_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve job metadata by username and job_id.
@@ -612,7 +642,6 @@ class TableManager:
             entity = table.get_entity(partition_key=username, row_key=job_id)
         except ResourceNotFoundError:
             return None
-        logger.info("[TABLE_GET_JOB_METADATA] user=%s job=%s found=true", username, job_id)
         return self._deserialize_job_metadata(entity)
 
     def list_jobs_metadata(self, username: str) -> List[Dict[str, Any]]:
@@ -626,7 +655,6 @@ class TableManager:
             return []
         query = list(table.list_entities(filter=f"PartitionKey eq '{username}'"))
         jobs = [self._deserialize_job_metadata(e) for e in query]
-        logger.info("[TABLE_LIST_JOBS_METADATA] user=%s found=%d", username, len(jobs))
 
         return jobs
 
@@ -656,9 +684,9 @@ class TableManager:
             return
         now = _azure_safe_timestamp()
         entity: Dict[str, Any] = {
-            "PartitionKey": row.job_id,
+            "PartitionKey": row.username,
             "RowKey": row.repo_name,
-            "username": row.username,
+            "job_id": row.job_id,
             "fingerprint": row.fingerprint,
             "description": (row.description or "")[:4096],
             "topics": _safe_json_dump_limited(row.topics or [], label="github_metadata.topics"),
@@ -680,32 +708,12 @@ class TableManager:
             "last_accessed_at": _azure_safe_timestamp(row.last_accessed_at) if row.last_accessed_at else now,
         }
         table.upsert_entity(entity, mode=UpdateMode.REPLACE)
-        logger.info("[TABLE_UPSERT_GITHUB_METADATA] user=%s repo=%s", row.username, row.repo_name)
 
-    def query_repo_github_metadata_by_username(self, username: str) -> List[Dict[str, Any]]:
-        """Query all GitHub metadata for a specific username.
-        
-        Uses filter expression instead of PartitionKey (less efficient but necessary
-        for freshness checks before job_id is created).
-        
-        Args:
-            username: GitHub username (stored as field, not partition key)
-        
-        Returns:
-            List of deserialized metadata dicts for all user repositories
-        """
-        table = self._get_table_client(self.table_names.repo_github_metadata)
-        if not table:
-            return []
-        
-        filter_str = f"username eq '{username}'"
-        entities = list(table.list_entities(filter=filter_str))
-        return [self._deserialize_repo_github_metadata(e) for e in entities]
 
-    def get_repo_github_metadata(self, job_id: str, repo_name: str) -> Optional[Dict[str, Any]]:
+    def get_repo_github_metadata(self, username: str, repo_name: str) -> Optional[Dict[str, Any]]:
         """Get GitHub metadata for a repository.
         
-        PartitionKey: job_id
+        PartitionKey: username
         RowKey: repo_name
         Returns: Deserialized metadata dict or None if not found
         """
@@ -713,12 +721,12 @@ class TableManager:
         if not table:
             return None
         try:
-            entity = table.get_entity(partition_key=job_id, row_key=repo_name)
+            entity = table.get_entity(partition_key=username, row_key=repo_name)
         except ResourceNotFoundError:
             return None
         return self._deserialize_repo_github_metadata(entity)
 
-    def query_repo_github_metadata(self, job_id: str) -> List[Dict[str, Any]]:
+    def query_repo_github_metadata(self, username: str) -> List[Dict[str, Any]]:
         """Query all GitHub metadata for a user's repositories.
         
         PartitionKey: username
@@ -727,7 +735,7 @@ class TableManager:
         table = self._get_table_client(self.table_names.repo_github_metadata)
         if not table:
             return []
-        filter_str = f"PartitionKey eq '{job_id}'"
+        filter_str = f"PartitionKey eq '{username}'"
         entities = list(table.list_entities(filter=filter_str))
         return [self._deserialize_repo_github_metadata(e) for e in entities]
 
@@ -736,7 +744,7 @@ class TableManager:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
-        payload["job_id"] = payload.pop("PartitionKey", None)
+        payload["username"] = payload.pop("PartitionKey", None)
         payload["repo_name"] = payload.pop("RowKey", None)
         try:
             payload["topics"] = json.loads(payload.get("topics") or "[]")
@@ -787,13 +795,6 @@ class TableManager:
             "updated_at": _azure_safe_timestamp(row.updated_at) if row.updated_at else now,
         }
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
-        logger.info(
-            "[TABLE_UPSERT_REPO_STATUS] job=%s user=%s repo=%s status=%s",
-            row.job_id,
-            row.username,
-            row.repo_name,
-            status,
-        )
 
     def get_repo_status(self, job_id: str, repo_name: str) -> Optional[Dict[str, Any]]:
         """Get sync status for a specific repository in a job.
@@ -809,7 +810,6 @@ class TableManager:
             entity = table.get_entity(partition_key=job_id, row_key=repo_name)
         except ResourceNotFoundError:
             return None
-        logger.info("[TABLE_GET_REPO_STATUS] job=%s repo=%s found=true", job_id, repo_name)
         return self._deserialize_repo_status(entity)
 
     def list_repo_statuses(self, job_id: str) -> List[Dict[str, Any]]:
@@ -823,7 +823,6 @@ class TableManager:
             return []
         query = table.list_entities(filter=f"PartitionKey eq '{job_id}'")
         results = list(query)
-        logger.info("[TABLE_LIST_REPO_STATUSES] job=%s found=%d", job_id, len(results))
         return [self._deserialize_repo_status(e) for e in results]
 
     def update_repo_status(self, job_id: str, repo_name: str, updates: Dict[str, Any]) -> None:
@@ -855,13 +854,6 @@ class TableManager:
             if status not in _REPO_STATUS_ALLOWED:
                 raise ValueError(f"Invalid repo sync status: {status}")
             updates["status"] = status
-        
-        logger.info(
-            "[TABLE_UPDATE_REPO_STATUS] job=%s repo=%s keys=%s",
-            job_id,
-            repo_name,
-            sorted(list(updates.keys())),
-        )
         
         entity: Dict[str, Any] = {
             "PartitionKey": job_id,
@@ -897,166 +889,92 @@ class TableManager:
     # Repo Cache Summary
     # ------------------------------------------------------------------
     def upsert_cache_summary(self, row: RepoCacheSummaryRow) -> None:
-        """Register generated micro-summary in cache index."""
+        """Upsert cache summary entry with flexible state management.
+        
+        Handles both initial registration (status=pending) before generation
+        and state transitions (status=valid) after successful generation.
+        Uses MERGE mode for partial updates to avoid overwriting existing fields.
+        
+        Args:
+            row: RepoCacheSummaryRow with repo_name, fingerprint, job_id, cache_key,
+                 cache_status (default: 'pending'), and optional timestamp fields
+        """
         table = self._get_table_client(self.table_names.repo_cache_summary)
         if not table:
             return
         
         now = _azure_safe_timestamp()
-        entity = {
+        entity: Dict[str, Any] = {
             "PartitionKey": row.repo_name,
             "RowKey": row.fingerprint,
             "job_id": row.job_id,
             "cache_key": row.cache_key,
-            "summary_blob_uri": row.summary_blob_uri or "",
             "cache_status": row.cache_status,
-            "generated_at": _azure_safe_timestamp(row.generated_at) if row.generated_at else now,
-            "accessed_at": _azure_safe_timestamp(row.accessed_at) if row.accessed_at else now,
-            "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
             "updated_at": now,
         }
-        table.upsert_entity(entity, mode=UpdateMode.MERGE)
-        logger.info(
-            "[TABLE_UPSERT_CACHE_SUMMARY] job_id=%s repo=%s fingerprint=%s status=%s",
-            row.job_id, row.repo_name, row.fingerprint, row.cache_status
-        )
-
-    def register_pending_cache_summary(self, username: str, repo_name: str, fingerprint: str, job_id: str, cache_key: str) -> None:
-        """Register pending micro-summary cache entry (status=pending).
         
-        Call this before generation starts to track cache entry existence.
-        Status will be updated to 'valid' by generate_repo_micro_summary on success.
-        """
+        if row.summary_blob_uri:
+            entity["summary_blob_uri"] = row.summary_blob_uri
+        if row.generated_at:
+            entity["generated_at"] = _azure_safe_timestamp(row.generated_at)
+        if row.accessed_at:
+            entity["accessed_at"] = _azure_safe_timestamp(row.accessed_at)
+        if row.created_at:
+            entity["created_at"] = _azure_safe_timestamp(row.created_at)
+        
+        table.upsert_entity(entity, mode=UpdateMode.MERGE)
+
+    def update_cache_summary_status(self, repo_name: str, fingerprint: str, cache_status: str) -> None:
+        """Update cache summary status without overwriting other persisted fields."""
         table = self._get_table_client(self.table_names.repo_cache_summary)
         if not table:
             return
-        
-        now = _azure_safe_timestamp()
-        entity = {
+
+        entity: Dict[str, Any] = {
             "PartitionKey": repo_name,
             "RowKey": fingerprint,
-            "job_id": job_id,
-            "cache_key": cache_key,
-            "cache_status": "pending",
-            "created_at": now,
-            "updated_at": now,
+            "cache_status": cache_status,
+            "updated_at": _azure_safe_timestamp(),
         }
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
-        logger.info(
-            "[REGISTER_PENDING_CACHE] user=%s repo=%s fingerprint=%s cache_key=%s",
-            username, repo_name, fingerprint, cache_key
-        )
 
-    def get_cache_summary(self, username: str, repo_name: str, fingerprint: str) -> Optional[Dict[str, Any]]:
-        """Check if micro-summary is cached and valid."""
+
+    def get_cache_summary(self, repo_name: str, fingerprint: str) -> Optional[Dict[str, Any]]:
+        """Get cache summary metadata for a repo fingerprint.
+        
+        Args:
+            repo_name: Repository name (PartitionKey)
+            fingerprint: Content fingerprint (RowKey)
+            
+        Returns:
+            Deserialized cache summary dict if found, None otherwise
+        """
         table = self._get_table_client(self.table_names.repo_cache_summary)
         if not table:
             return None
-        
-        row_key = f"{repo_name}"
         try:
-            entity = table.get_entity(partition_key=username, row_key=row_key)
-            # Update accessed_at on cache hit
-            entity["accessed_at"] = _azure_safe_timestamp()
-            table.update_entity(entity, mode=UpdateMode.MERGE)
+            entity = table.get_entity(partition_key=repo_name, row_key=fingerprint)
+            entity["PartitionKey"] = repo_name
+            entity["RowKey"] = fingerprint
             return self._deserialize_cache_summary(entity)
         except ResourceNotFoundError:
             return None
-
-    def list_valid_cache_summaries(self, repo_name: str) -> List[Dict[str, Any]]:
-        """List all valid (non-pending, non-stale) micro-summary cache entries for a user.
-
-        Returns only entries with cache_status == 'valid', which indicates
-        the micro-summary blob was successfully generated and is ready to use.
-
-        Args:
-            username: GitHub username (PartitionKey)
-
-        Returns:
-            List of dicts with repo_name, fingerprint, and cache_key fields
-        """
-        table = self._get_table_client(self.table_names.repo_cache_summary)
-        if not table:
-            return []
-        try:
-            entities = table.list_entities(
-                filter=f"PartitionKey eq '{repo_name}' and cache_status eq 'valid'"
-            )
-            results = [self._deserialize_cache_summary(e) for e in entities]
-            logger.info(
-                "[TABLE_LIST_VALID_CACHE_SUMMARIES] user=%s found=%d",
-                repo_name, len(results)
-            )
-            return results
-        except Exception as exc:
-            logger.warning("[TABLE_LIST_VALID_CACHE_SUMMARIES] Failed for user=%s: %s", repo_name, exc)
-            return []
-
-    def invalidate_cache_summary(self, username: str, repo_name: str, old_fingerprint: str) -> None:
-        """Mark summary as stale when fingerprint changes."""
-        table = self._get_table_client(self.table_names.repo_cache_summary)
-        if not table:
-            return
-        
-        row_key = f"{repo_name}|{old_fingerprint}"
-        try:
-            entity = {
-                "PartitionKey": username,
-                "RowKey": row_key,
-                "cache_status": "stale",
-                "updated_at": _azure_safe_timestamp(),
-            }
-            table.update_entity(entity, mode=UpdateMode.MERGE)
-            logger.info(
-                "[INVALIDATE_CACHE] user=%s repo=%s old_fingerprint=%s",
-                username, repo_name, old_fingerprint
-            )
-        except Exception as exc:
-            logger.warning("[INVALIDATE_CACHE_FAILED] %s", exc)
-    
-    def cleanup_stale_cache_summaries(self, older_than_iso: str) -> int:
-        """Delete stale summary cache entries (cascade blob cleanup)."""
-        table = self._get_table_client(self.table_names.repo_cache_summary)
-        if not table:
-            return 0
-        
-        safe_ts = _azure_safe_timestamp(older_than_iso)
-        filter_str = f"cache_status eq 'stale' and updated_at lt '{safe_ts}'"
-        
-        count = 0
-        try:
-            entities = list(table.list_entities(filter=filter_str, select=["PartitionKey", "RowKey", "summary_blob_uri"]))
-            
-            for e in entities:
-                try:
-                    # You can also orchestrate blob deletion here if needed
-                    table.delete_entity(e["PartitionKey"], e["RowKey"])
-                    count += 1
-                except Exception as del_exc:
-                    logger.warning("[CLEANUP_CACHE_SUMMARY] Failed: %s", del_exc)
-            
-            logger.info("[CLEANUP_STALE_CACHE] Deleted %d stale entries", count)
-        except Exception as exc:
-            logger.error("[CLEANUP_CACHE_SUMMARY] Failed: %s", exc)
-        
-        return count
 
     def _deserialize_cache_summary(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
             payload.pop(meta_key, None)
-        payload["username"] = payload.pop("PartitionKey", None)
-        row_key = payload.pop("RowKey", "")
-        if "|" in row_key:
-            payload["repo_name"], payload["fingerprint"] = row_key.split("|", 1)
-        else:
-            payload["repo_name"] = row_key
-            payload["fingerprint"] = None
+        payload["repo_name"] = payload.get("PartitionKey", None)
+        payload["fingerprint"]= payload.get("RowKey", None)
+        payload["job_id"] = payload.get("job_id")
+        payload["cache_key"] = payload.get("cache_key")
+        payload["cache_status"] = payload.get("cache_status")
         payload["generated_at"] = _restore_iso_timestamp(payload.get("generated_at"))
         payload["accessed_at"] = _restore_iso_timestamp(payload.get("accessed_at"))
         payload["created_at"] = _restore_iso_timestamp(payload.get("created_at"))
         payload["updated_at"] = _restore_iso_timestamp(payload.get("updated_at"))
         return payload
+
 
     # ------------------------------------------------------------------
     # Repo languages
@@ -1108,7 +1026,6 @@ class TableManager:
                     row.job_id, row.repo_name, row.language, exc
                 )
         
-        logger.info("[TABLE_UPSERT_LANGUAGES] total=%d succeeded=%d", len(rows), success_count)
 
     def delete_repo_languages(self, job_id: str, repo_name: str) -> None:
         """Delete all language entries for a repository.
@@ -1137,7 +1054,6 @@ class TableManager:
                         "[TABLE_DELETE_LANGUAGE_FAILED] repo=%s language=%s error=%s",
                         repo_name, e.get("RowKey"), exc
                     )
-            logger.info("[TABLE_DELETE_REPO_LANGUAGES] repo=%s count=%d", repo_name, len(existing))
 
     def query_all_repo_languages(self, job_id: str) -> Dict[str, List[Dict[str, Any]]]:
         """Query all language statistics for all repos in a job.
@@ -1170,10 +1086,9 @@ class TableManager:
                     by_repo[repo_name] = []
                 by_repo[repo_name].append(deserialized)
         
-        logger.info("[QUERY_REPO_LANGUAGES] job_id=%s repos=%d", job_id, len(by_repo))
         return by_repo
 
-    def get_repo_languages(self, repo_name: str, job_id: str) -> List[Dict[str, Any]]:
+    def get_repo_languages(self, repo_name: str) -> List[Dict[str, Any]]:
         """Query language statistics for a specific repo.
 
         Returns all languages for a repo. Since schema stores latest job only,
@@ -1193,19 +1108,19 @@ class TableManager:
             return []
 
         # Simple partition query - returns all languages for this repo
-        safe_repo_name = repo_name.replace("'", "''")
-        filter_str = f"PartitionKey eq '{safe_repo_name}'"
+        filter_str = f"PartitionKey eq '{repo_name}'"
         entities = list(table.list_entities(filter=filter_str))
-        
-        logger.info(
-            "[GET_REPO_LANGUAGES] repo=%s language_count=%d",
-            repo_name, len(entities)
-        )
 
         languages = []
         for entity in entities:
             deserialized = self._deserialize_repo_languages(entity)
-            languages.append(deserialized)
+            # Guard against Azurite PartitionKey filter unreliability: filter by repo_name at Python level
+            if deserialized.get("repo_name") == repo_name:
+                languages.append(deserialized)
+                logger.info(
+                    "[LANGUAGE_ENTRY] repo=%s language=%s bytes=%d percentage=%.2f",
+                    repo_name, deserialized.get("language"), deserialized.get("bytes_count"), deserialized.get("percentage")
+                )
         
         return languages
 
@@ -1292,52 +1207,29 @@ class TableManager:
         total_deleted = 0
         
         try:
-            # Scan JobMetadata for old jobs
             old_jobs = list(job_table.list_entities(
                 filter=filter_str,
                 select=["PartitionKey", "RowKey", "job_id", "updated_at"]
             ))
             
-            logger.info("[CLEANUP_OLD_JOBS] Found %d old jobs (candidates for deletion)", len(old_jobs))
-            
-            # Group jobs by username to check if candidate has multiple jobs
             jobs_by_user: Dict[str, List[Dict[str, Any]]] = {}
             for job_entity in old_jobs:
                 username = job_entity.get("PartitionKey")
                 if username:
                     jobs_by_user.setdefault(username, []).append(job_entity)
             
-            # For each user, check their total job count and only delete if they have multiple jobs
             for username, old_user_jobs in jobs_by_user.items():
-                # Get total job count for this user
                 all_user_jobs = self.list_jobs_metadata(username)
                 total_job_count = len(all_user_jobs)
                 
                 if total_job_count <= 1:
-                    # Only one job exists for this candidate - preserve it
-                    logger.info(
-                        "[CLEANUP_OLD_JOBS] Preserving only job for user=%s (job_count=%d)",
-                        username, total_job_count
-                    )
                     continue
-                
-                # Multiple jobs exist - safe to delete old ones
-                logger.info(
-                    "[CLEANUP_OLD_JOBS] user=%s has %d total jobs, deleting %d old jobs",
-                    username, total_job_count, len(old_user_jobs)
-                )
                 
                 for job_entity in old_user_jobs:
                     job_id = job_entity.get("RowKey") or job_entity.get("job_id")
-                    
                     if not job_id:
                         continue
                     
-                    # Note: RepoLanguages is not deleted here. Per the schema design,
-                    # only the latest job's language data is kept (overwrites previous).
-                    # Old job data is automatically stale and can be ignored.
-                    
-                    # 2. Delete RepoSyncStatus for this job (partition-scoped delete)
                     status_table = self._get_table_client(self.table_names.repo_sync_status)
                     if status_table:
                         try:
@@ -1358,10 +1250,6 @@ class TableManager:
                     try:
                         job_table.delete_entity(username, job_id)
                         total_deleted += 1
-                        logger.info(
-                            "[CLEANUP_JOB] Deleted job=%s user=%s (user had %d total jobs)",
-                            job_id, username, total_job_count
-                        )
                     except Exception as exc:
                         logger.warning("[CLEANUP_JOB] Failed to delete job=%s: %s", job_id, exc)
             
@@ -1395,7 +1283,6 @@ class TableManager:
         
         safe_ts = _azure_safe_timestamp(older_than_iso)
         
-        # Query candidates: entries with old last_accessed_at or missing field (legacy)
         filter_str = f"last_accessed_at lt '{safe_ts}'"
         
         count = 0
@@ -1403,19 +1290,15 @@ class TableManager:
         legacy_count = 0
         
         try:
-            # Query with full fields to analyze deletion reasons
             entities = list(table.list_entities(
                 filter=filter_str,
                 select=["PartitionKey", "RowKey", "last_accessed_at", "created_at", "fingerprint"]
             ))
             
-            logger.info("[CLEANUP_GITHUB_METADATA] Found %d candidate metadata rows (access cutoff: %s)", len(entities), older_than_iso)
-            
             for e in entities:
                 try:
                     last_accessed = e.get("last_accessed_at")
                     
-                    # Abandoned: not accessed recently
                     if last_accessed and last_accessed < safe_ts:
                         table.delete_entity(e["PartitionKey"], e["RowKey"])
                         count += 1
@@ -1426,12 +1309,6 @@ class TableManager:
                         "[CLEANUP_GITHUB_METADATA] Failed to delete user=%s repo=%s: %s",
                         e.get("PartitionKey"), e.get("RowKey"), del_exc
                     )
-            
-            if count > 0:
-                logger.info(
-                    "[CLEANUP_GITHUB_METADATA] Deleted %d rows: %d abandoned (not accessed), %d legacy (no access field)",
-                    count, abandoned_count, legacy_count
-                )
             
         except Exception as exc:
             logger.error("[CLEANUP_GITHUB_METADATA] Failed: %s", exc)
@@ -1470,26 +1347,7 @@ class TableManager:
             "created_at": _azure_safe_timestamp(row.created_at) if row.created_at else now,
         }
         
-        logger.info(
-            "[TABLE_UPSERT_API_USAGE_ENTITY] PartitionKey=%s RowKey=%s operation=%s job_id=%s repo_name=%s",
-            entity.get("PartitionKey"),
-            entity.get("RowKey"),
-            entity.get("purpose"),
-            entity.get("job_id"),
-            entity.get("repo_name"),
-        )
-        
         table.upsert_entity(entity, mode=UpdateMode.REPLACE)
-        logger.info(
-            "[TABLE_UPSERT_API_USAGE] user=%s operation=%s job=%s repo=%s rest=%d graphql=%d cache_hits=%d",
-            row.username,
-            row.purpose,
-            row.job_id or "<none>",
-            row.repo_name or "<all>",
-            row.api_calls_rest,
-            row.api_calls_graphql,
-            row.cache_hits,
-        )
     
     def list_api_usage(
         self,
@@ -1557,7 +1415,6 @@ class TableManager:
             "PartitionKey": row.username,
             "RowKey": row.operation_key,
             "purpose": row.purpose,
-            "request_id": row.request_id,
             "provider": row.provider,
             "model_name": row.model_name,
             "model_tier": row.model_tier,
@@ -1577,28 +1434,8 @@ class TableManager:
             "updated_at": _azure_safe_timestamp(row.updated_at) if row.updated_at else now,
         }
 
-        logger.info(
-            "[TABLE_UPSERT_AI_REQUEST_USAGE_ENTITY] PartitionKey=%s RowKey=%s purpose=%s request_id=%s model=%s status=%s",
-            entity.get("PartitionKey"),
-            entity.get("RowKey"),
-            entity.get("purpose"),
-            entity.get("request_id"),
-            entity.get("model_name"),
-            entity.get("status"),
-        )
-
         table.upsert_entity(entity, mode=UpdateMode.REPLACE)
-        logger.info(
-            "[TABLE_UPSERT_AI_REQUEST_USAGE] user=%s purpose=%s request_id=%s model=%s prompt=%d completion=%d total=%d status=%s",
-            row.username,
-            row.purpose,
-            row.request_id,
-            row.model_name or "<unknown>",
-            row.prompt_tokens,
-            row.completion_tokens,
-            row.total_tokens,
-            row.status,
-        )
+
 
     def list_ai_request_usage(
         self,
@@ -1678,7 +1515,6 @@ class TableManager:
             "updated_at": now,
         }
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
-        logger.info("[TABLE_UPSERT_USER_PROFILE] user=%s", row.username)
 
     def get_user_profile(self, username: str) -> Optional[Dict[str, Any]]:
         """Retrieve user profile by username.
