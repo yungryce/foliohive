@@ -154,7 +154,7 @@ resource functionAppAppSettings 'Microsoft.Web/sites/config@2024-11-01' = {
     AzureWebJobsStorage__ClientId: uamiClientId
     AzureWebJobsStorage__accountName: storageAccountName
     AZURE_CLIENT_ID: uamiClientId
-    ENABLE_QUEUE_MODE: 'true'
+    ENABLE_CONFIG_DISCOVERY_GRAPHQL: 'true'
   }
 }
 
