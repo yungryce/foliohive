@@ -27,6 +27,7 @@ variables:
 
 
 
+
 parameters:
   - name: bicepFile
     type: string
