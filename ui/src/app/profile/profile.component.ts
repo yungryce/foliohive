@@ -83,7 +83,7 @@ export class ProfileComponent implements OnInit, OnDestroy {
         this.profile = profile;
         this.loadingProfile = false;
         const jobId = profile?.job_metadata?.job_id;
-        this.loadSummary(username, jobId);
+        this.loadProfileSummary(username, jobId);
       },
       error: () => {
         this.loadingProfile = false;
@@ -92,7 +92,7 @@ export class ProfileComponent implements OnInit, OnDestroy {
     });
   }
 
-  private loadSummary(username: string, jobId?: string): void {
+  private loadProfileSummary(username: string, jobId?: string): void {
     this.loadingSummary = true;
     this.summaryError = '';
     this.summaryMarkdown = null;

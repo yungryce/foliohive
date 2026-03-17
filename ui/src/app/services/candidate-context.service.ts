@@ -176,12 +176,6 @@ export class CandidateContextService {
           apiUsernames.add(username);
         }
       } else {
-        // Case 2: API returns empty list - candidates are stale/invalid (jobs deleted)
-        // Clear everything and notify client to remove from storage
-        if (existing.length > 0) {
-          // Log that we're clearing stale candidates
-          console.debug('Session candidates validation: API returned empty, clearing %d stale candidates', existing.length);
-        }
         this.candidatesSubject.next([]);
         this.persistCandidates([]);
         this.activeUsernameSubject.next(null);

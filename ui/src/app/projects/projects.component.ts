@@ -5,7 +5,7 @@ import { RouterModule } from '@angular/router';
 import { RepoBundleService, RepoBundleResponse } from '../services/repo-bundle.service';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
-import { Observable, map, of, Subject, takeUntil, tap } from 'rxjs';
+import { Observable, map, of, Subject, takeUntil, shareReplay, distinctUntilChanged } from 'rxjs';
 
 /**
  * Aligned with backend schema from _repo_row_to_bundle_entry in api_gateway.py
@@ -36,6 +36,8 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   private readonly destroy$ = new Subject<void>();
   repoBundle$!: Observable<RepoBundleResponse>;
   filteredRepos$!: Observable<RepoCardVM[]>;
+  allLanguages$!: Observable<string[]>;
+  allTechnologies$!: Observable<string[]>;
   filterByDocumentation = false; 
   username = '';
   missingCandidate = false;
@@ -50,9 +52,7 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   sortBy = 'updated';
   sortDirection = 'desc';
 
-  // Available filter options
-  allLanguages: string[] = [];
-  allTechnologies: string[] = [];
+
 
   // Loading state
   loading = false;
@@ -83,19 +83,42 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   }
 
   loadRepoBundle(): void {
-    this.repoBundle$ = this.repoBundleService.getCandidateMetadata(this.username).pipe(
-      tap(bundle => {
-        this.bundleEmpty = !(Array.isArray(bundle?.data) && bundle.data.length > 0);
-      })
-    );
-    this.filteredRepos$ = this.repoBundle$.pipe(
+    this.repoBundle$ = this.repoBundleService.getCandidateMetadata(this.username);
+
+    const repos$ = this.repoBundle$.pipe(
       map(bundle => {
-        const vms = (bundle?.data ?? [])
+        this.bundleEmpty = !(Array.isArray(bundle?.data) && bundle.data.length > 0);
+        return (bundle?.data ?? [])
           .map(r => this.toCardVM(r))
           .filter((vm): vm is RepoCardVM => vm !== null);
-        this.extractFilterOptionsFromVM(vms);
-        return this.filterAndSortVMs(vms);
-      })
+      }),
+      shareReplay(1)
+    );
+
+    this.allLanguages$ = repos$.pipe(
+      map(vms => {
+        const languages = new Set<string>();
+        vms.forEach(vm => {
+          (vm.languagesPct ?? []).forEach(l => languages.add(l.k));
+        });
+        return Array.from(languages).sort();
+      }),
+      distinctUntilChanged((prev, curr) => JSON.stringify(prev) === JSON.stringify(curr))
+    );
+
+    this.allTechnologies$ = repos$.pipe(
+      map(vms => {
+        const technologies = new Set<string>();
+        vms.forEach(vm => {
+          vm.topics.forEach(topic => technologies.add(topic));
+        });
+        return Array.from(technologies).sort();
+      }),
+      distinctUntilChanged((prev, curr) => JSON.stringify(prev) === JSON.stringify(curr))
+    );
+
+    this.filteredRepos$ = repos$.pipe(
+      map(vms => this.filterAndSortVMs(vms))
     );
   }
 
@@ -134,17 +157,6 @@ export class ProjectsComponent implements OnInit, OnDestroy {
       isFork: r?.flags?.fork ?? false,
       isArchived: r?.flags?.archived ?? false,
     };
-  }
-
-  private extractFilterOptionsFromVM(vms: RepoCardVM[]): void {
-    const languages = new Set<string>();
-    const technologies = new Set<string>();
-    vms.forEach(vm => {
-      (vm.languagesPct ?? []).forEach(l => languages.add(l.k));
-      vm.topics.forEach(topic => technologies.add(topic));
-    });
-    this.allLanguages = Array.from(languages).sort();
-    this.allTechnologies = Array.from(technologies).sort();
   }
 
   private filterAndSortVMs(vms: RepoCardVM[]): RepoCardVM[] {

@@ -80,7 +80,7 @@
                     class="w-full px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--fg)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
                   >
                     <option value="">All Languages</option>
-                    <option *ngFor="let lang of allLanguages" [value]="lang">{{ lang }}</option>
+                    <option *ngFor="let lang of (allLanguages$ | async)" [value]="lang">{{ lang }}</option>
                   </select>
                 </div>
 
@@ -92,7 +92,7 @@
                     class="w-full px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--fg)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
                   >
                     <option value="">All Technologies</option>
-                    <option *ngFor="let tech of allTechnologies" [value]="tech">{{ tech }}</option>
+                    <option *ngFor="let tech of (allTechnologies$ | async)" [value]="tech">{{ tech }}</option>
                   </select>
                 </div>
 

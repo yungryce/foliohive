@@ -122,18 +122,12 @@ export class RepoBundleService {
   getJobStatus(username: string, jobId: string): Observable<JobStatusResponse> {
     const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/status`;
     const params = new HttpParams().set('job_id', jobId);
-    console.log(`[getJobStatus] polling: username=${username}, jobId=${jobId}`);
     return this.http.get<any>(url, { params }).pipe(
       map(res => {
         const payload = (res?.status === 'success' && res?.data) ? res.data : res;
-        const jobStatus = payload as JobStatusResponse;
-        console.log(
-          `[getJobStatus] response: status=${jobStatus?.status}, metadata_ready=${jobStatus?.metadata_ready}, summary_ready=${jobStatus?.summary_ready}, progress=${jobStatus?.progress?.completed}/${jobStatus?.progress?.total}`
-        );
-        return jobStatus;
+        return payload as JobStatusResponse;
       }),
       catchError(err => {
-        console.error(`[getJobStatus] error:`, err);
         return of(null as any);
       })
     );
@@ -203,16 +197,13 @@ export class RepoBundleService {
    * Throws error for caller to handle (e.g., polling logic).
    */
   getReadmeSummary(username: string, repo: string): Observable<ReadmeSummaryResponse> {
-    console.log(`[getReadmeSummary] Fetching README summary for ${username}/${repo}`);
     const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/${encodeURIComponent(repo)}/readme-summary`;
     return this.http.get<any>(url).pipe(
       map(res => {
         if (res?.status === 'success' && res?.data) return res.data as ReadmeSummaryResponse;
-        console.log(`[getReadmeSummary] Unexpected response format for ${username}/${repo}:`, res);
         return res as ReadmeSummaryResponse;
       }),
       catchError(err => {
-        console.error(`[getReadmeSummary] Error fetching README summary for ${username}/${repo}:`, err);
         // Re-throw error for caller to handle (e.g., polling logic)
         return throwError(() => err);
       })

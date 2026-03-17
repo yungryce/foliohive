@@ -138,7 +138,7 @@ Access the application:
 
 ```
 foliohive/
-├── api/v0.3.0/
+├── api/v0.4.0/
 │   ├── function-app/          # Azure Functions entry point
 │   │   ├── function_app.py    # Main app registration
 │   │   └── blueprints/        # Worker implementations
@@ -171,7 +171,7 @@ foliohive/
 
 ## 🔗 Documentation
 
-- **[API Documentation](./api/v0.3.0/README.md)** - Blueprints, workers, shared modules, table schema
+- **[API Documentation](./api/v0.4.0/README.md)** - Blueprints, workers, shared modules, table schema
 - **[UI Documentation](./ui/README.md)** - Components, services, state management
 - **[Infrastructure Documentation](./infra/bicep/README.md)** - Bicep modules, deployment, networking
 - **[DevOps Documentation](./.ado/README.md)** - Pipelines, CI/CD, variable groups *(coming soon)*
@@ -182,7 +182,7 @@ foliohive/
 
 ```bash
 # Run all tests
-cd api/v0.3.0/tests
+cd api/v0.4.0/tests
 ./run_tests.sh
 
 # Run specific test suite
