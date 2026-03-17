@@ -18,10 +18,12 @@ pr:
       - ui/.angular/cache/**
       - 'ui/**/*.spec.ts'
 
+
 variables:
   - group: 'Cloudfolio-Vars'
   - name: uiDir
     value: ui
+
 
 stages:
 - stage: CI_SWA
