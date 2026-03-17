@@ -1,7 +1,7 @@
 using './main.bicep'
 
 param location = 'westus2'
-param namePrefix = 'cloudfolioASP'
+param namePrefix = 'foliohiveASP'
 
 param tags = {
   Environment: 'v0.2.0'

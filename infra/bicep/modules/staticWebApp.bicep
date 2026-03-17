@@ -19,7 +19,7 @@ param backendFunctionAppId string
 param backendFunctionAppDefaultHostname string
 
 @description('GitHub repository URL for the Static Web App (required by Azure, even for manual deployments)')
-param repositoryUrl string = 'https://dev.azure.com/chxgbx/cloudfolio/_git/cloudfolio'
+param repositoryUrl string = 'https://dev.azure.com/chxgbx/foliohive/_git/foliohive'
 
 var swaName = '${namePrefix}-swa-${uniqueSuffix}'
 

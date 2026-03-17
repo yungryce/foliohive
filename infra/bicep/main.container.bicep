@@ -11,7 +11,7 @@ param location string = resourceGroup().location
 param tags Tags = {}
 
 @description('Prefix used for resource naming')
-param namePrefix string = 'cloudfolio'
+param namePrefix string = 'foliohive'
 
 @description('Unique suffix to keep resource names stable across deployments')
 param uniqueSuffix string = uniqueString(resourceGroup().id, namePrefix)

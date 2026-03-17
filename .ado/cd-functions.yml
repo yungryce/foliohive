@@ -7,10 +7,10 @@
 resources:
   pipelines:
     - pipeline: functions_ci
-      source: yungryce.cloudfolio.function-ci
+      source: yungryce.foliohive.function-ci
       trigger: true
     - pipeline: core_infra
-      source: yungryce.cloudfolio.infra
+      source: yungryce.foliohive.infra
       trigger: true
 
 pr:
@@ -25,7 +25,7 @@ pr:
       - infra/bicep/modules/functionApp.bicep
 
 variables:
-  - group: 'Cloudfolio-Vars'
+  - group: 'folioVars'
 
 stages:
 - stage: Deploy_Functions

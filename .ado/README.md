@@ -42,7 +42,7 @@ This folder contains Cloudfolio’s Azure DevOps (ADO) pipeline definitions and 
 
 ## Required variables
 
-Pipelines assume you have an Azure DevOps Variable Group named `Cloudfolio-Vars` (see `variables: - group: 'Cloudfolio-Vars'`). At minimum, it should contain values for:
+Pipelines assume you have an Azure DevOps Variable Group named `folioVars` (see `variables: - group: 'folioVars'`). At minimum, it should contain values for:
 
 - `azureServiceConnection`
 - `subscriptionId`
@@ -110,7 +110,7 @@ This folder contains Cloudfolio’s Azure DevOps (ADO) pipeline definitions and 
 
 ## Required variables
 
-Pipelines assume you have an Azure DevOps Variable Group named `Cloudfolio-Vars` (see `variables: - group: 'Cloudfolio-Vars'`). At minimum, it should contain values for:
+Pipelines assume you have an Azure DevOps Variable Group named `folioVars` (see `variables: - group: 'folioVars'`). At minimum, it should contain values for:
 
 - `azureServiceConnection`
 - `subscriptionId`

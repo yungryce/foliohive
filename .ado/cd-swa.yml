@@ -10,10 +10,10 @@
 resources:
   pipelines:
     - pipeline: swa_ci
-      source: yungryce.cloudfolio.swa-ci
+      source: yungryce.foliohive.swa-ci
       trigger: true
     - pipeline: functions_cd
-      source: yungryce.cloudfolio.function-cd
+      source: yungryce.foliohive.function-cd
       trigger: true
 
 pr:
@@ -27,13 +27,13 @@ pr:
       - infra/bicep/modules/staticWebApp.bicep
 
 variables:
-  - group: 'Cloudfolio-Vars'
+  - group: 'folioVars'
   - name: bicepFile
     value: './infra/bicep/main.staticwebapp.bicep'
   - name: enableLinkedBackend
     value: 'true'
   - name: repositoryUrl
-    value: 'https://dev.azure.com/chxgbx/cloudfolio/_git/cloudfolio'
+    value: 'https://dev.azure.com/chxgbx/foliohive/_git/foliohive'
 
 stages:
 - stage: CD_SWA

@@ -20,7 +20,7 @@ pr:
 
 
 variables:
-  - group: 'Cloudfolio-Vars'
+  - group: 'folioVars'
   - name: uiDir
     value: ui
 
