@@ -42,26 +42,3 @@ stages:
         pythonVersion: '$(pythonVersion)'
         condition: eq(stageDependencies.Detect_Changes.Detect_Changes.outputs['DetectChanges.flexAppChanged'], 'true')
         
-    # - template: ci-build-function.yml
-    #   parameters:
-    #     functionName: 'api-gateway'
-    #     functionDir: 'api/v0.2.0/api-gateway'
-    #     sharedDir: 'api/v0.2.0/shared'
-    #     pythonVersion: '$(pythonVersion)'
-    #     condition: eq(stageDependencies.Detect_Changes.Detect_Changes.outputs['DetectChanges.apiGatewayChanged'], 'true')
-
-    # - template: ci-build-function.yml
-    #   parameters:
-    #     functionName: 'sync-worker'
-    #     functionDir: 'api/v0.2.0/sync-worker'
-    #     sharedDir: 'api/v0.2.0/shared'
-    #     pythonVersion: '$(pythonVersion)'
-    #     condition: eq(stageDependencies.Detect_Changes.Detect_Changes.outputs['DetectChanges.syncWorkerChanged'], 'true')
-
-    # - template: ci-build-function.yml
-    #   parameters:
-    #     functionName: 'merge-worker'
-    #     functionDir: 'api/v0.2.0/merge-worker'
-    #     sharedDir: 'api/v0.2.0/shared'
-    #     pythonVersion: '$(pythonVersion)'
-    #     condition: eq(stageDependencies.Detect_Changes.Detect_Changes.outputs['DetectChanges.mergeWorkerChanged'], 'true')
