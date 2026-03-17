@@ -28,10 +28,6 @@ _DEFAULT_CONTAINER = "github-cache"
 _HOT_CACHE = create_default_hot_cache()
 
 
-def _hot_cache_enabled() -> bool:
-    return os.getenv("CF_HOT_CACHE_ENABLED", "true").lower() == "true"
-
-
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -161,15 +157,14 @@ class CacheManager:
     # Core operations
     # ------------------------------------------------------------------
     def get(self, cache_key: str) -> Dict[str, Any]:
-        if _hot_cache_enabled():
-            cached_value = _HOT_CACHE.get(cache_key)
-            if cached_value is not None:
-                return {
-                    "status": "valid",
-                    "data": cached_value,
-                    "last_modified": None,
-                    "size_bytes": None,
-                }
+        cached_value = _HOT_CACHE.get(cache_key)
+        if cached_value is not None:
+            return {
+                "status": "valid",
+                "data": cached_value,
+                "last_modified": None,
+                "size_bytes": None,
+            }
         self._ensure_initialized()
         if not self.use_cache or not self._blob_service_client:
             return {"status": "disabled", "data": None}
@@ -216,9 +211,8 @@ class CacheManager:
         data: Any,
         ttl: Optional[int] = None,
     ) -> bool:
-        if _hot_cache_enabled():
-            hot_ttl = ttl if ttl is not None else self.default_ttl
-            _HOT_CACHE.set(cache_key, data, ttl=hot_ttl)
+        hot_ttl = ttl if ttl is not None else self.default_ttl
+        _HOT_CACHE.set(cache_key, data, ttl=hot_ttl)
         self._ensure_initialized()
         if not self.use_cache or not self._blob_service_client:
             return False
