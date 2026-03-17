@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 
-const STORAGE_KEY = 'cloudfolio.session_id';
+const STORAGE_KEY = 'foliohive.session_id';
 
 function generateId(): string {
   try {

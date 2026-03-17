@@ -1,5 +1,5 @@
 {
-  "name": "cloudfolio-ui",
+  "name": "foliohive-ui",
   "version": "0.0.0",
   "scripts": {
     "ng": "ng",
@@ -52,14 +52,14 @@
   "main": "index.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yungryce/portfolio.git"
+    "url": "git+https://github.com/yungryce/foliohive.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/yungryce/portfolio/issues"
+    "url": "https://github.com/yungryce/foliohive/issues"
   },
-  "homepage": "https://github.com/yungryce/portfolio#readme"
+  "homepage": "https://github.com/yungryce/foliohive#readme"
 }

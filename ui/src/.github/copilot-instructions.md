@@ -38,7 +38,7 @@ Purpose: Enable AI agents to quickly ship safe, maintainable changes by document
 
 ## Service/Data Patterns
 - `RepoBundleService`:
-  - `getUserBundle(username, useCache?)` → `{ username, data: any[] }`, cached ~10 min
+  - `getCandidateMetadata(username, useCache?)` → `{ username, data: any[] }`, cached ~10 min
   - `getUserSingleRepoBundle(username, repo, useCache?)` → `{ username, repo, data: any }`, cached
   - Always unwrap `{ status, data }` responses, fallback to safe defaults
 - `AIAssistantService`:
@@ -84,7 +84,7 @@ Purpose: Enable AI agents to quickly ship safe, maintainable changes by document
 
 ## Examples
 - Use `RepoBundleService` in a component:
-  - `this.repoBundle$ = this.repoSvc.getUserBundle('yungryce');`
+  - `this.repoBundle$ = this.repoSvc.getCandidateMetadata('yungryce');`
   - `this.filtered$ = this.repoBundle$.pipe(map(b => b.data.map(toCardVM)))`
 - Normalize language map to percentages:
   - `const total = Object.values(langs).reduce((a,b)=>a+Number(b),0)||1; Object.entries(langs).map(([k,v])=>({k,pct:Math.round(Number(v)/total*100)})).sort((a,b)=>b.pct-a.pct)`

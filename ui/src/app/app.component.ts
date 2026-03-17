@@ -9,7 +9,7 @@ import { RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
   styleUrl: './app.component.css'
 })
 export class AppComponent implements OnInit {
-  title = 'Cloudfolio';
+  title = 'foliohive';
   theme: 'light' | 'dark' = 'light';
 
   ngOnInit(): void {

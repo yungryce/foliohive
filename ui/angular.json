@@ -3,7 +3,7 @@
   "version": 1,
   "newProjectRoot": "projects",
   "projects": {
-    "cloudfolio-ui": {
+    "foliohive-ui": {
       "projectType": "application",
       "schematics": {
         "@schematics/angular:component": {
@@ -70,10 +70,10 @@
           "builder": "@angular-devkit/build-angular:dev-server",
           "configurations": {
             "production": {
-              "buildTarget": "cloudfolio-ui:build:production"
+              "buildTarget": "foliohive-ui:build:production"
             },
             "development": {
-              "buildTarget": "cloudfolio-ui:build:development"
+              "buildTarget": "foliohive-ui:build:development"
             }
           },
           "defaultConfiguration": "development"

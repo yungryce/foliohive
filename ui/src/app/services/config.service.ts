@@ -15,7 +15,6 @@ export class ConfigService {
 
   // Load actual configuration if needed
   loadConfig(): Observable<any> {
-    console.log('Loading configuration...');
     // Could load from API or external config file
     return of({
       apiUrl: this.apiUrl,

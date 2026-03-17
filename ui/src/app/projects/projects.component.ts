@@ -5,18 +5,22 @@ import { RouterModule } from '@angular/router';
 import { RepoBundleService, RepoBundleResponse } from '../services/repo-bundle.service';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
-import { Observable, map, of, Subject, switchMap, takeUntil, takeWhile, tap, timer } from 'rxjs';
+import { Observable, map, of, Subject, takeUntil, shareReplay, distinctUntilChanged } from 'rxjs';
 
+/**
+ * Aligned with backend schema from _repo_row_to_bundle_entry in api_gateway.py
+ */
 interface RepoCardVM {
   name: string;
-  updatedAt?: string;
-  type: string;
-  description: string;
-  primaryStack: string[];
+  description?: string;
   languagesPct: { k: string; pct: number }[];
+  updatedAt?: string;
   htmlUrl?: string;
-  isFork?: boolean;
-  hasDocumentation: boolean;
+  stars: number;
+  forks: number;
+  topics: string[];
+  isFork: boolean;
+  isArchived: boolean;
 }
 
 @Component({
@@ -32,9 +36,10 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   private readonly destroy$ = new Subject<void>();
   repoBundle$!: Observable<RepoBundleResponse>;
   filteredRepos$!: Observable<RepoCardVM[]>;
+  allLanguages$!: Observable<string[]>;
+  allTechnologies$!: Observable<string[]>;
   filterByDocumentation = false; 
   username = '';
-  jobId?: string;
   missingCandidate = false;
 
   // Filter options
@@ -47,17 +52,12 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   sortBy = 'updated';
   sortDirection = 'desc';
 
-  // Available filter options
-  allLanguages: string[] = [];
-  allTechnologies: string[] = [];
+
 
   // Loading state
   loading = false;
   loadingMessage = '';
 
-  // Building state
-  building = false;
-  buildMessage = '';
   bundleEmpty = false;
 
   ngOnInit(): void {
@@ -71,82 +71,74 @@ export class ProjectsComponent implements OnInit, OnDestroy {
           return;
         }
 
-        const active = this.candidateContext.activeCandidate;
         this.missingCandidate = false;
         this.username = username;
-        this.jobId = active?.jobId;
         this.loadRepoBundle();
       });
   }
 
   ngOnDestroy(): void {
     this.destroy$.next();
-    this.destroy$.complete();
-  }
-
-  triggerBuild(): void {
-    if (this.building) return;
-    this.building = true;
-    this.buildMessage = 'Starting build… This may take a few minutes.';
-    this.repoBundleService.startBuild(this.username, true).subscribe({
-      next: (resp) => {
-        const nextJobId = resp?.job_id as string | undefined;
-        if (nextJobId) {
-          this.jobId = nextJobId;
-          this.candidateContext.upsertCandidate({ username: this.username, jobId: nextJobId });
-        }
-
-        // Begin a light polling loop to refresh the bundle for ~2 minutes
-        timer(5000, 5000).pipe(
-          takeWhile((_, i) => i < 24), // 24*5s ≈ 2 minutes
-          switchMap(() => this.repoBundleService.getUserBundle(this.username, this.jobId, false))
-        ).subscribe({
-          next: b => {
-            // Stop polling when data appears
-            if (Array.isArray(b?.data) && b.data.length > 0) {
-              this.building = false;
-              this.buildMessage = '';
-              this.loadRepoBundle();
-            } else {
-              this.buildMessage = 'Still building… please keep this tab open.';
-            }
-          },
-          error: () => { this.building = false; }
-        });
-      },
-      error: () => {
-        this.building = false;
-        this.buildMessage = 'Failed to start build. Please try again.';
-      }
-    });
+    this.destroy$.complete(); 
   }
 
   loadRepoBundle(): void {
-    this.repoBundle$ = this.repoBundleService.getUserBundle(this.username, this.jobId).pipe(
-      tap(bundle => {
-        this.bundleEmpty = !(Array.isArray(bundle?.data) && bundle.data.length > 0);
-      })
-    );
-    this.filteredRepos$ = this.repoBundle$.pipe(
+    this.repoBundle$ = this.repoBundleService.getCandidateMetadata(this.username);
+
+    const repos$ = this.repoBundle$.pipe(
       map(bundle => {
-        const vms = (bundle?.data ?? [])
+        this.bundleEmpty = !(Array.isArray(bundle?.data) && bundle.data.length > 0);
+        return (bundle?.data ?? [])
           .map(r => this.toCardVM(r))
           .filter((vm): vm is RepoCardVM => vm !== null);
-        this.extractFilterOptionsFromVM(vms);
-        return this.filterAndSortVMs(vms);
-      })
+      }),
+      shareReplay(1)
+    );
+
+    this.allLanguages$ = repos$.pipe(
+      map(vms => {
+        const languages = new Set<string>();
+        vms.forEach(vm => {
+          (vm.languagesPct ?? []).forEach(l => languages.add(l.k));
+        });
+        return Array.from(languages).sort();
+      }),
+      distinctUntilChanged((prev, curr) => JSON.stringify(prev) === JSON.stringify(curr))
+    );
+
+    this.allTechnologies$ = repos$.pipe(
+      map(vms => {
+        const technologies = new Set<string>();
+        vms.forEach(vm => {
+          vm.topics.forEach(topic => technologies.add(topic));
+        });
+        return Array.from(technologies).sort();
+      }),
+      distinctUntilChanged((prev, curr) => JSON.stringify(prev) === JSON.stringify(curr))
+    );
+
+    this.filteredRepos$ = repos$.pipe(
+      map(vms => this.filterAndSortVMs(vms))
     );
   }
 
+  /**
+   * Transform backend bundle entry to card view model.
+   * Backend structure (from _repo_row_to_bundle_entry):
+   * {
+   *   name: string,
+   *   languages: {lang: bytes},
+   *   languages_top: [{name, pct, bytes}],
+   *   urls: {github, homepage},
+   *   stats: {stars, forks},
+   *   flags: {fork, archived},
+   *   timestamps: {pushed_at, updated_at, created_at},
+   *   metadata: {description, fingerprint, topics, ...}
+   * }
+   */
   private toCardVM(r: any): RepoCardVM | null {
-    if (!r?.has_documentation) {
-      console.log('Excluding:', r?.name, 'due to missing documentation');
-      return null; // Exclude repositories without documentation
-    }
+    if (!r?.name) return null;
 
-    const pid = r?.repoContext?.project_identity ?? {};
-    const type = r?.repoContext?.type ?? pid?.type ?? 'Unknown';
-    const description = r?.repoContext?.description ?? pid?.description ?? 'No description';
     const langs = r?.languages ?? {};
     const total = Object.values(langs).reduce((a: number, b: any) => a + Number(b), 0) || 1;
     const languagesPct = Object.entries(langs)
@@ -154,27 +146,17 @@ export class ProjectsComponent implements OnInit, OnDestroy {
       .sort((a, b) => b.pct - a.pct);
 
     return {
-      name: r?.name ?? r?.metadata?.name ?? 'unknown',
-      updatedAt: r?.metadata?.updated_at ?? r?.metadata?.pushed_at,
-      type,
-      description,
-      primaryStack: r?.repoContext?.tech_stack?.primary ?? [],
+      name: r.name,
+      description: r?.metadata?.description ?? 'No description',
       languagesPct,
-      htmlUrl: r?.metadata?.html_url,
-      isFork: !!r?.metadata?.fork,
-      hasDocumentation: !!r?.has_documentation,
+      updatedAt: r?.timestamps?.updated_at ?? r?.timestamps?.pushed_at,
+      htmlUrl: r?.urls?.github,
+      stars: r?.stats?.stars ?? 0,
+      forks: r?.stats?.forks ?? 0,
+      topics: Array.isArray(r?.metadata?.topics) ? r.metadata.topics : [],
+      isFork: r?.flags?.fork ?? false,
+      isArchived: r?.flags?.archived ?? false,
     };
-  }
-
-  private extractFilterOptionsFromVM(vms: RepoCardVM[]): void {
-    const languages = new Set<string>();
-    const technologies = new Set<string>();
-    vms.forEach(vm => {
-      (vm.languagesPct ?? []).forEach(l => languages.add(l.k));
-      (vm.primaryStack ?? []).forEach(tech => technologies.add(tech));
-    });
-    this.allLanguages = Array.from(languages).sort();
-    this.allTechnologies = Array.from(technologies).sort();
   }
 
   private filterAndSortVMs(vms: RepoCardVM[]): RepoCardVM[] {
@@ -184,9 +166,8 @@ export class ProjectsComponent implements OnInit, OnDestroy {
         const q = this.searchTerm.toLowerCase();
         const hits =
           vm.name.toLowerCase().includes(q) ||
-          vm.description.toLowerCase().includes(q) ||
-          vm.type.toLowerCase().includes(q) ||
-          (vm.primaryStack || []).some(t => t.toLowerCase().includes(q));
+          (vm.description ?? '').toLowerCase().includes(q) ||
+          vm.topics.some(t => t.toLowerCase().includes(q));
         if (!hits) return false;
       }
       if (this.selectedLanguage) {
@@ -194,7 +175,7 @@ export class ProjectsComponent implements OnInit, OnDestroy {
         if (!hasLang) return false;
       }
       if (this.selectedTechnology) {
-        const hasTech = (vm.primaryStack || []).includes(this.selectedTechnology);
+        const hasTech = vm.topics.some(t => t.toLowerCase().includes(this.selectedTechnology.toLowerCase()));
         if (!hasTech) return false;
       }
       return true;
@@ -210,6 +191,9 @@ export class ProjectsComponent implements OnInit, OnDestroy {
         case 'name':
           cmp = a.name.localeCompare(b.name);
           break;
+        case 'stars':
+          cmp = (a.stars ?? 0) - (b.stars ?? 0);
+          break;
         case 'updated':
         default: {
           const at = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
@@ -218,13 +202,14 @@ export class ProjectsComponent implements OnInit, OnDestroy {
           break;
         }
       }
-      return direction === 'asc' ? cmp : -cmp;
+      return direction === 'desc' ? -cmp : cmp;
     });
   }
 
   applyFilters(): void { this.loadRepoBundle(); }
+
   resetFilters(): void {
-    this.showForks = false;
+    this.showForks = true;
     this.selectedLanguage = '';
     this.selectedTechnology = '';
     this.searchTerm = '';

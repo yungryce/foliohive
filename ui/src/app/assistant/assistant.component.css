@@ -1,7 +1,0 @@
-.prose h1, .prose h2, .prose h3, .prose h4 { margin-top: 1rem; margin-bottom: .5rem; font-weight: 700; }
-.prose p { margin: .5rem 0; }
-.prose code, .prose pre { background: var(--soft); border: 1px solid var(--border); }
-.prose code { padding: .1rem .3rem; border-radius: .25rem; }
-.prose pre { padding: .75rem; border-radius: .5rem; overflow: auto; }
-.prose a { color: var(--primary); text-decoration: underline; }
-.build-note { font-size: .85rem; color: var(--muted); }

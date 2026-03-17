@@ -1,9 +1,10 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
+import { RepoBundleService, SessionCandidate } from './repo-bundle.service';
+import { SessionIdService } from './session-id.service';
 
 export interface CandidateContext {
   username: string;
-  jobId?: string;
   skillsText?: string;
 }
 
@@ -14,9 +15,10 @@ export class CandidateContextService {
 
   private readonly activeUsernameSubject = new BehaviorSubject<string | null>(null);
   readonly activeUsername$ = this.activeUsernameSubject.asObservable();
-  private readonly storageKey = 'cloudfolio.trackedCandidates';
-  private readonly activeKey = 'cloudfolio.activeCandidate';
+  private readonly storageKeyPrefix = 'foliohive.trackedCandidates';
+  private readonly activeKeyPrefix = 'foliohive.activeCandidate';
   private readonly maxStored = 5;
+  private readonly sessionId: string;
 
   get activeUsername(): string | null {
     return this.activeUsernameSubject.value;
@@ -32,8 +34,10 @@ export class CandidateContextService {
     return [...this.candidatesSubject.value];
   }
 
-  constructor() {
+  constructor(private readonly repoService: RepoBundleService, sessionIdService: SessionIdService) {
+    this.sessionId = sessionIdService.getOrCreate();
     this.loadFromStorage();
+    this.syncFromSession();
   }
 
   upsertCandidate(candidate: CandidateContext): void {
@@ -94,7 +98,6 @@ export class CandidateContextService {
         }
       }
     } catch (error) {
-      console.warn('Failed to load persisted candidates', error);
     }
 
     try {
@@ -105,7 +108,6 @@ export class CandidateContextService {
         this.activeUsernameSubject.next(this.candidatesSubject.value[0].username);
       }
     } catch (error) {
-      console.warn('Failed to load active candidate', error);
     }
   }
 
@@ -116,13 +118,20 @@ export class CandidateContextService {
     return window.localStorage;
   }
 
+  private get storageKey(): string {
+    return `${this.storageKeyPrefix}.${this.sessionId}`;
+  }
+
+  private get activeKey(): string {
+    return `${this.activeKeyPrefix}.${this.sessionId}`;
+  }
+
   private persistCandidates(list: CandidateContext[]): void {
     const storage = this.getStorage();
     if (!storage) return;
     try {
       storage.setItem(this.storageKey, JSON.stringify(list.slice(0, this.maxStored)));
     } catch (error) {
-      console.warn('Failed to persist candidates', error);
     }
   }
 
@@ -136,7 +145,59 @@ export class CandidateContextService {
         storage.removeItem(this.activeKey);
       }
     } catch (error) {
-      console.warn('Failed to persist active candidate', error);
     }
+  }
+
+  private syncFromSession(): void {
+    this.repoService.getSessionCandidates(this.maxStored).subscribe((candidates: SessionCandidate[]) => {
+      if (!Array.isArray(candidates)) return;
+
+      const existing = this.candidatesSubject.value;
+      const apiUsernames = new Set<string>();
+      const merged: CandidateContext[] = [];
+
+      // Case 1: API returns candidates - keep those (with local skillsText) 
+      //         and preserve local candidates not in API
+      if (candidates.length > 0) {
+        // Add API candidates first
+        for (const candidate of candidates) {
+          const username = (candidate?.username || '').trim();
+          if (!username) continue;
+          const prior = existing.find((c: CandidateContext) => c.username === username);
+          merged.push({ username, skillsText: prior?.skillsText });
+          apiUsernames.add(username);
+        }
+
+        // Then add local candidates not in API (preserve user's local state)
+        for (const candidate of existing) {
+          const username = candidate.username;
+          if (!username || apiUsernames.has(username)) continue;
+          merged.push(candidate);
+          apiUsernames.add(username);
+        }
+      } else {
+        this.candidatesSubject.next([]);
+        this.persistCandidates([]);
+        this.activeUsernameSubject.next(null);
+        this.persistActive(null);
+        return;
+      }
+
+      const limited = merged.slice(0, this.maxStored);
+      if (limited.length > 0) {
+        this.candidatesSubject.next(limited);
+        this.persistCandidates(limited);
+        if (!this.activeUsernameSubject.value) {
+          this.activeUsernameSubject.next(limited[0].username);
+          this.persistActive(limited[0].username);
+        }
+      } else {
+        // No candidates available - clear state
+        this.candidatesSubject.next([]);
+        this.persistCandidates([]);
+        this.activeUsernameSubject.next(null);
+        this.persistActive(null);
+      }
+    });
   }
 }

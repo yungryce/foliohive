@@ -72,8 +72,7 @@ export class CandidateListComponent {
     }
 
     const queryParams: Record<string, string | null> = {
-      username: candidate.username,
-      job_id: candidate.jobId ?? null
+      username: candidate.username
     };
 
     this.router.navigate([this.autoNavigate], { queryParams });

@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "foliohive-shared"
+version = "1.0.0"
+description = "Shared modules for foliohive microservices architecture"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.13"
+authors = [
+    { name = "yungryce", email = "yungryce@yahoo.com" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    # Azure Storage
+    "azure-storage-blob",
+    "azure-storage-queue",
+    "azure-identity",
+    "azure-data-tables",
+    "requests",
+    "responses",
+    # AI/ML core (lightweight, needed for shared module)
+    "numpy",
+    "openai",
+    "pyyaml",
+    "scikit-learn",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+ml = [
+    # CPU-only torch + ST, pinned as previously
+    "torch==2.2.2+cpu",
+    "sentence-transformers==2.6.1",
+    # Required to resolve the +cpu wheel
+    "torch @ https://download.pytorch.org/whl/cpu/torch-2.2.2%2Bcpu-cp311-cp311-linux_x86_64.whl",
+]
+
+[project.urls]
+Homepage = "https://github.com/yungryce/foliohive"
+Repository = "https://github.com/yungryce/foliohive"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["foliohive_shared*"]
+
+[tool.setuptools.package-data]
+"foliohive_shared.linguist" = ["languages.yml"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/foliohive_shared"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "unit: Unit tests (fast, no external deps)",
+    "integration: Integration tests (require Azurite)",
+    "slow: Slow tests (ML model loading, etc.)",
+]
+
+[tool.black]
+line-length = 120
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = false

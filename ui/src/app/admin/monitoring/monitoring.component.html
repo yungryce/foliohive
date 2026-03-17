@@ -1,0 +1,107 @@
+<div class="space-y-6">
+  <!-- Header -->
+  <div class="flex justify-between items-center">
+    <div>
+      <h2 class="text-2xl font-bold text-white">Monitoring Dashboard</h2>
+      <p class="text-gray-400 text-sm mt-1">Real-time system metrics and performance</p>
+    </div>
+    <div class="flex items-center gap-4">
+      <span class="text-sm text-gray-400">
+        Last refresh: {{ lastRefresh() | date:'short' }}
+      </span>
+      <button 
+        (click)="refresh()"
+        [disabled]="loading()"
+        class="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-700 text-white rounded-lg transition-colors">
+        {{ loading() ? 'Refreshing...' : 'Refresh' }}
+      </button>
+    </div>
+  </div>
+
+  <!-- Job Statistics -->
+  <div class="bg-slate-800/50 backdrop-blur-sm border border-slate-700 rounded-lg p-6">
+    <h3 class="text-lg font-semibold text-white mb-4">Job Statistics</h3>
+    
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+      <div class="text-center">
+        <div class="text-3xl font-bold text-gray-400">{{ jobStats().queued }}</div>
+        <div class="text-sm text-gray-500 mt-1">Queued</div>
+      </div>
+      <div class="text-center">
+        <div class="text-3xl font-bold text-yellow-400">{{ jobStats().syncing }}</div>
+        <div class="text-sm text-gray-500 mt-1">Syncing</div>
+      </div>
+      <div class="text-center">
+        <div class="text-3xl font-bold text-blue-400">{{ jobStats().metadata_ready }}</div>
+        <div class="text-sm text-gray-500 mt-1">Metadata Ready</div>
+      </div>
+      <div class="text-center">
+        <div class="text-3xl font-bold text-green-400">{{ jobStats().completed }}</div>
+        <div class="text-sm text-gray-500 mt-1">Completed</div>
+      </div>
+      <div class="text-center">
+        <div class="text-3xl font-bold text-red-400">{{ jobStats().failed }}</div>
+        <div class="text-sm text-gray-500 mt-1">Failed</div>
+      </div>
+      <div class="text-center">
+        <div class="text-3xl font-bold text-white">{{ getTotalJobs() }}</div>
+        <div class="text-sm text-gray-500 mt-1">Total</div>
+      </div>
+    </div>
+
+    <!-- Success Rate -->
+    <div class="mt-4">
+      <div class="flex justify-between text-sm text-gray-400 mb-2">
+        <span>Success Rate</span>
+        <span>{{ getSuccessRate() | number:'1.1-1' }}%</span>
+      </div>
+      <div class="w-full bg-slate-700 rounded-full h-2">
+        <div 
+          class="bg-green-500 h-2 rounded-full transition-all duration-300"
+          [style.width.%]="getSuccessRate()">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- API Usage Statistics -->
+  <div class="bg-slate-800/50 backdrop-blur-sm border border-slate-700 rounded-lg p-6">
+    <h3 class="text-lg font-semibold text-white mb-4">API Usage</h3>
+    
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div>
+        <div class="text-sm text-gray-400 mb-2">REST API Calls</div>
+        <div class="text-2xl font-bold text-white">{{ apiUsageStats().total_rest_calls | number }}</div>
+      </div>
+      <div>
+        <div class="text-sm text-gray-400 mb-2">GraphQL Calls</div>
+        <div class="text-2xl font-bold text-white">{{ apiUsageStats().total_graphql_calls | number }}</div>
+      </div>
+      <div>
+        <div class="text-sm text-gray-400 mb-2">Cache Hit Rate</div>
+        <div class="text-2xl font-bold text-blue-400">{{ apiUsageStats().cache_hit_rate | number:'1.1-1' }}%</div>
+      </div>
+      <div>
+        <div class="text-sm text-gray-400 mb-2">Rate Limit Remaining</div>
+        <div class="text-2xl font-bold" [class]="apiUsageStats().rate_limit_remaining > 1000 ? 'text-green-400' : 'text-red-400'">
+          {{ apiUsageStats().rate_limit_remaining | number }}
+        </div>
+        <div class="text-xs text-gray-500 mt-1">
+          {{ (apiUsageStats().rate_limit_remaining / 5000 * 100) | number:'1.0-0' }}% available
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Charts Placeholder -->
+  <div class="bg-slate-800/50 backdrop-blur-sm border border-slate-700 rounded-lg p-6">
+    <h3 class="text-lg font-semibold text-white mb-4">Job Trend (Last 7 Days)</h3>
+    <div class="h-64 flex items-center justify-center text-gray-500">
+      <div class="text-center">
+        <div class="text-4xl mb-2">📈</div>
+        <p>Chart visualization coming soon</p>
+        <p class="text-sm text-gray-600">Install Chart.js or ngx-charts for data visualization</p>
+      </div>
+    </div>
+  </div>
+</div>

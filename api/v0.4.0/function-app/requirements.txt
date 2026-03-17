@@ -1,0 +1,23 @@
+# Do not include azure-functions-worker in this file
+# The Python Worker is managed by the Azure Functions platform
+# Manually managing azure-functions-worker may cause unexpected issues
+
+azure-functions>=1.17.0
+
+# Runtime deps needed by foliohive_shared imports during Function indexing
+azure-core
+azure-identity
+azure-storage-blob
+azure-storage-queue
+azure-data-tables
+requests
+
+# AI deps imported by API routes at startup
+openai
+numpy
+scikit-learn
+pyyaml
+
+# Shared package is installed in editable mode by setup-dev.sh:
+#   pip install -e ../shared
+# In CI packaging, the shared folder is installed into .python_packages.

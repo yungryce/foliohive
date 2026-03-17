@@ -11,14 +11,14 @@ pr:
       - main
   paths:
     include:
-      - api/v0.3.0/function-app/**
-      - api/v0.3.0/shared/**
+      - api/v0.4.0/function-app/**
+      - api/v0.4.0/shared/**
       - .ado/ci-functions.yml
       - .ado/ci-build-function.yml
       - .ado/detect-function-changes.yml
     exclude:
-      - api/v0.3.0/**/tests/**
-      - api/v0.3.0/**/__pycache__/**
+      - api/v0.4.0/**/tests/**
+      - api/v0.4.0/**/__pycache__/**
       - '**/*.pyc'
 
 variables:
@@ -37,8 +37,8 @@ stages:
     - template: ci-build-function.yml
       parameters:
         functionName: 'flex-app'
-        functionDir: 'api/v0.3.0/function-app'
-        sharedDir: 'api/v0.3.0/shared'
+        functionDir: 'api/v0.4.0/function-app'
+        sharedDir: 'api/v0.4.0/shared'
         pythonVersion: '$(pythonVersion)'
         condition: eq(stageDependencies.Detect_Changes.Detect_Changes.outputs['DetectChanges.flexAppChanged'], 'true')
         

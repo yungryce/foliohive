@@ -60,7 +60,7 @@ jobs:
               echo "✓ merge-worker changed"
             fi
 
-            if echo "$CHANGED_FILES" | grep -qE '^api/v0\.3\.0/(function-app|shared)/'; then
+            if echo "$CHANGED_FILES" | grep -qE '^api/v0\.4\.0/(function-app|shared)/'; then
               FLEX_APP_CHANGED=true
               echo "✓ flex-app changed"
             fi

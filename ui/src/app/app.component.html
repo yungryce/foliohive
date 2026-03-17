@@ -1,12 +1,13 @@
 <header class="navbar">
   <div class="container flex justify-between items-center py-4">
     <a [routerLink]="['']" class="brand-link">
-      <img src="/brand-logo.png" alt="Folioolio" class="brand-logo" />
-      <span class="sr-only">Folioolio</span>
+      <img src="/brand-logo.png" alt="Foliohive" class="brand-logo" />
+      <span class="sr-only">Foliohive</span>
     </a>
     <nav class="flex items-center gap-4">
       <ul class="flex gap-6">
         <li><a [routerLink]="['']" routerLinkActive="active" [routerLinkActiveOptions]="{exact: true}">Home</a></li>
+        <li><a [routerLink]="['/profile']" routerLinkActive="active">Profile</a></li>
         <li><a [routerLink]="['/projects']" routerLinkActive="active">Projects</a></li>
         <li><a [routerLink]="['/ai']" routerLinkActive="active">AI</a></li>
       </ul>

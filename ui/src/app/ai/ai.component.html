@@ -1,100 +1,90 @@
-<div class="container mx-auto px-4 py-8 bg-[var(--bg)] text-[var(--fg)] transition-colors">
+<div class="container mx-auto px-4 py-8 bg-(--bg) text-(--fg) transition-colors">
   <div class="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
-    <aside class="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4 h-max">
+    <aside class="rounded-lg border border-(--border) bg-(--card) p-4 h-max">
       <app-candidate-list heading="Candidates" (candidateSelected)="selectCandidate($event.username)"></app-candidate-list>
     </aside>
 
     <main>
       <h1 class="text-2xl font-bold mb-3">AI Review</h1>
 
-      <div *ngIf="activeUsername" class="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4 mb-6">
+      <div *ngIf="activeUsername" class="rounded-lg border border-(--border) bg-(--card) p-4 mb-6">
         <div class="flex items-start justify-between gap-4">
           <div>
-            <div class="text-sm text-[var(--muted)]">Active candidate</div>
+            <div class="text-sm text-(--muted)">Active candidate</div>
             <div class="text-lg font-semibold">{{ activeUsername }}</div>
           </div>
-          <a routerLink="/projects" class="px-3 py-2 rounded bg-[var(--soft)] hover:brightness-95">View projects</a>
-        </div>
-
-        <div *ngIf="activeJobId" class="mt-3 text-sm text-[var(--muted)]">
-          Refresh job: {{ activeJobId }}
-        </div>
-
-        <div *ngIf="status" class="mt-3">
-          <div class="text-sm text-[var(--muted)]">Status: {{ status.status }}</div>
-          <div class="mt-2 h-2 rounded bg-[var(--soft)] overflow-hidden" aria-label="Refresh progress">
-            <div class="h-2 bg-[var(--primary)]" [style.width.%]="status.progress.percentage"></div>
-          </div>
-          <div class="mt-1 text-xs text-[var(--muted)]">
-            {{ status.progress.completed }} / {{ status.progress.total }} ({{ status.progress.percentage }}%)
-          </div>
+          <a routerLink="/profile" class="px-3 py-2 rounded bg-(--soft) hover:brightness-95">View profile</a>
         </div>
       </div>
 
-      <div *ngIf="noRepositories" class="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4 mb-6">
+      <div *ngIf="noRepositories" class="rounded-lg border border-(--border) bg-(--card) p-4 mb-6">
         <h2 class="text-sm font-semibold mb-2">No repositories found</h2>
-        <p class="text-sm text-[var(--muted)]">
+        <p class="text-sm text-(--muted)">
           We couldn’t find any repositories for this candidate. Try another username or remove this candidate.
         </p>
         <div class="mt-3 flex flex-wrap gap-3">
           <button
             (click)="removeActiveCandidate()"
-            class="px-3 py-2 rounded bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-95"
+            class="px-3 py-2 rounded bg-(--primary) text-(--primary-foreground) hover:brightness-95"
           >
             Remove candidate
           </button>
-          <a routerLink="/" class="px-3 py-2 rounded border border-[var(--border)] bg-[var(--soft)] hover:brightness-95">
+          <a routerLink="/" class="px-3 py-2 rounded border border-(--border) bg-(--soft) hover:brightness-95">
             Go to home
           </a>
         </div>
       </div>
 
-      <div *ngIf="suggested.length" class="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4 mb-6">
+      <div *ngIf="suggested.length" class="rounded-lg border border-(--border) bg-(--card) p-4 mb-6">
         <h2 class="text-sm font-semibold mb-2">Suggested repositories (based on skills)</h2>
         <div class="flex flex-wrap gap-2">
           <a
             *ngFor="let r of suggested"
             [routerLink]="['/projects', r.name]"
-            class="px-2 py-1 rounded bg-[var(--chip-bg)] text-[var(--chip-fg)] text-sm hover:brightness-95"
+            class="px-2 py-1 rounded bg-(--chip-bg) text-(--chip-fg) text-sm hover:brightness-95"
           >
             {{ r.name }}
           </a>
         </div>
       </div>
 
-      <div class="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4" [class.opacity-60]="noRepositories">
-        <label for="query" class="block text-sm font-medium text-[var(--muted)]">Ask about this candidate</label>
+      <div class="rounded-lg border border-(--border) bg-(--card) p-4" [class.opacity-60]="noRepositories || !summaryReady">
+        <label for="query" class="block text-sm font-medium text-(--muted)">Ask about this candidate</label>
         <textarea
           id="query"
           [(ngModel)]="query"
           rows="3"
-          [disabled]="noRepositories"
-          class="w-full mt-2 px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--fg)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+          [disabled]="noRepositories || !summaryReady || loadingAnswer"
+          class="w-full mt-2 px-3 py-2 rounded-md border border-(--border) bg-(--bg) text-(--fg) focus:outline-none focus:ring-2 focus:ring-(--ring)"
           placeholder="e.g., Which repos best demonstrate system design?"
         ></textarea>
-        <div class="mt-3 flex gap-3">
+        <div class="mt-3 flex items-center gap-3">
           <button
             (click)="ask()"
-            class="px-4 py-2 rounded bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-95"
-            [disabled]="loadingAnswer || noRepositories"
+            class="px-4 py-2 rounded bg-(--primary) text-(--primary-foreground) hover:brightness-95"
+            [disabled]="loadingAnswer || noRepositories || !summaryReady"
           >
             {{ loadingAnswer ? 'Asking…' : 'Ask' }}
           </button>
+          <app-job-status-badge *ngIf="!summaryReady" [status]="jobStatus" [loading]="!!jobStatus" />
         </div>
         <p *ngIf="error" class="mt-2 text-sm text-red-500">{{ error }}</p>
+        <p *ngIf="!summaryReady && !error" class="mt-2 text-sm text-(--muted)">
+          Waiting for portfolio data to be processed…
+        </p>
       </div>
 
-      <div *ngIf="repositoriesUsed.length" class="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4 mt-6">
+      <div *ngIf="repositoriesUsed.length" class="rounded-lg border border-(--border) bg-(--card) p-4 mt-6">
         <h2 class="text-sm font-semibold mb-2">Repositories used</h2>
         <div class="flex flex-wrap gap-2 text-sm">
-          <span *ngFor="let r of repositoriesUsed" class="px-2 py-1 rounded bg-[var(--chip-bg)] text-[var(--chip-fg)]">
-            {{ r.name }} <span class="text-[var(--muted)]">({{ r.relevance_score | number:'1.2-2' }})</span>
+          <span *ngFor="let r of repositoriesUsed" class="px-2 py-1 rounded bg-(--chip-bg) text-(--chip-fg)">
+            {{ r.name }} <span class="text-(--muted)">({{ r.relevance_score | number:'1.2-2' }})</span>
           </span>
         </div>
       </div>
 
-      <article *ngIf="answerHtml" class="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4 mt-6">
-        <div class="prose max-w-none [&_*]:text-[var(--fg)]" [innerHTML]="answerHtml"></div>
+      <article *ngIf="answerMarkdown" class="rounded-lg border border-(--border) bg-(--card) p-4 mt-6">
+        <markdown [data]="answerMarkdown" class="markdown-content"></markdown>
       </article>
     </main>
   </div>

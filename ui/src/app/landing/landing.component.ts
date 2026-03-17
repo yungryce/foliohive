@@ -1,30 +1,55 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, inject, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
+import { Subject, takeUntil, tap } from 'rxjs';
 import { CandidateContextService } from '../services/candidate-context.service';
-import { RepoBundleService } from '../services/repo-bundle.service';
+import { RepoBundleService, JobStatusResponse } from '../services/repo-bundle.service';
+import { JobPollingService } from '../services/job-polling.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
+import { JobStatusBadgeComponent } from '../shared/job-status-badge.component';
 
 @Component({
   selector: 'app-landing',
   standalone: true,
-  imports: [CommonModule, FormsModule, CandidateListComponent],
+  imports: [CommonModule, FormsModule, CandidateListComponent, JobStatusBadgeComponent],
   templateUrl: './landing.component.html',
   styleUrls: ['./landing.component.css'],
 })
-export class LandingComponent implements OnInit {
+export class LandingComponent implements OnInit, OnDestroy {
   private router = inject(Router);
   private repoService = inject(RepoBundleService);
+  private jobPollingService = inject(JobPollingService);
   private candidateContext = inject(CandidateContextService);
+  private destroy$ = new Subject<void>();
 
   username = '';
-
   loading = false;
   error = '';
+  
+  // Progress tracking
+  buildProgress = 0;
+  statusMessage = '';
+  jobStatus: string | null = null;
+  
+  ngOnInit(): void {
+    this.syncStoredCandidates();
+  }
+  
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
+  }
 
+  /**
+   * Trigger fresh build and poll until metadata is ready.
+   * Redirects to profile page once repositories are synced.
+   */
   start(): void {
     this.error = '';
+    this.buildProgress = 0;
+    this.statusMessage = '';
+    
     const username = (this.username || '').trim();
     if (!username) {
       this.error = 'Enter a GitHub username.';
@@ -32,58 +57,90 @@ export class LandingComponent implements OnInit {
     }
 
     this.loading = true;
+    this.statusMessage = 'Starting build...';
 
-    // Check if bundle already exists
-    this.repoService.checkBundle(username).subscribe({
-      next: (exists) => {
-        if (exists) {
-          // Bundle exists, navigate directly without forcing refresh
-          this.candidateContext.upsertCandidate({ username });
-          this.router.navigate(['/ai'], { queryParams: { username } });
-          this.loading = false;
-        } else {
-          // Bundle doesn't exist, trigger refresh
-          this.repoService.startBuild(username, true).subscribe({
-            next: (res) => {
-              const jobId = res?.job_id;
-              this.candidateContext.upsertCandidate({ username, jobId: jobId || undefined });
-              this.router.navigate(['/ai'], { queryParams: { username, job_id: jobId || null } });
-            },
-            error: () => {
-              this.loading = false;
-              this.error = 'Failed to start refresh. Is api-gateway running?';
-            },
-            complete: () => {
-              this.loading = false;
-            },
-          });
-        }
+    // Always trigger fresh build
+    this.repoService.startBuild(username, true).subscribe({
+      next: (jobId: string) => {
+        this.candidateContext.upsertCandidate({ username });
+        this.statusMessage = 'Syncing repositories...';
+        this.pollUntilMetadataReady(username, jobId);
       },
-      error: () => {
+      error: (err: any) => {
         this.loading = false;
-        this.error = 'Failed to check bundle. Is api-gateway running?';
+        this.buildProgress = 0;
+        this.statusMessage = '';
+        this.error = 'Failed to start build. Check if API is running.';
       },
     });
   }
 
-  ngOnInit(): void {
-    this.restoreStoredCandidates();
+  /**
+   * Poll job status until metadata_ready, showing progress.
+   * Redirects to profile when first repo is cached.
+   */
+  private pollUntilMetadataReady(username: string, jobId: string): void {
+    this.jobPollingService.waitForMetadataReady(username, jobId)
+      .pipe(
+        tap((status: JobStatusResponse) => {
+          if (status) {
+            this.jobStatus = status.status;
+          }
+        }),
+        takeUntil(this.destroy$)
+      )
+      .subscribe({
+        next: (status: JobStatusResponse) => {
+          if (!status) return;
+          
+          // Update progress UI
+          this.buildProgress = status.progress?.percentage ?? 0;
+          const cached = status.progress?.summary_ready ?? 0;
+          const total = status.progress?.total ?? 0;
+          this.statusMessage = `Synced ${cached} of ${total} repositories...`;
+          
+          // Redirect when metadata is ready
+          if (status.metadata_ready || status.status === 'completed') {
+            this.loading = false;
+            this.buildProgress = 100;
+            this.statusMessage = 'Ready!';
+            this.router.navigate(['/projects'], { 
+              queryParams: { username, job_id: jobId } 
+            });
+          }
+        },
+        error: () => {
+          this.loading = false;
+          this.buildProgress = 0;
+          this.statusMessage = '';
+          this.jobStatus = null;
+          this.error = 'Build timed out. Please try again.';
+        },
+        complete: () => {
+          // Polling completed without metadata_ready (timeout or failed)
+          if (this.loading) {
+            this.loading = false;
+            this.buildProgress = 0;
+            this.statusMessage = '';
+            this.jobStatus = null;
+            this.error = 'Build did not complete in time. Please try again.';
+          }
+        }
+      });
   }
 
-  private restoreStoredCandidates(): void {
+  /**
+   * Sync stored candidates from session storage.
+   * Only keeps candidates, no validation calls.
+   */
+  private syncStoredCandidates(): void {
     const candidates = this.candidateContext.storedCandidates.slice(0, 5);
+    
     if (!candidates.length) return;
 
+    // Set first candidate as active if none selected
     if (!this.candidateContext.activeUsername) {
       this.candidateContext.setActive(candidates[0].username);
     }
-
-    candidates.forEach(candidate => {
-      this.repoService.checkBundle(candidate.username).subscribe((exists) => {
-        if (!exists) {
-          this.candidateContext.removeCandidate(candidate.username);
-        }
-      });
-    });
   }
 }

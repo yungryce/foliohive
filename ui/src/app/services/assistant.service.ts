@@ -1,13 +1,11 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, catchError, map, of } from 'rxjs';
+import { Observable, catchError, map, throwError } from 'rxjs';
 import { ConfigService } from './config.service';
 
 export interface AIAssistantRequest {
   query: string;
-  username?: string;
-  instance_id?: string;
-  status_query_url?: string;
+  username: string;
 }
 
 export interface AIAssistantResponse {
@@ -22,31 +20,30 @@ export class AIAssistantService {
   private http = inject(HttpClient);
   private config = inject(ConfigService);
 
-  /** Trigger backend orchestration to (re)build bundles for a user. */
-  startBuild(username: string, force = true): Observable<any> {
-    const url = `${this.config.apiUrl}/bundles/${encodeURIComponent(username)}/refresh`;
-    return this.http.post(url, { force_refresh: force });
-  }
-
+  /**
+   * Query candidate portfolio with AI.
+   * Throws error for caller to handle (e.g., polling logic).
+   */
   askPortfolio(req: AIAssistantRequest): Observable<AIAssistantResponse> {
     const url = `${this.config.apiUrl}/ai`;
     return this.http.post<any>(url, req).pipe(
       map(res => {
-        if (res?.status === 'success' && res?.data) return res.data as AIAssistantResponse;
-        return res as AIAssistantResponse;
+        const data = res?.status === 'success' && res?.data ? res.data : res;
+        const metadata = data?.metadata || {};
+        const repositoriesUsed = Array.isArray(metadata?.repositories_used)
+          ? metadata.repositories_used
+          : (Array.isArray(metadata?.selected_repositories) ? metadata.selected_repositories : []);
+
+        return {
+          response: data?.response || data?.query_summary || '',
+          repositories_used: repositoriesUsed,
+          total_repositories: Number(data?.total_repositories || metadata?.total_repositories || repositoriesUsed.length || 0),
+          query: data?.query || req.query,
+        } as AIAssistantResponse;
       }),
       catchError(err => {
-        console.error('AI request failed:', err);
-        if (err.status === 404 && req.username) {
-          // On not found, kick off a build with force_refresh
-          this.startBuild(req.username, true).subscribe();
-        }
-        return of({
-          response: 'AI service failed or is unavailable. Please try again.',
-          repositories_used: [],
-          total_repositories: 0,
-          query: req.query
-        } as AIAssistantResponse);
+        // Re-throw error for caller to handle (e.g., polling logic)
+        return throwError(() => err);
       })
     );
   }
