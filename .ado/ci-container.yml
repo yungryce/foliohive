@@ -17,7 +17,7 @@ pr:
       - 'api/v0.2.0/training-worker/**/*.pyc'
 
 variables:
-  - group: 'Cloudfolio-Vars'
+  - group: 'folioVars'
 
 parameters:
   azureServiceConnection: ''

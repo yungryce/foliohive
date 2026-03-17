@@ -22,7 +22,7 @@ pr:
       - '**/*.pyc'
 
 variables:
-  - group: 'Cloudfolio-Vars'
+  - group: 'folioVars'
 
 stages:
 - stage: Detect_Changes

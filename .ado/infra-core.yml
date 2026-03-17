@@ -23,7 +23,7 @@ pr:
 
 
 variables:
-  - group: 'Cloudfolio-Vars'
+  - group: 'folioVars'
 
 
 parameters:

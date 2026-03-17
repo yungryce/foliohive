@@ -11,13 +11,13 @@ param location string = resourceGroup().location
 param tags Tags = {}
 
 @description('Prefix used for resource naming')
-param namePrefix string = 'cloudfolio'
+param namePrefix string = 'foliohive'
 
 @description('Unique suffix to keep resource names stable across deployments')
 param uniqueSuffix string = uniqueString(resourceGroup().id, namePrefix)
 
 @description('GitHub repository URL for the Static Web App (required by Azure, even for manual deployments)')
-param repositoryUrl string = 'https://dev.azure.com/chxgbx/cloudfolio/_git/cloudfolio'
+param repositoryUrl string = 'https://dev.azure.com/chxgbx/foliohive/_git/foliohive'
 
 @description('Resource ID of the backend Function App (optional when SWA is standalone)')
 param backendFunctionAppId string = ''
