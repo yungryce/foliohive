@@ -11,7 +11,7 @@ type Tags = {
 param tags Tags = {}
 
 @description('Prefix used for resource naming')
-param namePrefix string = 'cloudfolio'
+param namePrefix string = 'foliohive'
 
 @description('Virtual network address space')
 param vnetAddressPrefix string = '10.20.0.0/16'

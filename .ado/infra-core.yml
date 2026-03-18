@@ -21,8 +21,11 @@ pr:
       - './infra/bicep/modules/staticWebApp.bicep'
       - './infra/bicep/modules/containerInstance.bicep'
 
+
 variables:
-  - group: 'Cloudfolio-Vars'
+  - group: 'folioVars'
+
+
 
 parameters:
   - name: bicepFile
@@ -31,6 +34,7 @@ parameters:
   - name: bicepParamFile
     type: string
     default: './infra/bicep/main.bicepparam'
+
 
 stages:
 - stage: Core_Infrastructure

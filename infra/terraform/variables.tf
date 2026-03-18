@@ -7,13 +7,13 @@ variable "location" {
 variable "resource_group_name" {
   description = "Name of the resource group"
   type        = string
-  default     = "rg-cloudfolio"
+  default     = "rg-foliohive"
 }
 
 variable "cluster_name" {
   description = "Name of the AKS cluster"
   type        = string
-  default     = "cloudfolio-cluster"
+  default     = "foliohive-cluster"
 }
 
 variable "node_count" {
