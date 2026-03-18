@@ -28,6 +28,12 @@ param uamiClientId string
 @description('Application Insights connection string')
 param appInsightsConnectionString string
 
+@description('Application Insights instrumentation key')
+param appInsightsInstrumentationKey string
+
+@description('Log Analytics Workspace resource ID for diagnostics')
+param logAnalyticsWorkspaceId string
+
 @description('Name of the Flex Consumption plan created for this app')
 param flexPlanName string = '${functionAppName}-flex-plan'
 
@@ -65,6 +71,8 @@ module functionApp './modules/functionAppFlex.bicep' = {
     uamiId: uamiId
     uamiClientId: uamiClientId
     appInsightsConnectionString: appInsightsConnectionString
+    appInsightsInstrumentationKey: appInsightsInstrumentationKey
+    logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
     flexPlanName: flexPlanName
     flexMaximumInstanceCount: flexMaximumInstanceCount
     flexInstanceMemoryMb: flexInstanceMemoryMb
