@@ -33,7 +33,7 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   properties: {
     Application_Type: 'web'
     WorkspaceResourceId: workspace.id
-    DisableLocalAuth: true
+    DisableLocalAuth: false
   }
 }
 
@@ -56,4 +56,5 @@ output monitoring object = {
 }
 
 output appInsightsConnectionString string = appInsights.properties.ConnectionString
+output appInsightsInstrumentationKey string = appInsights.properties.InstrumentationKey
 output logAnalyticsWorkspaceId string = workspace.id

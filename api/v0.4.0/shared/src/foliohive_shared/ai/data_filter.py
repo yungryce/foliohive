@@ -7,7 +7,7 @@ import re
 import os
 import xml.etree.ElementTree as ET
 from fnmatch import fnmatch
-from typing import List, Sequence
+from typing import List, Sequence, Optional
 
 try:
     import tomllib

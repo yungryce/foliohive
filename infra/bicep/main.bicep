@@ -105,6 +105,7 @@ output uamiClientId string = identity.outputs.uamiClientId
 output uamiPrincipalId string = identity.outputs.uamiPrincipalId
 
 output appInsightsConnectionString string = monitoring.outputs.appInsightsConnectionString
+output appInsightsInstrumentationKey string = monitoring.outputs.appInsightsInstrumentationKey
 output logAnalyticsWorkspaceId string = monitoring.outputs.logAnalyticsWorkspaceId
 output vnetId string = network.outputs.vnetId
 output functionsSubnetId string = network.outputs.functionsSubnetId
