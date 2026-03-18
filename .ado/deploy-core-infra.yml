@@ -55,6 +55,8 @@ jobs:
             FUNCTIONS_SUBNET_ID=$(echo "$OUTPUTS" | jq -r '.functionsSubnetId.value // empty')
             PRIVATE_ENDPOINTS_SUBNET_ID=$(echo "$OUTPUTS" | jq -r '.privateEndpointsSubnetId.value // empty')
             APP_INSIGHTS_CONN_STR=$(echo "$OUTPUTS" | jq -r '.appInsightsConnectionString.value // empty')
+            APP_INSIGHTS_INST_KEY=$(echo "$OUTPUTS" | jq -r '.appInsightsInstrumentationKey.value // empty')
+            LOG_ANALYTICS_WORKSPACE_ID=$(echo "$OUTPUTS" | jq -r '.logAnalyticsWorkspaceId.value // empty')
             PRIVATE_DNS_ZONE_ID=$(echo "$OUTPUTS" | jq -r '.privateDnsZoneAzureWebsitesId.value // empty')
             STORAGE_ACCOUNT_NAME=$(echo "$OUTPUTS" | jq -r '.storageAccountName.value // empty')
 
@@ -83,6 +85,8 @@ jobs:
               "functionsSubnetId": "$FUNCTIONS_SUBNET_ID",
               "privateEndpointsSubnetId": "$PRIVATE_ENDPOINTS_SUBNET_ID",
               "appInsightsConnectionString": "$APP_INSIGHTS_CONN_STR",
+              "appInsightsInstrumentationKey": "$APP_INSIGHTS_INST_KEY",
+              "logAnalyticsWorkspaceId": "$LOG_ANALYTICS_WORKSPACE_ID",
               "privateDnsZoneAzureWebsitesId": "$PRIVATE_DNS_ZONE_ID",
               "storageAccountName": "$STORAGE_ACCOUNT_NAME"
             }
