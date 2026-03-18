@@ -32,7 +32,7 @@ param appInsightsConnectionString string
 param appInsightsInstrumentationKey string
 
 @description('Log Analytics Workspace resource ID for diagnostics')
-param logAnalyticsWorkspaceId string
+param logAnalyticsWorkspaceId string = ''
 
 @description('Name of the Flex Consumption plan created for this app')
 param flexPlanName string = '${functionAppName}-flex-plan'

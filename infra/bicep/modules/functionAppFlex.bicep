@@ -32,7 +32,7 @@ param appInsightsConnectionString string
 param appInsightsInstrumentationKey string
 
 @description('Log Analytics Workspace resource ID for diagnostics')
-param logAnalyticsWorkspaceId string
+param logAnalyticsWorkspaceId string = ''
 
 @description('Additional CORS origins (e.g. static web app hostname)')
 param corsAllowedOrigins array = []
@@ -148,7 +148,7 @@ resource functionAppVnetIntegration 'Microsoft.Web/sites/networkConfig@2024-11-0
   }
 }
 
-resource functionAppDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+resource functionAppDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(logAnalyticsWorkspaceId)) {
   scope: functionApp
   name: 'functionapp-diagnostics'
   properties: {
@@ -176,7 +176,6 @@ resource functionAppAppSettings 'Microsoft.Web/sites/config@2024-11-01' = {
     APPLICATIONINSIGHTS_AUTHENTICATION_STRING: 'ClientId=${uamiClientId};Authorization=AAD'
     APPINSIGHTS_INSTRUMENTATIONKEY: appInsightsInstrumentationKey
     APPLICATIONINSIGHTS_ROLE_NAME: functionAppName
-    WEBSITE_SITE_NAME: functionAppName
     AzureWebJobsStorage__credential: 'managedidentity'
     AzureWebJobsStorage__blobServiceUri: 'https://${storageAccountName}.blob.${environment().suffixes.storage}'
     AzureWebJobsStorage__queueServiceUri: 'https://${storageAccountName}.queue.${environment().suffixes.storage}'
