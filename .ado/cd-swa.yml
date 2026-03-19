@@ -7,6 +7,9 @@
 #
 # Usage: Configure via params/params-swa.yml
 
+trigger: none
+pr: none
+
 resources:
   pipelines:
     - pipeline: swa_ci

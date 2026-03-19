@@ -21,6 +21,9 @@
 #       - api/v0.4.0/**/__pycache__/**
 #       - '**/*.pyc'
 
+trigger: none
+pr: none
+
 resources:
   pipelines:
     - pipeline: infra

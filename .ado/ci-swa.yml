@@ -18,6 +18,8 @@
 #       - ui/.angular/cache/**
 #       - 'ui/**/*.spec.ts'
 
+trigger: none
+pr: none
 
 resources:
   pipelines:
