@@ -25,11 +25,8 @@ param uamiId string
 @description('User-assigned managed identity client ID')
 param uamiClientId string
 
-@description('Application Insights connection string')
-param appInsightsConnectionString string
-
-@description('Application Insights instrumentation key')
-param appInsightsInstrumentationKey string
+@description('Application Insights resource name for connection string resolution')
+param appInsightsName string
 
 @description('Log Analytics Workspace resource ID for diagnostics')
 param logAnalyticsWorkspaceId string = ''
@@ -59,6 +56,10 @@ param httpPerInstanceConcurrency int = 20
 @minValue(0)
 @maxValue(10)
 param flexAlwaysReadyInstanceCount int = 0
+
+resource appInsightsRef 'Microsoft.Insights/components@2020-02-02' existing = {
+  name: appInsightsName
+}
 
 resource flexPlan 'Microsoft.Web/serverfarms@2024-11-01' = {
   name: flexPlanName
@@ -163,6 +164,10 @@ resource functionAppDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-0
       {
         category: 'AllMetrics'
         enabled: true
+        retentionPolicy: {
+          days: 0
+          enabled: false
+        }
       }
     ]
   }
@@ -172,9 +177,9 @@ resource functionAppAppSettings 'Microsoft.Web/sites/config@2024-11-01' = {
   parent: functionApp
   name: 'appsettings'
   properties: {
-    APPLICATIONINSIGHTS_CONNECTION_STRING: appInsightsConnectionString
+    APPLICATIONINSIGHTS_CONNECTION_STRING: appInsightsRef.properties.ConnectionString
     APPLICATIONINSIGHTS_AUTHENTICATION_STRING: 'ClientId=${uamiClientId};Authorization=AAD'
-    APPINSIGHTS_INSTRUMENTATIONKEY: appInsightsInstrumentationKey
+    APPINSIGHTS_INSTRUMENTATIONKEY: appInsightsRef.properties.InstrumentationKey
     APPLICATIONINSIGHTS_ROLE_NAME: functionAppName
     AzureWebJobsStorage__credential: 'managedidentity'
     AzureWebJobsStorage__blobServiceUri: 'https://${storageAccountName}.blob.${environment().suffixes.storage}'

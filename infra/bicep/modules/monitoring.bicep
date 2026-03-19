@@ -53,8 +53,7 @@ resource raMetricsPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01'
 output monitoring object = {
   logAnalyticsWorkspaceId: workspace.id
   applicationInsightsId: appInsights.id
+  appInsightsName: appInsights.name
 }
 
-output appInsightsConnectionString string = appInsights.properties.ConnectionString
-output appInsightsInstrumentationKey string = appInsights.properties.InstrumentationKey
 output logAnalyticsWorkspaceId string = workspace.id

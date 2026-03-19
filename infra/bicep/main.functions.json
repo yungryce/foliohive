@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "471221119796651123"
+      "templateHash": "4124941146622169867"
     }
   },
   "definitions": {
@@ -63,10 +63,17 @@
         "description": "User-assigned managed identity client ID"
       }
     },
-    "appInsightsConnectionString": {
+    "appInsightsName": {
       "type": "string",
       "metadata": {
-        "description": "Application Insights connection string"
+        "description": "Application Insights resource name for connection string resolution"
+      }
+    },
+    "logAnalyticsWorkspaceId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Log Analytics Workspace resource ID for diagnostics"
       }
     },
     "flexPlanName": {
@@ -152,8 +159,11 @@
           "uamiClientId": {
             "value": "[parameters('uamiClientId')]"
           },
-          "appInsightsConnectionString": {
-            "value": "[parameters('appInsightsConnectionString')]"
+          "appInsightsName": {
+            "value": "[parameters('appInsightsName')]"
+          },
+          "logAnalyticsWorkspaceId": {
+            "value": "[parameters('logAnalyticsWorkspaceId')]"
           },
           "flexPlanName": {
             "value": "[parameters('flexPlanName')]"
@@ -182,7 +192,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.39.26.7824",
-              "templateHash": "12059223567195941379"
+              "templateHash": "1548390010016399554"
             }
           },
           "definitions": {
@@ -239,10 +249,17 @@
                 "description": "User-assigned managed identity client ID"
               }
             },
-            "appInsightsConnectionString": {
+            "appInsightsName": {
               "type": "string",
               "metadata": {
-                "description": "Application Insights connection string"
+                "description": "Application Insights resource name for connection string resolution"
+              }
+            },
+            "logAnalyticsWorkspaceId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Log Analytics Workspace resource ID for diagnostics"
               }
             },
             "corsAllowedOrigins": {
@@ -297,6 +314,12 @@
             }
           },
           "resources": {
+            "appInsightsRef": {
+              "existing": true,
+              "type": "Microsoft.Insights/components",
+              "apiVersion": "2020-02-02",
+              "name": "[parameters('appInsightsName')]"
+            },
             "flexPlan": {
               "type": "Microsoft.Web/serverfarms",
               "apiVersion": "2024-11-01",
@@ -331,10 +354,14 @@
               "properties": {
                 "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', parameters('flexPlanName'))]",
                 "httpsOnly": true,
+                "outboundVnetRouting": {
+                  "applicationTraffic": true
+                },
                 "siteConfig": {
                   "alwaysOn": false,
                   "minTlsVersion": "1.2",
                   "ftpsState": "Disabled",
+                  "scmType": "None",
                   "cors": {
                     "allowedOrigins": "[parameters('corsAllowedOrigins')]",
                     "supportCredentials": false
@@ -379,6 +406,36 @@
                 "swiftSupported": true
               },
               "dependsOn": [
+                "functionApp",
+                "functionAppAppSettings"
+              ]
+            },
+            "functionAppDiagnostics": {
+              "condition": "[not(empty(parameters('logAnalyticsWorkspaceId')))]",
+              "type": "Microsoft.Insights/diagnosticSettings",
+              "apiVersion": "2021-05-01-preview",
+              "scope": "[format('Microsoft.Web/sites/{0}', parameters('functionAppName'))]",
+              "name": "functionapp-diagnostics",
+              "properties": {
+                "workspaceId": "[parameters('logAnalyticsWorkspaceId')]",
+                "logs": [
+                  {
+                    "categoryGroup": "FunctionAppLogs",
+                    "enabled": true
+                  }
+                ],
+                "metrics": [
+                  {
+                    "category": "AllMetrics",
+                    "enabled": true,
+                    "retentionPolicy": {
+                      "days": 0,
+                      "enabled": false
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
                 "functionApp"
               ]
             },
@@ -387,18 +444,21 @@
               "apiVersion": "2024-11-01",
               "name": "[format('{0}/{1}', parameters('functionAppName'), 'appsettings')]",
               "properties": {
-                "WEBSITE_VNET_ROUTE_ALL": "1",
-                "APPLICATIONINSIGHTS_CONNECTION_STRING": "[parameters('appInsightsConnectionString')]",
+                "APPLICATIONINSIGHTS_CONNECTION_STRING": "[reference('appInsightsRef').ConnectionString]",
                 "APPLICATIONINSIGHTS_AUTHENTICATION_STRING": "[format('ClientId={0};Authorization=AAD', parameters('uamiClientId'))]",
+                "APPINSIGHTS_INSTRUMENTATIONKEY": "[reference('appInsightsRef').InstrumentationKey]",
+                "APPLICATIONINSIGHTS_ROLE_NAME": "[parameters('functionAppName')]",
                 "AzureWebJobsStorage__credential": "managedidentity",
                 "AzureWebJobsStorage__blobServiceUri": "[format('https://{0}.blob.{1}', parameters('storageAccountName'), environment().suffixes.storage)]",
                 "AzureWebJobsStorage__queueServiceUri": "[format('https://{0}.queue.{1}', parameters('storageAccountName'), environment().suffixes.storage)]",
                 "AzureWebJobsStorage__tableServiceUri": "[format('https://{0}.table.{1}', parameters('storageAccountName'), environment().suffixes.storage)]",
                 "AzureWebJobsStorage__ClientId": "[parameters('uamiClientId')]",
                 "AzureWebJobsStorage__accountName": "[parameters('storageAccountName')]",
-                "AZURE_CLIENT_ID": "[parameters('uamiClientId')]"
+                "AZURE_CLIENT_ID": "[parameters('uamiClientId')]",
+                "ENABLE_CONFIG_DISCOVERY_GRAPHQL": "true"
               },
               "dependsOn": [
+                "appInsightsRef",
                 "functionApp"
               ]
             }

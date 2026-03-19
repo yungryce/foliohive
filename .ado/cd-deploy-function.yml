@@ -90,27 +90,25 @@ jobs:
           cat "$INFRA_FILE"
           
           # Extract values
-          NAME_PREFIX=$(jq -r '.namePrefix // empty' "$INFRA_FILE")
-          UNIQUE_SUFFIX=$(jq -r '.uniqueSuffix // empty' "$INFRA_FILE")
-          APP_SERVICE_PLAN_ID=$(jq -r '.appServicePlanId // empty' "$INFRA_FILE")
-          FUNCTIONS_SUBNET_ID=$(jq -r '.functionsSubnetId // empty' "$INFRA_FILE")
-          PRIVATE_ENDPOINTS_SUBNET_ID=$(jq -r '.privateEndpointsSubnetId // empty' "$INFRA_FILE")
-          UAMI_ID=$(jq -r '.uamiId // empty' "$INFRA_FILE")
-          UAMI_CLIENT_ID=$(jq -r '.uamiClientId // empty' "$INFRA_FILE")
-          APP_INSIGHTS_CONN_STR=$(jq -r '.appInsightsConnectionString // empty' "$INFRA_FILE")
-          APP_INSIGHTS_INST_KEY=$(jq -r '.appInsightsInstrumentationKey // empty' "$INFRA_FILE")
-          LOG_ANALYTICS_WORKSPACE_ID=$(jq -r '.logAnalyticsWorkspaceId // empty' "$INFRA_FILE")
-          PRIVATE_DNS_ZONE_ID=$(jq -r '.privateDnsZoneAzureWebsitesId // empty' "$INFRA_FILE")
-          STORAGE_ACCOUNT_NAME=$(jq -r '.storageAccountName // empty' "$INFRA_FILE")
+          NAME_PREFIX=$(jq -r '.namePrefix' "$INFRA_FILE")
+          UNIQUE_SUFFIX=$(jq -r '.uniqueSuffix' "$INFRA_FILE")
+          APP_INSIGHTS_NAME=$(jq -r '.appInsightsName' "$INFRA_FILE")
+          LOG_ANALYTICS_WORKSPACE_ID=$(jq -r '.logAnalyticsWorkspaceId' "$INFRA_FILE")
+          FUNCTIONS_SUBNET_ID=$(jq -r '.functionsSubnetId' "$INFRA_FILE")
+          PRIVATE_ENDPOINTS_SUBNET_ID=$(jq -r '.privateEndpointsSubnetId' "$INFRA_FILE")
+          UAMI_ID=$(jq -r '.uamiId' "$INFRA_FILE")
+          UAMI_CLIENT_ID=$(jq -r '.uamiClientId' "$INFRA_FILE")
+          PRIVATE_DNS_ZONE_ID=$(jq -r '.privateDnsZoneAzureWebsitesId' "$INFRA_FILE")
+          STORAGE_ACCOUNT_NAME=$(jq -r '.storageAccountName' "$INFRA_FILE")
 
           # Validate critical outputs
-          if [ -z "$NAME_PREFIX" ] || [ -z "$UNIQUE_SUFFIX" ] || [ -z "$UAMI_ID" ] || [ -z "$APP_SERVICE_PLAN_ID" ] || [ -z "$STORAGE_ACCOUNT_NAME" ]; then
+          if [ -z "$NAME_PREFIX" ] || [ -z "$UNIQUE_SUFFIX" ] || [ -z "$UAMI_ID" ] || [ -z "$APP_INSIGHTS_NAME" ] || [ -z "$STORAGE_ACCOUNT_NAME" ]; then
             echo "##vso[task.logissue type=error]Missing critical infrastructure outputs"
-            echo "NAME_PREFIX: $NAME_PREFIX"
-            echo "UNIQUE_SUFFIX: $UNIQUE_SUFFIX"
-            echo "UAMI_ID: $UAMI_ID"
-            echo "APP_SERVICE_PLAN_ID: $APP_SERVICE_PLAN_ID"
-            echo "STORAGE_ACCOUNT_NAME: $STORAGE_ACCOUNT_NAME"
+            echo "NAME_PREFIX:       $NAME_PREFIX"
+            echo "UNIQUE_SUFFIX:     $UNIQUE_SUFFIX"
+            echo "UAMI_ID:           $UAMI_ID"
+            echo "APP_INSIGHTS_NAME: $APP_INSIGHTS_NAME"
+            echo "STORAGE_ACCOUNT:   $STORAGE_ACCOUNT_NAME"
             exit 1
           fi
 
@@ -121,15 +119,12 @@ jobs:
           echo "##vso[task.setvariable variable=staticWebAppHost]$STATIC_WEB_APP_HOST"
           
           # Set as pipeline variables
-          echo "##vso[task.setvariable variable=functionAppParameter]$FUNCTION_APP_NAME"
-          echo "##vso[task.setvariable variable=appServicePlanId]$APP_SERVICE_PLAN_ID"
+          echo "##vso[task.setvariable variable=appInsightsName]$APP_INSIGHTS_NAME"
+          echo "##vso[task.setvariable variable=logAnalyticsWorkspaceId]$LOG_ANALYTICS_WORKSPACE_ID"
           echo "##vso[task.setvariable variable=functionsSubnetId]$FUNCTIONS_SUBNET_ID"
           echo "##vso[task.setvariable variable=privateEndpointsSubnetId]$PRIVATE_ENDPOINTS_SUBNET_ID"
           echo "##vso[task.setvariable variable=uamiId]$UAMI_ID"
           echo "##vso[task.setvariable variable=uamiClientId]$UAMI_CLIENT_ID"
-          echo "##vso[task.setvariable variable=appInsightsConnectionString]$APP_INSIGHTS_CONN_STR"
-          echo "##vso[task.setvariable variable=appInsightsInstrumentationKey]$APP_INSIGHTS_INST_KEY"
-          echo "##vso[task.setvariable variable=logAnalyticsWorkspaceId]$LOG_ANALYTICS_WORKSPACE_ID"
           echo "##vso[task.setvariable variable=privateDnsZoneAzureWebsitesId]$PRIVATE_DNS_ZONE_ID"
           echo "##vso[task.setvariable variable=storageAccountName]$STORAGE_ACCOUNT_NAME"
           
@@ -156,8 +151,7 @@ jobs:
             -functionsSubnetId "$(functionsSubnetId)"
             -uamiId "$(uamiId)"
             -uamiClientId "$(uamiClientId)"
-            -appInsightsConnectionString "$(appInsightsConnectionString)"
-            -appInsightsInstrumentationKey "$(appInsightsInstrumentationKey)"
+            -appInsightsName "$(appInsightsName)"
             -logAnalyticsWorkspaceId "$(logAnalyticsWorkspaceId)"
             -storageAccountName "$(storageAccountName)"
             -corsAllowedOrigins ["$(staticWebAppHost)"]
@@ -193,3 +187,24 @@ jobs:
           appName: '$(functionAppName)'
           package: '$(Pipeline.Workspace)/functions_ci/${{ parameters.functionName }}-$(resources.pipeline.functions_ci.runID)/${{ parameters.functionName }}.zip'
           appSettings: -GITHUB_TOKEN "$(GITHUB_TOKEN)" -OPENAI_API_KEY "$(OPENAI_API_KEY)"
+
+      # Verify Application Insights connection string was set (checks presence without printing the value)
+      - task: AzureCLI@2
+        displayName: 'Verify Application Insights connection string is set'
+        condition: eq(variables['artifactExists'], 'true')
+        inputs:
+          azureSubscription: '$(azureServiceConnection)'
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -euo pipefail
+            result=$(az functionapp config appsettings list \
+              -g "$(resourceGroupName)" \
+              -n "$(functionAppName)" \
+              --query "[?name=='APPLICATIONINSIGHTS_CONNECTION_STRING'] | [0].value" \
+              -o tsv)
+            if [ -z "$result" ]; then
+              echo "##vso[task.logissue type=error]APPLICATIONINSIGHTS_CONNECTION_STRING is empty on $(functionAppName)"
+              exit 1
+            fi
+            echo "✓ APPLICATIONINSIGHTS_CONNECTION_STRING is set on $(functionAppName)"

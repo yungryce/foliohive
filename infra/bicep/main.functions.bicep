@@ -25,11 +25,8 @@ param uamiId string
 @description('User-assigned managed identity client ID')
 param uamiClientId string
 
-@description('Application Insights connection string')
-param appInsightsConnectionString string
-
-@description('Application Insights instrumentation key')
-param appInsightsInstrumentationKey string
+@description('Application Insights resource name for connection string resolution')
+param appInsightsName string
 
 @description('Log Analytics Workspace resource ID for diagnostics')
 param logAnalyticsWorkspaceId string = ''
@@ -70,8 +67,7 @@ module functionApp './modules/functionAppFlex.bicep' = {
     storageAccountName: storageAccountName
     uamiId: uamiId
     uamiClientId: uamiClientId
-    appInsightsConnectionString: appInsightsConnectionString
-    appInsightsInstrumentationKey: appInsightsInstrumentationKey
+    appInsightsName: appInsightsName
     logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
     flexPlanName: flexPlanName
     flexMaximumInstanceCount: flexMaximumInstanceCount
