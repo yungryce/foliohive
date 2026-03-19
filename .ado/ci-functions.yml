@@ -5,7 +5,7 @@
 # - Triggered by changes to any function or shared library
 # - Standalone: No Azure dependency, triggered by code changes only
 
-pr:
+trigger:
   branches:
     include:
       - main

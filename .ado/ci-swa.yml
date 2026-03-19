@@ -4,7 +4,7 @@
 # - Triggers on frontend code changes
 # - Standalone: No Azure dependency, triggered by code changes only
 
-pr:
+trigger:
   branches:
     include:
       - main

@@ -22,9 +22,6 @@ param functionsSubnetPrefix string = '10.20.1.0/24'
 @description('Subnet CIDR for Private Endpoints')
 param privateEndpointsSubnetPrefix string = '10.20.2.0/24'
 
-@description('Deploy shared Elastic Premium plan for legacy Function Apps')
-param deployPremiumPlan bool = true
-
 var uniqueSuffix = uniqueString(resourceGroup().id, namePrefix)
 
 module identity './modules/identity.bicep' = {
@@ -81,31 +78,13 @@ module storage './modules/storage.bicep' = {
   }
 }
 
-// App Service Plan (shared by all Function Apps)
-var appServicePlanName = '${namePrefix}-plan-${uniqueSuffix}'
-
-resource appServicePlan 'Microsoft.Web/serverfarms@2024-04-01' = if (deployPremiumPlan) {
-  name: appServicePlanName
-  location: location
-  tags: tags
-  kind: 'functionapp'
-  sku: {
-    name: 'EP1'
-    tier: 'ElasticPremium'
-    capacity: 1
-  }
-  properties: {
-    reserved: true
-  }
-}
 
 // Core outputs for downstream deployments
 output uamiId string = identity.outputs.uamiId
 output uamiClientId string = identity.outputs.uamiClientId
 output uamiPrincipalId string = identity.outputs.uamiPrincipalId
 
-output appInsightsConnectionString string = monitoring.outputs.appInsightsConnectionString
-output appInsightsInstrumentationKey string = monitoring.outputs.appInsightsInstrumentationKey
+output appInsightsName string = monitoring.outputs.monitoring.appInsightsName
 output logAnalyticsWorkspaceId string = monitoring.outputs.logAnalyticsWorkspaceId
 output vnetId string = network.outputs.vnetId
 output functionsSubnetId string = network.outputs.functionsSubnetId
@@ -118,7 +97,5 @@ output privateDnsZoneTableId string = privateDns.outputs.privateDnsZoneTableId
 output storageAccountName string = storage.outputs.storageAccountName
 output storageAccountId string = storage.outputs.storageAccountId
 
-output appServicePlanId string = deployPremiumPlan ? appServicePlan.id : ''
-output appServicePlanName string = deployPremiumPlan ? appServicePlan.name : ''
 output namePrefixOut string = namePrefix
 output uniqueSuffixOut string = uniqueSuffix
