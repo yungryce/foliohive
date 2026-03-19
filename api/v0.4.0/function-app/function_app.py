@@ -15,7 +15,8 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 
-# Local development file logging (disabled in production)
+
+# Local development logging (disabled in production)
 if os.getenv("ENABLE_LOCAL_LOGGING", "").lower() == "true":
     _log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "logs")
     os.makedirs(_log_dir, exist_ok=True)
@@ -28,6 +29,7 @@ if os.getenv("ENABLE_LOCAL_LOGGING", "").lower() == "true":
     _fh.setLevel(logging.INFO)
     _fh.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
     logging.getLogger("foliohive").addHandler(_fh)
+
 
 from blueprints.api_gateway import bp as api_gateway_bp
 from blueprints.cache_worker import bp as cache_worker_bp
