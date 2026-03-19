@@ -156,7 +156,7 @@ resource functionAppDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-0
     workspaceId: logAnalyticsWorkspaceId
     logs: [
       {
-        categoryGroup: 'FunctionAppLogs'
+        categoryGroup: 'allLogs'
         enabled: true
       }
     ]
@@ -164,10 +164,6 @@ resource functionAppDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-0
       {
         category: 'AllMetrics'
         enabled: true
-        retentionPolicy: {
-          days: 0
-          enabled: false
-        }
       }
     ]
   }
