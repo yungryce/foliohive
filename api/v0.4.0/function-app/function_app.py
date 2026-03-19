@@ -36,6 +36,7 @@ from blueprints.cache_worker import bp as cache_worker_bp
 from blueprints.reconciliation_worker import bp as reconciliation_worker_bp
 from blueprints.sync_worker import bp as sync_worker_bp
 
+
 app = func.FunctionApp()
 
 _register = getattr(app, "register_blueprint", None) or getattr(app, "register_functions", None)

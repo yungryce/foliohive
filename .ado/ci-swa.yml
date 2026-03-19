@@ -4,20 +4,26 @@
 # - Triggers on frontend code changes
 # - Standalone: No Azure dependency, triggered by code changes only
 
-trigger:
-  branches:
-    include:
-      - main
-  paths:
-    include:
-      - ui/**
-      - .ado/ci-swa.yml
-    exclude:
-      - ui/node_modules/**
-      - ui/dist/**
-      - ui/.angular/cache/**
-      - 'ui/**/*.spec.ts'
+# trigger:
+#   branches:
+#     include:
+#       - main
+#   paths:
+#     include:
+#       - ui/**
+#       - .ado/ci-swa.yml
+#     exclude:
+#       - ui/node_modules/**
+#       - ui/dist/**
+#       - ui/.angular/cache/**
+#       - 'ui/**/*.spec.ts'
 
+
+resources:
+  pipelines:
+    - pipeline: infra
+      source: yungryce.foliohive.infra
+      trigger: true
 
 variables:
   - group: 'folioVars'

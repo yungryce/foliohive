@@ -13,16 +13,16 @@ resources:
       source: yungryce.foliohive.infra
       trigger: true
 
-pr:
-  branches:
-    include:
-      - main
-  paths:
-    include:
-      - .ado/cd-functions.yml
-      - .ado/cd-deploy-function.yml
-      - infra/bicep/main.functions.bicep
-      - infra/bicep/modules/functionApp.bicep
+# pr:
+#   branches:
+#     include:
+#       - main
+#   paths:
+#     include:
+#       - .ado/cd-functions.yml
+#       - .ado/cd-deploy-function.yml
+#       - infra/bicep/main.functions.bicep
+#       - infra/bicep/modules/functionApp.bicep
 
 variables:
   - group: 'folioVars'
