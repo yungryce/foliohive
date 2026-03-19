@@ -7,6 +7,9 @@
 #
 # Usage: Configure via params/params-swa.yml
 
+trigger: none
+pr: none
+
 resources:
   pipelines:
     - pipeline: swa_ci
@@ -16,15 +19,15 @@ resources:
       source: yungryce.foliohive.function-cd
       trigger: true
 
-pr:
-  branches:
-    include:
-      - main
-  paths:
-    include:
-      - .ado/cd-swa.yml
-      - infra/bicep/main.staticwebapp.bicep
-      - infra/bicep/modules/staticWebApp.bicep
+# pr:
+#   branches:
+#     include:
+#       - main
+#   paths:
+#     include:
+#       - .ado/cd-swa.yml
+#       - infra/bicep/main.staticwebapp.bicep
+#       - infra/bicep/modules/staticWebApp.bicep
 
 variables:
   - group: 'folioVars'

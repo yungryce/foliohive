@@ -5,21 +5,31 @@
 # - Triggered by changes to any function or shared library
 # - Standalone: No Azure dependency, triggered by code changes only
 
-trigger:
-  branches:
-    include:
-      - main
-  paths:
-    include:
-      - api/v0.4.0/function-app/**
-      - api/v0.4.0/shared/**
-      - .ado/ci-functions.yml
-      - .ado/ci-build-function.yml
-      - .ado/detect-function-changes.yml
-    exclude:
-      - api/v0.4.0/**/tests/**
-      - api/v0.4.0/**/__pycache__/**
-      - '**/*.pyc'
+# trigger:
+#   branches:
+#     include:
+#       - main
+#   paths:
+#     include:
+#       - api/v0.4.0/function-app/**
+#       - api/v0.4.0/shared/**
+#       - .ado/ci-functions.yml
+#       - .ado/ci-build-function.yml
+#       - .ado/detect-function-changes.yml
+#     exclude:
+#       - api/v0.4.0/**/tests/**
+#       - api/v0.4.0/**/__pycache__/**
+#       - '**/*.pyc'
+
+trigger: none
+pr: none
+
+resources:
+  pipelines:
+    - pipeline: infra
+      source: yungryce.foliohive.infra
+      trigger: true
+
 
 variables:
   - group: 'folioVars'
