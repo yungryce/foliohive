@@ -4,8 +4,6 @@
 # - Safe to re-run anytime (idempotent)
 # - Must complete before any CD pipelines run
 
-pr: none
-
 trigger:
   branches:
     include:

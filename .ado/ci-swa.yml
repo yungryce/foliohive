@@ -23,8 +23,8 @@ pr: none
 
 resources:
   pipelines:
-    - pipeline: functions_ci
-      source: yungryce.foliohive.function-ci
+    - pipeline: infra
+      source: yungryce.foliohive.infra
       trigger: true
 
 variables:

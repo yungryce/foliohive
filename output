@@ -1,0 +1,70 @@
+diff --git a/.ado/cd-functions.yml b/.ado/cd-functions.yml
+index 7fe3ffe..7de5b97 100644
+--- a/.ado/cd-functions.yml
++++ b/.ado/cd-functions.yml
+@@ -12,7 +12,9 @@ resources:
+     - pipeline: functions_ci
+       source: yungryce.foliohive.function-ci
+       trigger: true
+-
++    - pipeline: core_infra
++      source: yungryce.foliohive.infra
++      trigger: true
+ 
+ # pr:
+ #   branches:
+diff --git a/.ado/cd-swa.yml b/.ado/cd-swa.yml
+index 9ce44fa..531514f 100644
+--- a/.ado/cd-swa.yml
++++ b/.ado/cd-swa.yml
+@@ -15,7 +15,9 @@ resources:
+     - pipeline: swa_ci
+       source: yungryce.foliohive.swa-ci
+       trigger: true
+-
++    - pipeline: functions_cd
++      source: yungryce.foliohive.function-cd
++      trigger: true
+ 
+ # pr:
+ #   branches:
+diff --git a/.ado/ci-swa.yml b/.ado/ci-swa.yml
+index 49f170f..94e9b0c 100644
+--- a/.ado/ci-swa.yml
++++ b/.ado/ci-swa.yml
+@@ -23,8 +23,8 @@ pr: none
+ 
+ resources:
+   pipelines:
+-    - pipeline: functions_ci
+-      source: yungryce.foliohive.function-ci
++    - pipeline: infra
++      source: yungryce.foliohive.infra
+       trigger: true
+ 
+ variables:
+diff --git a/.ado/infra-core.yml b/.ado/infra-core.yml
+index cf9a611..7d2ae77 100644
+--- a/.ado/infra-core.yml
++++ b/.ado/infra-core.yml
+@@ -4,8 +4,6 @@
+ # - Safe to re-run anytime (idempotent)
+ # - Must complete before any CD pipelines run
+ 
+-pr: none
+-
+ trigger:
+   branches:
+     include:
+diff --git a/infra/bicep/modules/functionAppFlex.bicep b/infra/bicep/modules/functionAppFlex.bicep
+index 58cecae..c052e8b 100644
+--- a/infra/bicep/modules/functionAppFlex.bicep
++++ b/infra/bicep/modules/functionAppFlex.bicep
+@@ -156,6 +156,7 @@ resource functionAppDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-0
+     workspaceId: logAnalyticsWorkspaceId
+     logs: [
+       { category: 'FunctionAppLogs', enabled: true }
++      { category: 'AppServiceHTTPLogs', enabled: true }
+       { category: 'AppServiceConsoleLogs', enabled: true }
+       { category: 'AppServiceAuthenticationLogs', enabled: true }
+     ]

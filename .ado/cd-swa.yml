@@ -15,6 +15,8 @@ resources:
     - pipeline: swa_ci
       source: yungryce.foliohive.swa-ci
       trigger: true
+    - pipeline: functions_cd
+      source: yungryce.foliohive.function-cd
 
 
 # pr:
