@@ -12,9 +12,7 @@ resources:
     - pipeline: functions_ci
       source: yungryce.foliohive.function-ci
       trigger: true
-    - pipeline: core_infra
-      source: yungryce.foliohive.infra
-      trigger: true
+
 
 # pr:
 #   branches:
