@@ -155,10 +155,11 @@ resource functionAppDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-0
   properties: {
     workspaceId: logAnalyticsWorkspaceId
     logs: [
-      {
-        categoryGroup: 'allLogs'
-        enabled: true
-      }
+      { category: 'FunctionAppLogs', enabled: true }
+      { category: 'AppServicePlatformLogs', enabled: true }
+      { category: 'AppServiceHTTPLogs', enabled: true }
+      { category: 'AppServiceConsoleLogs', enabled: true }
+      { category: 'AppServiceAuthenticationLogs', enabled: true }
     ]
     metrics: [
       {

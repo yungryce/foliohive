@@ -1,7 +1,7 @@
 import { Component, inject, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { Subject, takeUntil, tap } from 'rxjs';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { RepoBundleService, JobStatusResponse } from '../services/repo-bundle.service';
@@ -17,6 +17,7 @@ import { JobStatusBadgeComponent } from '../shared/job-status-badge.component';
   styleUrls: ['./landing.component.css'],
 })
 export class LandingComponent implements OnInit, OnDestroy {
+  private route = inject(ActivatedRoute);
   private router = inject(Router);
   private repoService = inject(RepoBundleService);
   private jobPollingService = inject(JobPollingService);
@@ -34,6 +35,15 @@ export class LandingComponent implements OnInit, OnDestroy {
   
   ngOnInit(): void {
     this.syncStoredCandidates();
+
+    const params = this.route.snapshot.queryParamMap;
+    const usernameParam = params.get('username')?.trim();
+    if (usernameParam) {
+      this.username = usernameParam;
+      if (params.get('autostart') === 'true') {
+        this.start();
+      }
+    }
   }
   
   ngOnDestroy(): void {
