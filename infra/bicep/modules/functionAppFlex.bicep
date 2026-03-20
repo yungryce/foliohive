@@ -149,6 +149,7 @@ resource functionAppVnetIntegration 'Microsoft.Web/sites/networkConfig@2024-11-0
   }
 }
 
+
 resource functionAppDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(logAnalyticsWorkspaceId)) {
   scope: functionApp
   name: 'functionapp-diagnostics'
