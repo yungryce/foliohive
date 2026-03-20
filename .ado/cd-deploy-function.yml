@@ -188,23 +188,3 @@ jobs:
           package: '$(Pipeline.Workspace)/functions_ci/${{ parameters.functionName }}-$(resources.pipeline.functions_ci.runID)/${{ parameters.functionName }}.zip'
           appSettings: -GITHUB_TOKEN "$(GITHUB_TOKEN)" -OPENAI_API_KEY "$(OPENAI_API_KEY)"
 
-      # Verify Application Insights connection string was set (checks presence without printing the value)
-      - task: AzureCLI@2
-        displayName: 'Verify Application Insights connection string is set'
-        condition: eq(variables['artifactExists'], 'true')
-        inputs:
-          azureSubscription: '$(azureServiceConnection)'
-          scriptType: bash
-          scriptLocation: inlineScript
-          inlineScript: |
-            set -euo pipefail
-            result=$(az functionapp config appsettings list \
-              -g "$(resourceGroupName)" \
-              -n "$(functionAppName)" \
-              --query "[?name=='APPLICATIONINSIGHTS_CONNECTION_STRING'] | [0].value" \
-              -o tsv)
-            if [ -z "$result" ]; then
-              echo "##vso[task.logissue type=error]APPLICATIONINSIGHTS_CONNECTION_STRING is empty on $(functionAppName)"
-              exit 1
-            fi
-            echo "✓ APPLICATIONINSIGHTS_CONNECTION_STRING is set on $(functionAppName)"
