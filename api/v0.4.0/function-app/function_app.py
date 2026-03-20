@@ -15,7 +15,6 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 
-
 # Local development logging (disabled in production)
 if os.getenv("ENABLE_LOCAL_LOGGING", "").lower() == "true":
     _log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "logs")
@@ -35,7 +34,6 @@ from blueprints.api_gateway import bp as api_gateway_bp
 from blueprints.cache_worker import bp as cache_worker_bp
 from blueprints.reconciliation_worker import bp as reconciliation_worker_bp
 from blueprints.sync_worker import bp as sync_worker_bp
-
 
 app = func.FunctionApp()
 
