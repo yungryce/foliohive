@@ -16,6 +16,7 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 
+
 # Local development logging (disabled in production)
 if os.getenv("ENABLE_LOCAL_LOGGING", "").lower() == "true":
     _log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "logs")
