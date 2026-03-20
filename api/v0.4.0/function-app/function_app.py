@@ -10,6 +10,7 @@ Logical separation is maintained via Azure Functions Blueprints.
 
 from __future__ import annotations
 
+
 import azure.functions as func
 import logging
 import os
