@@ -40,9 +40,7 @@ export class LandingComponent implements OnInit, OnDestroy {
     const usernameParam = params.get('username')?.trim();
     if (usernameParam) {
       this.username = usernameParam;
-      if (params.get('autostart') === 'true') {
-        this.start();
-      }
+      this.start();
     }
   }
   
@@ -56,6 +54,8 @@ export class LandingComponent implements OnInit, OnDestroy {
    * Redirects to profile page once repositories are synced.
    */
   start(): void {
+    if (this.loading) return;
+
     this.error = '';
     this.buildProgress = 0;
     this.statusMessage = '';
@@ -70,7 +70,7 @@ export class LandingComponent implements OnInit, OnDestroy {
     this.statusMessage = 'Starting build...';
 
     // Always trigger fresh build
-    this.repoService.startBuild(username, true).subscribe({
+    this.repoService.startBuild(username).subscribe({
       next: (jobId: string) => {
         this.candidateContext.upsertCandidate({ username });
         this.statusMessage = 'Syncing repositories...';

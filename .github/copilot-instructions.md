@@ -126,7 +126,7 @@ Tables fall into two categories:
 
 **Table Schema Overview**
 - `SessionCandidates`: Stores candidate information and their associated session data.
-- `JobMetadata`: Tracks metadata for each sync job. Fields: job ID, candidate username, created_at, updated_at, status (`queued | syncing | metadata_ready | caching_started | completed | failed`), force_refresh flag, trace_id, request_id.
+- `JobMetadata`: Tracks metadata for each sync job. Fields: job ID, candidate username, created_at, updated_at, status (`queued | syncing | metadata_ready | caching_started | completed | failed`), trace_id, request_id.
 - `RepoLanguages`: Stores programming languages used in repositories with percentages of code written in each language. PartitionKey: `{username}:{repo_name}` (prevents cross-candidate collision), RowKey: `language`. Includes `job_id` FK.
 - `RepoGitHubMetadata`: Stores GitHub metadata for repositories: name, description, stars, forks, topics, default branch, fingerprint, last accessed timestamp. PartitionKey: `username`, RowKey: `repo_name`. Includes `job_id` FK.
 - `RepoSyncStatus`: Tracks per-repo pipeline status. Valid values: `pending | synced | summary_ready | failed`. `summary_ready` indicates micro-summary generation succeeded and repo is available for profile aggregation and query context.

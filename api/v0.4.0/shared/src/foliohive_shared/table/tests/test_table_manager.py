@@ -184,7 +184,7 @@ def test_safe_json_dump_limited_drops_oversized() -> None:
 
 def test_job_metadata_roundtrip_and_partial_update(table_manager: TableManager) -> None:
     table_manager.upsert_job_metadata(
-        JobMetadataRow(username="alice", job_id="job-1", status="queued", force_refresh=False)
+        JobMetadataRow(username="alice", job_id="job-1", status="queued")
     )
 
     with pytest.raises(ValueError):
@@ -200,7 +200,6 @@ def test_job_metadata_roundtrip_and_partial_update(table_manager: TableManager) 
     assert stored is not None
     assert stored["status"] == "metadata_ready"
     assert stored["trace_id"] == "t1"
-    assert stored["force_refresh"] is False
 
     jobs = table_manager.list_jobs_metadata("alice")
     assert len(jobs) == 1
