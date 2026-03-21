@@ -91,13 +91,12 @@ export class RepoBundleService {
    * POST /candidate/{username}/refresh
    * 
    * @param username - GitHub username
-   * @param force - Force refresh even if recent data exists
    * @returns Observable<string> - Job ID for polling
    * @throws Error if no job_id returned or request fails
    */
-  startBuild(username: string, force = true): Observable<string> {
+  startBuild(username: string): Observable<string> {
     const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/refresh`;
-    return this.http.post<any>(url, { force_refresh: force }).pipe(
+    return this.http.post<any>(url, {}).pipe(
       map(res => {
         const data = res?.status === 'success' && res?.data ? res.data : res;
         const jobId = data?.job_id;

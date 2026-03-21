@@ -79,7 +79,6 @@ class JobMetadataRow:
     username: str  # PartitionKey
     job_id: str  # RowKey
     status: str = "queued" # queued | syncing | metadata_ready | caching_started | completed | failed
-    force_refresh: bool = False
     last_requeue_at: Optional[str] = None
     trace_id: Optional[str] = None
     request_id: Optional[str] = None
@@ -541,7 +540,6 @@ class TableManager:
             "PartitionKey": row.username,
             "RowKey": row.job_id,
             "status": row.status,
-            "force_refresh": bool(row.force_refresh),
             "last_requeue_at": _azure_safe_timestamp(row.last_requeue_at) if row.last_requeue_at else "",
             "trace_id": row.trace_id or "",
             "request_id": row.request_id or "",
@@ -671,7 +669,6 @@ class TableManager:
         payload["job_id"] = payload.get("RowKey")
         payload["trace_id"] = payload.get("trace_id") or None
         payload["request_id"] = payload.get("request_id") or None
-        payload["force_refresh"] = bool(payload.get("force_refresh"))
         for key in list(payload.keys()):
             if key.endswith("_at"):
                 payload[key] = _restore_iso_timestamp(payload.get(key))

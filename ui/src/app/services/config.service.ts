@@ -18,7 +18,7 @@ export class ConfigService {
     // Could load from API or external config file
     return of({
       apiUrl: this.apiUrl,
-      version: '1.0.0',
+      version: '0.4.0',
       features: ['prefetch', 'caching']
     });
   }

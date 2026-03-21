@@ -532,7 +532,6 @@ def _persist_job_metadata(
     username: str,
     *,
     status: str = "queued",
-    force_refresh: bool = False,
     created_at: Optional[str] = None,
     trace_id: Optional[str] = None,
     request_id: Optional[str] = None,
@@ -550,7 +549,6 @@ def _persist_job_metadata(
         username=username,
         job_id=job_id,
         status=status,
-        force_refresh=force_refresh if not existing else bool(existing.get("force_refresh") or force_refresh),
         created_at=(existing.get("created_at") if existing else created_at) or created_at,
         updated_at=existing.get("updated_at") if existing else None,
         trace_id=trace_id if not existing else (existing.get("trace_id") or trace_id),
@@ -612,6 +610,22 @@ def _update_valid_repos_job_id(
             table_manager.upsert_repo_github_metadata(updated_row)
 
 
+_ACTIVE_JOB_STATUSES = {"queued", "syncing", "metadata_ready", "caching_started"}
+
+
+def _get_active_job(username: str) -> Optional[Dict[str, Any]]:
+    """Return the most recently-started active job for username, or None.
+
+    Active = any status that is not yet terminal (completed / failed).
+    Used to prevent duplicate parallel jobs for the same candidate.
+    """
+    jobs = table_manager.list_jobs_metadata(username)
+    active = [j for j in jobs if j.get("status") in _ACTIVE_JOB_STATUSES]
+    if not active:
+        return None
+    return max(active, key=lambda j: j.get("created_at") or "")
+
+
 def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Identify stale repositories by comparing fingerprints.
     
@@ -654,20 +668,14 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
         current_fingerprint = current_fingerprints.get(repo_name)
         cached_fingerprint = cached_fingerprints.get(repo_name)
 
-        # Fingerprint mismatch = stale
-        if current_fingerprint and current_fingerprint != cached_fingerprint:
-            stale_repos.append({**repo_metadata, "fingerprint": current_fingerprint})
-        # Fingerprint match = valid (don't re-sync)
-        elif current_fingerprint and current_fingerprint == cached_fingerprint:
-            valid_repos.append(repo_metadata)
-        # New repo (no cached fingerprint)
+        if current_fingerprint == cached_fingerprint:
+            valid_repos.append({**repo_metadata, "fingerprint": current_fingerprint})
         else:
             stale_repos.append({**repo_metadata, "fingerprint": current_fingerprint})
-
+            
     return {
         "stale_repos": stale_repos,
         "cached_bundle": valid_repos,
-        "bundle_status": "fresh" if not stale_repos else "stale",
     }
 
 
@@ -744,18 +752,11 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
     """Trigger refresh of candidate portfolio data.
     
     Analyzes repository freshness by comparing GitHub metadata fingerprints with
-    cached data. Enqueues sync jobs only for stale repositories unless force_refresh
-    is specified.
-    
-    Request body:
-        {
-            "force_refresh": bool (default: false)
-        }
+    cached data. Enqueues sync jobs only for stale repositories.
     
     Behavior:
-        - force_refresh=false: Only syncs repositories with changed metadata
-        - force_refresh=true: Syncs all repositories regardless of freshness
-        - Returns early if no stale repos and not forcing refresh
+        - Only syncs repositories with changed metadata (fingerprint-based)
+        - Returns early if no stale repos found
     
     Returns:
         202: Refresh job started successfully
@@ -776,9 +777,9 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
     
     Flow:
         1. Fetch current GitHub metadata (unavoidable for freshness check)
-        2. Compare fingerprints with table_manager cached data
+        2. Compare fingerprints with cached data
         3. Create job metadata and RepoSyncStatus rows (audit trail)
-        4. Enqueue sync jobs for stale/all repos
+        4. Enqueue sync jobs for stale repos
         5. Return job_id and status polling URL
     """
     started_at = perf_counter()
@@ -789,8 +790,20 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
             return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
 
         trace = _get_trace_context(req)
-        body = _parse_json(req)
-        force_refresh = bool(body.get("force_refresh", False))
+
+        active_job = _get_active_job(username)
+        if active_job:
+            active_job_id = active_job["job_id"]
+            return _create_success_response(
+                {
+                    "status": "processing",
+                    "job_id": active_job_id,
+                    "repos_queued": 0,
+                    "status_url": f"/api/candidate/{username}/status?job_id={active_job_id}",
+                },
+                status_code=202,
+                cache_control="no-cache",
+            )
 
         try:
             freshness = _identify_repo_freshness(username, trace=trace)
@@ -799,23 +812,22 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
             return _create_error_response("Failed to analyze repositories", 500)
 
         stale_repos = freshness["stale_repos"]
-        valid_repos = freshness["cached_bundle"]  # Valid (non-stale) repos from cache
+        valid_repos = freshness["cached_bundle"]  # Non-stale repos (used for job_id association)
 
-        # If nothing is stale and not forcing refresh, return early
-        if not stale_repos and not force_refresh:
-            return _create_success_response({"status": "fresh", "repos_count": len(valid_repos)})
-
-        # Determine repos to queue: stale only, or stale + valid if force_refresh
-        repos_to_queue = stale_repos + valid_repos if force_refresh else stale_repos
-        if not repos_to_queue:
-            return _create_success_response({"status": "fresh", "repos_count": 0})
+        if not stale_repos:
+            latest_job = _fetch_candidate_jobs(username)
+            return _create_success_response({
+                "status": "fresh",
+                "job_id": latest_job.get("job_id") if latest_job else None,
+                "repos_count": len(valid_repos),
+                "status_url": f"/api/candidate/{username}/status?job_id={latest_job['job_id']}" if latest_job else None,
+            })
 
         job_id = str(uuid.uuid4())
 
         _persist_job_metadata(
             job_id,
             username,
-            force_refresh=force_refresh,
             trace_id=trace.get("trace_id"),
             request_id=trace.get("request_id"),
         )
@@ -823,24 +835,20 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
         # Update valid repos' job_id so they're associated with the current job
         _update_valid_repos_job_id(username, valid_repos, job_id)
 
-        # Create pending status rows for repos that need to be queued/synced
-        for repo_metadata in repos_to_queue:
-            repo_name = repo_metadata.get("name")
-            if repo_name:
-                table_manager.upsert_repo_status(
-                    RepoSyncStatusRow(
-                        job_id=job_id,
-                        repo_name=repo_name,
-                        username=username,
-                        status="pending",
-                    )
-                )
-
         enqueued = 0
-        for repo_metadata in repos_to_queue:
+        for repo_metadata in stale_repos:
             repo_name = repo_metadata.get("name")
             if not repo_name:
                 continue
+
+            table_manager.upsert_repo_status(
+                RepoSyncStatusRow(
+                    job_id=job_id,
+                    repo_name=repo_name,
+                    username=username,
+                    status="pending",
+                )
+            )
 
             repo_fingerprint = repo_metadata.get("fingerprint")
             if queue_manager.enqueue_sync_job(
