@@ -25,7 +25,6 @@ from foliohive_shared import (
     table_manager,
     SummaryManager,
     JobMetadataRow,
-    RepoGitHubMetadataRow,
     RepoSyncStatusRow,
     UserProfileRow,
 )
@@ -356,11 +355,11 @@ def _get_repos_entries(
         List of repo entry dicts with metadata and languages
     """
 
-    all_repos = table_manager.query_repo_github_metadata(ctx.username) 
+    all_repos = table_manager.query_repo_github_metadata(ctx.username)
     if not all_repos:
         return []
-    
-    languages_by_repo = table_manager.query_all_repo_languages(ctx.job_id) if ctx.job_id else {} 
+
+    languages_by_repo = table_manager.query_all_repo_languages_by_username(ctx.username) if ctx.username else {}
     entries: List[Dict[str, Any]] = []
     for github_metadata in all_repos:
         repo_name = github_metadata.get("repo_name")
@@ -437,17 +436,17 @@ def _build_repo_statistics(
 
 def _get_portfolio_bundle(
     username: str,
-    job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Unified portfolio data fetcher - single source of truth for portfolio queries.
     
     Consolidates the common pattern of querying repo metadata, languages, and 
-    computing aggregated statistics. Used by get_profile, get_profile_summary, 
-    and portfolio_query to eliminate redundant database queries.
+    computing aggregated statistics. Used by get_profile to build the profile view.
+    
+    Languages are queried by username (not job_id) so unchanged repos in a partial
+    refresh still return language data written by their original job.
     
     Args:
         username: GitHub username
-        job_id: Optional job ID to query specific job data
     
     Returns:
         Dict containing:
@@ -460,7 +459,7 @@ def _get_portfolio_bundle(
     if not all_repos:
         return []
 
-    languages_by_repo = table_manager.query_all_repo_languages(job_id) if job_id else {}
+    languages_by_repo = table_manager.query_all_repo_languages_by_username(username)
     statistics = _aggregate_portfolio_statistics(all_repos, languages_by_repo)
     
     return {
@@ -555,59 +554,6 @@ def _persist_job_metadata(
         request_id=request_id if not existing else (existing.get("request_id") or request_id),
     )
     table_manager.upsert_job_metadata(row)
-
-
-def _update_valid_repos_job_id(
-    username: str,
-    valid_repos: List[Dict[str, Any]],
-    job_id: str,
-) -> None:
-    """Update job_id for valid (non-stale) repositories.
-    
-    Associates valid repos with the current job even though they don't require
-    re-syncing. This prevents drift where valid repos retain old job_id while
-    stale repos get the new job_id, ensuring all repos for a candidate are
-    tied to the same job_id for consistent data provenance.
-    
-    Args:
-        username: GitHub username
-        valid_repos: List of repo metadata dicts for repos that passed freshness check
-        job_id: Current job ID to associate with repos
-    """
-    for repo_metadata in valid_repos:
-        repo_name = repo_metadata.get("name")
-        if not repo_name:
-            continue
-        
-        # Fetch existing metadata and update job_id
-        existing = table_manager.get_repo_github_metadata(username, repo_name)
-        if existing:
-            # Reconstruct row with updated job_id while preserving all other fields
-            updated_row = RepoGitHubMetadataRow(
-                username=username,
-                repo_name=repo_name,
-                job_id=job_id,  # Update to current job_id
-                fingerprint=existing.get("fingerprint"),
-                description=existing.get("description"),
-                topics=existing.get("topics"),
-                html_url=existing.get("html_url"),
-                homepage_url=existing.get("homepage_url"),
-                stars_count=existing.get("stars_count", 0),
-                forks_count=existing.get("forks_count", 0),
-                watchers=existing.get("watchers", 0),
-                open_issues=existing.get("open_issues", 0),
-                primary_language=existing.get("primary_language"),
-                is_fork=existing.get("is_fork", False),
-                is_archived=existing.get("is_archived", False),
-                license_name=existing.get("license_name"),
-                github_created_at=existing.get("github_created_at"),
-                github_updated_at=existing.get("github_updated_at"),
-                github_pushed_at=existing.get("github_pushed_at"),
-                default_branch=existing.get("default_branch"),
-                created_at=existing.get("created_at"),
-                last_accessed_at=existing.get("last_accessed_at"),
-            )
-            table_manager.upsert_repo_github_metadata(updated_row)
 
 
 _ACTIVE_JOB_STATUSES = {"queued", "syncing", "metadata_ready", "caching_started"}
@@ -757,6 +703,7 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
     Behavior:
         - Only syncs repositories with changed metadata (fingerprint-based)
         - Returns early if no stale repos found
+        - Job progress tracks only the stale repositories accepted into this refresh
     
     Returns:
         202: Refresh job started successfully
@@ -778,7 +725,7 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
     Flow:
         1. Fetch current GitHub metadata (unavoidable for freshness check)
         2. Compare fingerprints with cached data
-        3. Create job metadata and RepoSyncStatus rows (audit trail)
+        3. Create job metadata and RepoSyncStatus rows for stale repos only
         4. Enqueue sync jobs for stale repos
         5. Return job_id and status polling URL
     """
@@ -812,7 +759,7 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
             return _create_error_response("Failed to analyze repositories", 500)
 
         stale_repos = freshness["stale_repos"]
-        valid_repos = freshness["cached_bundle"]  # Non-stale repos (used for job_id association)
+        valid_repos = freshness["cached_bundle"]
 
         if not stale_repos:
             latest_job = _fetch_candidate_jobs(username)
@@ -831,9 +778,6 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
             trace_id=trace.get("trace_id"),
             request_id=trace.get("request_id"),
         )
-
-        # Update valid repos' job_id so they're associated with the current job
-        _update_valid_repos_job_id(username, valid_repos, job_id)
 
         enqueued = 0
         for repo_metadata in stale_repos:
@@ -910,7 +854,7 @@ def get_job_status(req: func.HttpRequest) -> func.HttpResponse:
             "summary_ready": bool,   // True when summaries generated (completed)
             "created_at": str,
             "progress": {
-                "total": int,          // Total number of repos in job
+                "total": int,          // Total repos tracked by this refresh job
                 "completed": int,      // summary_ready + failed (terminal states)
                 "percentage": int,     // Completion percentage (0-100)
                 "pending": int,        // Waiting to be processed
@@ -1124,7 +1068,7 @@ def get_profile(req: func.HttpRequest) -> func.HttpResponse:
     ctx = _prepare_candidate_context(req, username)
 
     # Use unified portfolio data fetcher
-    bundle = _get_portfolio_bundle(username, job_id=ctx.job_id)
+    bundle = _get_portfolio_bundle(username)
     profile = _get_or_refresh_user_profile(username, ctx.job_id)
 
     payload = {

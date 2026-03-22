@@ -207,9 +207,11 @@ def _update_cache_progress(
     
     job = table_manager.get_job_metadata(username, job_id)
     current_status = job.get("status") if job else "queued"
-    
+
     if (summary_ready_count > 0 or failed_count > 0) and current_status in ("syncing", "metadata_ready"):
         table_manager.update_job_metadata_conditional(username, job_id, {"status": "caching_started"})
+        refreshed_job = table_manager.get_job_metadata(username, job_id)
+        current_status = refreshed_job.get("status") if refreshed_job else current_status
     
     # Transition: caching_started → completed when all repos have summary or failed
     completed_count = summary_ready_count + failed_count

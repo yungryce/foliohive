@@ -456,17 +456,21 @@ class SummaryManager:
 
     def build_repo_micro_summary_cache_key(self, repo_name: str, fingerprint: str) -> str:
         """Build cache key for micro-summary blob storage.
-        
+
+        Keys are globally shared by (repo_name, fingerprint) — the same content fingerprint
+        always maps to the same blob regardless of which candidate triggered the scan.
+        This mirrors RepoCacheSummary, which is also keyed by (repo_name, fingerprint).
+
         Args:
             repo_name: Repository name (may contain /)
             fingerprint: Content fingerprint for cache invalidation
-            
+
         Returns:
             Safe cache key for blob storage
         """
         safe_repo = str(repo_name).replace("/", "_").replace(" ", "_")
         safe_fingerprint = str(fingerprint).replace("/", "_").replace(" ", "_")
-        return f"repo_micro_summary:{self.username}:{safe_repo}:{safe_fingerprint}"
+        return f"repo_micro_summary:{safe_repo}:{safe_fingerprint}"
 
     def build_profile_aggregate_cache_key(self, fingerprint: str) -> str:
         safe = str(fingerprint).replace("/", "_").replace(" ", "_")

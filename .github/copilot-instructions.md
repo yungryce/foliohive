@@ -93,8 +93,8 @@ Client has 4 views that retrives and displays data from the server. These views 
   - `syncing`: First repo metadata sync started
   - `metadata_ready`: All metadata synced (independent of summary generation); repo metadata available for UI display
   - `caching_started`: First micro-summary generation started
-  - `completed`: All repos have micro-summaries (or failed); job fully processed
-- `RepoSyncStatus` per-repo status transitions: `pending → synced → summary_ready` (or `failed` at any stage). `summary_ready` indicates repo is available for profile aggregation and query context.
+    - `completed`: All tracked repos have micro-summaries (or failed); job fully processed
+- `RepoSyncStatus` per-repo status transitions: `pending → synced → summary_ready` (or `failed` at any stage). `summary_ready` indicates repo is available for profile aggregation and query context. Incremental refresh jobs create `RepoSyncStatus` rows only for stale repos accepted into that refresh.
 - Response fields: `metadata_ready: bool` (true when job status is `metadata_ready` or later), `summary_ready: bool` (true only when job status is `completed`).
 - This is a backend-only feature used for debugging, monitoring, and progress feedback.
 
