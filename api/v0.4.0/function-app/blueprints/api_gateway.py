@@ -1193,10 +1193,22 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
 def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
     """Process AI query against candidate's portfolio using cached micro-summaries."""
     started_at = perf_counter()
-    username = req.params.get("username")
+    try:
+        # Parse request body for username and query (frontend sends in POST body)
+        body = req.get_json()
+        username = body.get("username", "").strip()
+        query = body.get("query", "").strip()
+    except (ValueError, KeyError):
+        trace = _get_trace_context(req)
+        return _create_error_response(
+            "Invalid request body: must contain 'username' and 'query' as JSON",
+            status_code=400,
+            error_code="VALIDATION_ERROR",
+            request_id=trace.get("request_id"),
+        )
+
     logger.info("[LATENCY_START] fn=portfolio_query username=%s", username)
     try:
-        query = _parse_json(req.params.get("query"))
         if not username:
             return _create_error_response(
                 USERNAME_REQUIRED_MESSAGE,
@@ -1205,7 +1217,7 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
                 request_id=_get_trace_context(req).get("request_id"),
             )
 
-        if not query or not query.strip():
+        if not query:
             return _create_error_response(
                 "'Query' is required in the request body",
                 400,
@@ -1234,7 +1246,10 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
         payload = {
             "username": username,
             "job_id": ctx.job_id,
-            "query_summary": response.get("query_summary") if response else None,
+            "response": response.get("response") if response else None,
+            "repositories_used": response.get("repositories_used", []) if response else [],
+            "total_repositories": response.get("total_repositories", 0) if response else 0,
+            "query": query,
             "metadata": response.get("metadata") if response else {},
         }
         return _create_success_response(payload, cache_control="no-cache", request_id=ctx.trace.get("request_id"))
