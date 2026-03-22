@@ -6,22 +6,3 @@
 .lang-chunk[data-i="3"] { background: #ef4444; }
 .lang-chunk[data-i="4"] { background: #a855f7; }
 
-/* Basic typography for rendered README summary */
-.markdown-content :is(h1, h2, h3, h4, h5, h6) {
-  margin-top: 1.25rem; margin-bottom: .5rem; font-weight: 600;
-}
-.markdown-content p { margin: .5rem 0; }
-.markdown-content ul, .markdown-content ol { margin: .5rem 0; padding-left: 1.25rem; }
-.markdown-content li { margin: .25rem 0; }
-.markdown-content pre, .markdown-content code {
-  background: var(--soft); border: 1px solid var(--border);
-}
-.markdown-content pre { padding: .75rem; border-radius: .5rem; overflow: auto; }
-.markdown-content code { padding: .1rem .3rem; border-radius: .25rem; }
-.markdown-content a { color: var(--primary); text-decoration: underline; }
-.markdown-content blockquote {
-  border-left: 3px solid var(--border);
-  padding-left: .75rem;
-  color: var(--muted);
-}
-

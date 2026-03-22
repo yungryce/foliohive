@@ -14,17 +14,17 @@ const STATUS_LABELS: Record<string, StatusConfig> = {
     icon: '⏳'
   },
   'syncing': {
-    label: 'Syncing repositories',
+    label: 'Syncing',
     color: 'bg-blue-100 text-blue-800',
     icon: '🔄'
   },
   'metadata_ready': {
-    label: 'Processing files',
+    label: 'Processing',
     color: 'bg-blue-100 text-blue-800',
     icon: '⚙️'
   },
   'caching_started': {
-    label: 'Caching files',
+    label: 'Caching',
     color: 'bg-blue-100 text-blue-800',
     icon: '💾'
   },

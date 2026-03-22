@@ -45,7 +45,10 @@
         </div>
 
         <div *ngIf="loadingProfile" class="rounded-lg border border-(--border) bg-(--card) p-4 mb-6">
-          <p class="text-sm text-(--muted)">Loading profile data…</p>
+          <div class="flex items-center gap-2">
+            <app-job-status-badge *ngIf="activeJobStatusCode" [status]="activeJobStatusCode" [loading]="true" />
+            <p class="text-sm text-(--muted)">Loading profile data…</p>
+          </div>
         </div>
 
         <div *ngIf="profileError" class="rounded-lg border border-red-200 bg-red-50 p-4 mb-6 text-sm text-red-600">
@@ -87,7 +90,6 @@
 
         <section class="rounded-lg border border-(--border) bg-(--card) p-4">
           <div class="flex items-center justify-between mb-2">
-            <h3 class="text-sm font-semibold">AI summary</h3>
             <app-job-status-badge [status]="jobStatus" [loading]="loadingSummary" />
           </div>
 

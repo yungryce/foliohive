@@ -32,11 +32,13 @@
     <section class="grid gap-6">
       <div class="project-detail bg-[var(--card)] text-[var(--fg)] p-6 rounded-lg shadow">
         <div class="flex items-center justify-between mb-4">
-          <h2 class="text-xl font-semibold">README summary</h2>
           <app-job-status-badge [status]="jobStatus" [loading]="summaryLoading" />
         </div>
         <div *ngIf="summaryError" class="text-sm text-red-500">{{ summaryError }}</div>
-        <markdown *ngIf="!summaryLoading && !summaryError" [data]="contentMarkdown" class="readme-summary markdown-content"></markdown>
+        <markdown *ngIf="contentMarkdown" [data]="contentMarkdown" class="readme-summary markdown-content"></markdown>
+        <div *ngIf="!contentMarkdown && !summaryLoading && !jobStatus && !summaryError" class="text-sm text-[var(--muted)]">
+          Summary not available yet.
+        </div>
       </div>
     </section>
   </ng-container>

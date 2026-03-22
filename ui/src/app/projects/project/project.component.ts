@@ -2,11 +2,10 @@ import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, RouterModule } from '@angular/router';
 import { MarkdownModule } from 'ngx-markdown';
-import { Observable, Subject, catchError, map, of, switchMap, takeUntil, tap } from 'rxjs';
+import { Observable, Subject, catchError, filter, map, of, switchMap, takeUntil } from 'rxjs';
 import { CandidateContextService } from '../../services/candidate-context.service';
 import { RepoBundleService, ReadmeSummaryResponse } from '../../services/repo-bundle.service';
 import { JobPollingService } from '../../services/job-polling.service';
-import { CacheService } from '../../services/cache.service';
 import { JobStatusBadgeComponent } from '../../shared/job-status-badge.component';
 
 /**
@@ -35,7 +34,6 @@ export class ProjectComponent implements OnInit, OnDestroy {
   private candidateContext = inject(CandidateContextService);
   private repoBundle = inject(RepoBundleService);
   private jobPollingService = inject(JobPollingService);
-  private cache = inject(CacheService);
 
   private readonly destroy$ = new Subject<void>();
 
@@ -84,12 +82,20 @@ export class ProjectComponent implements OnInit, OnDestroy {
    * Also triggers summary loading once job_id is available.
    */
   private loadRepoMetadata(username: string, repoName: string): void {
-    this.repo$ = this.repoBundle.getCandidateRepoMetadata(username, repoName).pipe(
+    // Start polling before the gate so whenMetadataReady has live status data
+    const storedJobId = this.candidateContext.activeCandidate?.jobId;
+    if (storedJobId) {
+      this.startJobIfNeeded(username, storedJobId);
+    }
+    const bypassCache = this.jobPollingService.isPolling;
+
+    this.repo$ = this.jobPollingService.whenMetadataReady(username).pipe(
+      switchMap(() => this.repoBundle.getCandidateRepoMetadata(username, repoName, !bypassCache)),
       map((res) => {
         this.jobId = res?.job_id || null;
-        // Trigger summary load once we have job_id
         if (this.jobId) {
-          this.loadReadmeSummary(username, repoName, this.jobId);
+          this.startJobIfNeeded(this.username, this.jobId);
+          this.loadReadmeSummary(this.username, repoName, this.jobId);
         }
         return this.toVM(res?.repo_entry ?? res?.data ?? null);
       }),
@@ -97,91 +103,75 @@ export class ProjectComponent implements OnInit, OnDestroy {
     );
   }
 
-  /**
-   * Load README summary using optimistic approach with localStorage caching.
-   * Attempts immediate fetch, polls if data not ready.
-   */
   private loadReadmeSummary(username: string, repoName: string, jobId: string): void {
     this.summaryLoading = true;
     this.summaryError = '';
+    this.contentMarkdown = '';
     this.jobStatus = null;
 
-    // Check cache first (24 hour TTL for expensive summaries)
-    const cacheKey = `readme-summary-${username}-${repoName}-${jobId}`;
-    const cached = this.cache.get<ReadmeSummaryResponse>(cacheKey);
-    
-    if (cached) {
-      const summaryMarkdown = cached?.readme_summary_markdown || '';
-      this.contentMarkdown = summaryMarkdown || 'No README summary available yet.';
-      this.summaryLoading = false;
-      this.jobStatus = null;
+    const current = this.jobPollingService.currentStatus;
+    const isRepoReady =
+      current?.repo_details?.summary_ready?.includes(repoName) === true ||
+      current?.summary_ready === true ||
+      this.candidateContext.activeCandidate?.buildStatus === 'ready';
+
+    if (isRepoReady) {
+      // Summary is already available — fetch immediately
+      this.repoBundle.getReadmeSummary(username, repoName, jobId).pipe(
+        catchError(() => of({ readme_summary_markdown: '' } as ReadmeSummaryResponse)),
+        takeUntil(this.destroy$)
+      ).subscribe({
+        next: (res) => {
+          this.contentMarkdown = res?.readme_summary_markdown || '';
+          this.summaryLoading = false;
+        },
+        error: () => {
+          this.summaryLoading = false;
+          this.summaryError = 'Failed to load README summary.';
+        }
+      });
       return;
     }
 
-    // Optimistically try to load summary
-    this.repoBundle.getReadmeSummary(username, repoName).pipe(
-      switchMap((res) => {
-        // Handle 200+empty case: treat as NOT_READY if jobId is available
-        const summaryHtml = res?.readme_summary_markdown || '';
-        if (!summaryHtml && jobId) {
-          // Empty response with active job - enter polling chain
-          return this.jobPollingService.pollRepoReady(username, jobId, repoName).pipe(
-            tap((status) => {
-              this.jobStatus = status.status;
-            }),
-            switchMap(() => this.repoBundle.getReadmeSummary(username, repoName)),
-            catchError(() => {
-              // Failed even after polling
-              return of({ readme_summary_markdown: '' } as ReadmeSummaryResponse);
-            }),
-            takeUntil(this.destroy$)
-          );
-        }
-        // Non-empty response or no job_id - return as-is
-        return of(res);
-      }),
-      catchError((error) => {
-        // Check if error is NOT_READY (404)
-        const isNotReady = error?.status === 404 || error?.error?.error_code === 'NOT_READY';
-        
-        if (isNotReady && jobId) {
-          // Poll until this repo is ready, then retry
-          return this.jobPollingService.pollRepoReady(username, jobId, repoName).pipe(
-            tap((status) => {
-              this.jobStatus = status.status;
-            }),
-            switchMap(() => this.repoBundle.getReadmeSummary(username, repoName)),
-            catchError(() => {
-              // Failed even after polling
-              return of({ readme_summary_markdown: '' } as ReadmeSummaryResponse);
-            }),
-            takeUntil(this.destroy$)
-          );
-        }
-        
-        // Not a NOT_READY error or no job_id - return empty
-        return of({ readme_summary_markdown: '' } as ReadmeSummaryResponse);
-      }),
+    // Track real-time job status for badge while waiting
+    this.jobPollingService.status$.pipe(
+      filter(s => !!s && s.username === username),
+      takeUntil(this.destroy$)
+    ).subscribe(s => {
+      if (this.summaryLoading) {
+        this.jobStatus = s!.status;
+      }
+    });
+
+    // Wait for this specific repo to reach summary_ready via the centralized poll
+    this.jobPollingService.pollRepoReady(username, jobId, repoName).pipe(
+      switchMap(() => this.repoBundle.getReadmeSummary(username, repoName, jobId)),
+      catchError(() => of({ readme_summary_markdown: '' } as ReadmeSummaryResponse)),
       takeUntil(this.destroy$)
     ).subscribe({
       next: (res: ReadmeSummaryResponse) => {
-        // Cache successful response (24 hour TTL)
-        if (res?.readme_summary_markdown) {
-          this.cache.set(cacheKey, res, 24 * 60 * 60 * 1000);
-        }
-        
-        const summaryMarkdown = res?.readme_summary_markdown || '';
-        this.contentMarkdown = summaryMarkdown || 'No README summary available yet.';
+        this.contentMarkdown = res?.readme_summary_markdown || '';
         this.summaryLoading = false;
         this.jobStatus = null;
       },
-      error: (err) => {
+      error: () => {
         this.summaryLoading = false;
         this.summaryError = 'Failed to load README summary.';
-        this.contentMarkdown = 'README summary unavailable.';
         this.jobStatus = null;
       }
     });
+  }
+
+  private startJobIfNeeded(username: string, jobId: string): void {
+    const current = this.jobPollingService.currentStatus;
+    // Already have status for this exact job (any state)
+    if (current?.job_id === jobId) return;
+    // A different job is actively being polled — don't interrupt
+    if (this.jobPollingService.isPolling) return;
+    // Stored context indicates the job was already completed
+    const stored = this.candidateContext.activeCandidate;
+    if (stored?.buildStatus === 'ready' || stored?.buildStatus === 'failed') return;
+    this.jobPollingService.startJob(username, jobId);
   }
 
 

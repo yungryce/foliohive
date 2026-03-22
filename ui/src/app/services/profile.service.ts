@@ -1,9 +1,8 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
-import { Observable, catchError, map, of, switchMap, throwError } from 'rxjs';
+import { Observable, catchError, map, of, throwError } from 'rxjs';
 import { ConfigService } from './config.service';
 import { CacheService } from './cache.service';
-import { JobPollingService } from './job-polling.service';
 
 export interface CandidateProfileResponse {
   username: string;
@@ -33,7 +32,6 @@ export class ProfileService {
   private http = inject(HttpClient);
   private config = inject(ConfigService);
   private cache = inject(CacheService);
-  private jobPollingService = inject(JobPollingService);
 
   getCandidateProfile(username: string, jobId?: string, useCache = true): Observable<CandidateProfileResponse> {
     const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/profile`;
@@ -62,13 +60,26 @@ export class ProfileService {
 
   getCandidateSummary(username: string, jobId?: string): Observable<CandidateSummaryResponse> {
     const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/summary`;
+    const cacheKey = `profile-summary-${username}-${jobId || 'latest'}`;
+    const cached = this.cache.get<CandidateSummaryResponse>(cacheKey);
+
+    if (cached) {
+      return of(cached);
+    }
+
     let params = new HttpParams();
     if (jobId) params = params.set('job_id', jobId);
 
     return this.http.get<any>(url, { params }).pipe(
       map(res => {
         const payload = res?.status === 'success' && res?.data ? res.data : res;
-        return (payload ?? { username }) as CandidateSummaryResponse;
+        const summary = (payload ?? { username }) as CandidateSummaryResponse;
+
+        if (summary?.summary_markdown) {
+          this.cache.set(cacheKey, summary, 24 * 60 * 60 * 1000);
+        }
+
+        return summary;
       }),
       catchError(err => {
         // Re-throw error for caller to handle (e.g., polling logic)

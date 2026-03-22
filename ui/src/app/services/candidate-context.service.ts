@@ -6,6 +6,9 @@ import { SessionIdService } from './session-id.service';
 export interface CandidateContext {
   username: string;
   skillsText?: string;
+  jobId?: string;
+  buildStatus?: 'idle' | 'building' | 'ready' | 'failed';
+  jobStatusCode?: string;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -82,6 +85,12 @@ export class CandidateContextService {
       this.activeUsernameSubject.next(nextActive);
       this.persistActive(nextActive);
     }
+  }
+
+  updateProgress(username: string, patch: Partial<CandidateContext>): void {
+    const normalized = (username || '').trim();
+    if (!normalized) return;
+    this.upsertCandidate({ ...patch, username: normalized });
   }
 
   private loadFromStorage(): void {
@@ -164,7 +173,13 @@ export class CandidateContextService {
           const username = (candidate?.username || '').trim();
           if (!username) continue;
           const prior = existing.find((c: CandidateContext) => c.username === username);
-          merged.push({ username, skillsText: prior?.skillsText });
+          merged.push({
+            username,
+            skillsText: prior?.skillsText,
+            jobId: prior?.jobId,
+            buildStatus: prior?.buildStatus,
+            jobStatusCode: prior?.jobStatusCode,
+          });
           apiUsernames.add(username);
         }
 

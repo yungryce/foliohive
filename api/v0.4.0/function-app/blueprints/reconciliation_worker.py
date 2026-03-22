@@ -7,6 +7,7 @@ Handles two independent cleanup concerns:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -34,6 +35,38 @@ def _env_int(name: str, default: int) -> int:
         return int(os.getenv(name, default))
     except (TypeError, ValueError):
         return default
+
+
+@bp.route(route="candidate/{username}", methods=["DELETE"], auth_level=func.AuthLevel.ANONYMOUS)
+def delete_candidate(req: func.HttpRequest) -> func.HttpResponse:
+    """Immediately delete all table data for a candidate, bypassing retention period.
+
+    Deletes candidate-scoped rows only:
+    - RepoGitHubMetadata, RepoLanguages, UserProfile
+    - JobMetadata, RepoSyncStatus (all jobs for this candidate)
+
+    Global cache data (RepoCacheSummary rows and micro-summary blobs) is intentionally
+    preserved. Those are shared by (repo_name, fingerprint) and cleaned up separately
+    by the cleanup_stale_cache_summaries timer trigger.
+    """
+    username = req.route_params.get("username", "").strip()
+    if not username:
+        return func.HttpResponse(
+            json.dumps({"error": "Username required"}),
+            status_code=400,
+            mimetype="application/json",
+        )
+
+    rows_deleted = table_manager.cleanup_candidate_data(username)
+    logger.info(
+        "[CANDIDATE_DELETE] username=%s rows_deleted=%d",
+        username, rows_deleted,
+    )
+    return func.HttpResponse(
+        json.dumps({"username": username, "rows_deleted": rows_deleted}),
+        status_code=200,
+        mimetype="application/json",
+    )
 
 
 @bp.timer_trigger(arg_name="timer", schedule=CANDIDATE_CLEANUP_SCHEDULE)

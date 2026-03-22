@@ -255,6 +255,21 @@ def process_cache_job(msg: func.QueueMessage) -> None:
         summary_manager = SummaryManager(username=username)
         summary_failed = False
 
+        # Pre-flight cache validation to avoid clobbering existing valid entries.
+        # If (repo_name, fingerprint) already has a valid cache row, skip regeneration.
+        if fingerprint:
+            existing_cache = table_manager.get_cache_summary(repo_name, fingerprint)
+            if existing_cache and existing_cache.get("cache_status") == "valid":
+                _update_cache_progress(
+                    job_id,
+                    username,
+                    repo_name,
+                    summary_failed=False,
+                    message_id=queue_message_id,
+                    trace_id=trace_id,
+                )
+                return
+
         # Fetch files and extract signals (in-memory only)
         fetch_result = _fetch_file_content(username, repo_name, job_id=job_id, ref=branch_ref)
 

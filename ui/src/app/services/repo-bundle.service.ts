@@ -195,17 +195,45 @@ export class RepoBundleService {
    * Gets summary query for a candidate.
    * Throws error for caller to handle (e.g., polling logic).
    */
-  getReadmeSummary(username: string, repo: string): Observable<ReadmeSummaryResponse> {
+  getReadmeSummary(username: string, repo: string, jobId?: string): Observable<ReadmeSummaryResponse> {
     const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}/${encodeURIComponent(repo)}/readme-summary`;
-    return this.http.get<any>(url).pipe(
+    const cacheKey = `readme-summary-${username}-${repo}-${jobId || 'latest'}`;
+    const cached = this.cache.get<ReadmeSummaryResponse>(cacheKey);
+
+    if (cached) {
+      return of(cached);
+    }
+
+    let params = new HttpParams();
+    if (jobId) params = params.set('job_id', jobId);
+
+    return this.http.get<any>(url, { params }).pipe(
       map(res => {
-        if (res?.status === 'success' && res?.data) return res.data as ReadmeSummaryResponse;
-        return res as ReadmeSummaryResponse;
+        const summary = (res?.status === 'success' && res?.data ? res.data : res) as ReadmeSummaryResponse;
+
+        if (summary?.readme_summary_markdown) {
+          this.cache.set(cacheKey, summary, 24 * 60 * 60 * 1000);
+        }
+
+        return summary;
       }),
       catchError(err => {
         // Re-throw error for caller to handle (e.g., polling logic)
         return throwError(() => err);
       })
+    );
+  }
+
+  /**
+   * Delete all candidate-scoped table data for a username immediately.
+   * Cache summaries (globally shared by repo+fingerprint) are intentionally preserved.
+   * DELETE /candidate/{username}
+   */
+  deleteCandidate(username: string): Observable<{ username: string; rows_deleted: number }> {
+    const url = `${this.config.apiUrl}/candidate/${encodeURIComponent(username)}`;
+    return this.http.delete<any>(url).pipe(
+      map(res => res as { username: string; rows_deleted: number }),
+      catchError(() => of({ username, rows_deleted: 0 }))
     );
   }
 

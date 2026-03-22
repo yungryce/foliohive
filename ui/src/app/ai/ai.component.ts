@@ -2,7 +2,7 @@ import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
-import { Subject, takeUntil, switchMap, catchError, of, tap } from 'rxjs';
+import { Subject, takeUntil, switchMap, catchError, of, tap, filter, first } from 'rxjs';
 import { MarkdownModule } from 'ngx-markdown';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { RepoBundleService } from '../services/repo-bundle.service';
@@ -100,8 +100,17 @@ export class AiComponent implements OnInit, OnDestroy {
     this.summaryReady = false;
     this.jobStatus = null;
 
-    // Load metadata to check if repos exist and get job_id
-    this.repoService.getCandidateMetadata(username, undefined, true).subscribe({
+    // Ensure polling is running before deciding whether to wait for metadata_ready
+    const storedJobId = active?.jobId;
+    if (storedJobId) {
+      this.startJobIfNeeded(username, storedJobId);
+    }
+
+    // Gate metadata fetch on metadata_ready — prevents caching incomplete data
+    this.jobPollingService.whenMetadataReady(username).pipe(
+      switchMap(() => this.repoService.getCandidateMetadata(username, undefined, !this.jobPollingService.isPolling)),
+      takeUntil(this.destroy$)
+    ).subscribe({
       next: (bundle) => {
         const hasRepos = Array.isArray(bundle?.data) && bundle.data.length > 0;
         this.noRepositories = !hasRepos;
@@ -113,8 +122,9 @@ export class AiComponent implements OnInit, OnDestroy {
         if (hasRepos) {
           this.loadSuggestions();
           
-          // If we have a job_id, start polling for summaries
+          // If we have a job_id, ensure polling is running and wait for summary_ready
           if (this.activeJobId) {
+            this.startJobIfNeeded(username, this.activeJobId);
             this.pollForSummaries(username, this.activeJobId);
           }
         }
@@ -126,25 +136,39 @@ export class AiComponent implements OnInit, OnDestroy {
   }
 
   private pollForSummaries(username: string, jobId: string): void {
-    this.jobPollingService.waitForFilesReady(username, jobId)
-      .pipe(
-        tap((status) => {
-          this.jobStatus = status.status;
-        }),
-        takeUntil(this.destroy$)
-      )
-      .subscribe({
-        next: (status) => {
-          if (status?.summary_ready) {
-            this.summaryReady = true;
-            this.jobStatus = null;
-          }
-        },
-        error: () => {
-          // Polling failed or timed out
-          this.jobStatus = null;
-        }
-      });
+    const current = this.jobPollingService.currentStatus;
+    const isSummaryReady =
+      current?.summary_ready === true ||
+      this.candidateContext.activeCandidate?.buildStatus === 'ready';
+
+    if (isSummaryReady) {
+      this.summaryReady = true;
+      return;
+    }
+
+    this.jobPollingService.status$.pipe(
+      tap((s) => { if (s) this.jobStatus = s.status; }),
+      filter(s => !!s && s.username === username && !!s.summary_ready),
+      first(),
+      takeUntil(this.destroy$)
+    ).subscribe({
+      next: () => {
+        this.summaryReady = true;
+        this.jobStatus = null;
+      },
+      error: () => {
+        this.jobStatus = null;
+      }
+    });
+  }
+
+  private startJobIfNeeded(username: string, jobId: string): void {
+    const current = this.jobPollingService.currentStatus;
+    if (current?.job_id === jobId) return;
+    if (this.jobPollingService.isPolling) return;
+    const stored = this.candidateContext.activeCandidate;
+    if (stored?.buildStatus === 'ready' || stored?.buildStatus === 'failed') return;
+    this.jobPollingService.startJob(username, jobId);
   }
 
   private loadSuggestions(): void {
@@ -219,11 +243,12 @@ export class AiComponent implements OnInit, OnDestroy {
         const isNotReady = error?.status === 404 || error?.error?.error_code === 'NOT_READY';
         
         if (isNotReady && this.activeJobId) {
-          // Fallback: poll again then retry
-          return this.jobPollingService.waitForFilesReady(username, this.activeJobId).pipe(
+          // Fallback: wait on centralized status$ then retry
+          return this.jobPollingService.status$.pipe(
+            filter(s => !!s && !!s.summary_ready),
+            first(),
             switchMap(() => this.ai.askPortfolio({ query: q, username })),
             catchError(() => {
-              // Failed even after polling
               return of({
                 response: 'Failed to generate answer after data was ready. Please try again.',
                 repositories_used: [],

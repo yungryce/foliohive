@@ -25,7 +25,7 @@
   /* Text */
   --fg: #1a1f2e;           /* primary text */
   --muted: #5f6b7a;        /* secondary text */
-  --heading: #1e2a4a;      /* headings */
+  --heading: #0d6b8e;      /* headings */
 
   /* Accents */
   --primary: #00A9C6;        /* buttons/primary accent (sparingly) */
@@ -47,7 +47,7 @@
 
   --fg: #e6ecf7;
   --muted: #b0b8cc;
-  --heading: #c6d4ff;
+  --heading: #7da3ff;
 
   --primary: #00A9C6;
   --primary-foreground: #07121a;
@@ -136,6 +136,93 @@ body {
 }
 
 @layer components {
+  .markdown-content {
+    color: var(--fg);
+  }
+
+  .markdown-content > :first-child {
+    margin-top: 0;
+  }
+
+  .markdown-content :is(h1, h2, h3, h4, h5, h6) {
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--heading);
+  }
+
+  .markdown-content h1 {
+    font-size: calc(var(--font-size-base) * 1.75);
+  }
+
+  .markdown-content h2 {
+    font-size: calc(var(--font-size-base) * 1.375);
+  }
+
+  .markdown-content h3 {
+    font-size: calc(var(--font-size-base) * 1.125);
+  }
+
+  .markdown-content h4 {
+    font-size: var(--font-size-base);
+  }
+
+  .markdown-content h5 {
+    font-size: calc(var(--font-size-base) * 0.875);
+  }
+
+  .markdown-content h6 {
+    font-size: calc(var(--font-size-base) * 0.75);
+  }
+
+  .markdown-content p,
+  .markdown-content li,
+  .markdown-content pre {
+    margin-bottom: 0.875rem;
+    line-height: 1.7;
+  }
+
+  .markdown-content ul,
+  .markdown-content ol {
+    margin: 0 0 1rem;
+    padding-left: 1.25rem;
+  }
+
+  .markdown-content li > :last-child {
+    margin-bottom: 0;
+  }
+
+  .markdown-content pre,
+  .markdown-content code {
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+  }
+
+  .markdown-content pre {
+    padding: 0.875rem;
+    border-radius: 0.5rem;
+    overflow: auto;
+  }
+
+  .markdown-content code {
+    padding: 0.1rem 0.3rem;
+    border-radius: 0.25rem;
+  }
+
+  .markdown-content a {
+    color: var(--primary);
+    text-decoration: underline;
+  }
+
+  .markdown-content blockquote {
+    margin: 1rem 0;
+    padding: 0.25rem 0 0.25rem 0.875rem;
+    border-left: 3px solid var(--border);
+    background: var(--bg-soft);
+    color: var(--fg);
+  }
+
   .container {
     max-width: 900px;
     margin: 0 auto;

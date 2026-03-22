@@ -24,27 +24,9 @@
           </button>
         </div>
 
-        <!-- Progress bar -->
-        <div *ngIf="loading && buildProgress > 0" class="mt-4">
-          <div class="flex justify-between items-center text-sm text-[var(--muted)] mb-1">
-            <div class="flex items-center gap-2">
-              <span>{{ statusMessage }}</span>
-              <app-job-status-badge [status]="jobStatus" [loading]="true" />
-            </div>
-            <span>{{ buildProgress }}%</span>
-          </div>
-          <div class="w-full h-2 bg-[var(--soft)] rounded-full overflow-hidden">
-            <div
-              class="h-full bg-[var(--primary)] transition-all duration-300"
-              [style.width.%]="buildProgress"
-            ></div>
-          </div>
-        </div>
-
-        <!-- Status message without progress bar -->
-        <div *ngIf="loading && buildProgress === 0 && statusMessage" class="mt-3 flex items-center gap-2">
-          <p class="text-sm text-[var(--muted)]">{{ statusMessage }}</p>
-          <app-job-status-badge [status]="jobStatus" [loading]="true" />
+        <!-- Job status while loading -->
+        <div *ngIf="loading" class="mt-3 flex items-center gap-2">
+          <app-job-status-badge [status]="activeJobStatus" [loading]="true" />
         </div>
 
         <!-- Error message -->
