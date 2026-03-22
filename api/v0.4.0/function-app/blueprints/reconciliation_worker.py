@@ -1,6 +1,8 @@
 """Timer-trigger reconciliation worker.
 
-Re-enqueues missing repo sync jobs
+Handles two independent cleanup concerns:
+- Candidate-level cleanup: delete all data for candidates inactive beyond retention period
+- Cache summary cleanup: remove stale RepoCacheSummary table rows (secondary sweep)
 """
 
 from __future__ import annotations
@@ -8,12 +10,10 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import azure.functions as func
 
-from foliohive_shared import table_manager
-from foliohive_shared.github.github_repo_manager import get_non_bundle_cache_prefixes
+from foliohive_shared import cache_manager, table_manager
 
 logger = logging.getLogger("foliohive.reconciler")
 logger.setLevel(logging.INFO)
@@ -21,10 +21,8 @@ logger.propagate = True
 
 bp = func.Blueprint()
 
-JOB_CLEANUP_SCHEDULE = "0 0 */3 * * *"  # every 3 hours
-REPO_METADATA_CLEANUP_SCHEDULE = "0 0 */2 * * *"  # every 2 hours
-DISCOVERED_PATHS_CLEANUP_SCHEDULE = "0 0 */2 * * *"  # every 2 hours
-CACHE_CLEANUP_SCHEDULE = "0 0 */6 * * *"  # every 6 hours
+CANDIDATE_CLEANUP_SCHEDULE = "0 0 */6 * * *"    # every 6 hours
+CACHE_SUMMARY_CLEANUP_SCHEDULE = "0 0 3 * * *"  # daily at 03:00 UTC
 
 
 def _utcnow() -> datetime:
@@ -38,47 +36,64 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-@bp.timer_trigger(arg_name="timer", schedule=JOB_CLEANUP_SCHEDULE)
-def cleanup_old_jobs(timer: func.TimerRequest) -> None:
-    """Cleanup old jobs and cascade-delete related job-scoped tables.
-    
-    Job-based cleanup pattern: Removes completed/failed job artifacts after retention period.
-    Only deletes stale jobs when a candidate has multiple jobs, always preserving at least
-    one job per candidate (the most recent one). Uses updated_at timestamp for staleness check.
-    
-    Cascade deletes: JobMetadata, RepoLanguages, RepoSyncStatus.
+@bp.timer_trigger(arg_name="timer", schedule=CANDIDATE_CLEANUP_SCHEDULE)
+def cleanup_stale_candidates(timer: func.TimerRequest) -> None:
+    """Delete all table data for candidates inactive beyond the retention period.
+
+    A candidate is considered stale when their most recent JobMetadata row has
+    not been updated within CF_CANDIDATE_RETENTION_DAYS (default: 30).
+
+    For each stale candidate the following are deleted:
+    - RepoGitHubMetadata, RepoLanguages, UserProfile (candidate-scoped table rows)
+    - JobMetadata, RepoSyncStatus (lifecycle rows, cascade via job_ids)
+
+    Micro-summary blobs and RepoCacheSummary rows are globally shared by
+    (repo_name, fingerprint) and are owned by cleanup_stale_cache_summaries.
     """
-    if os.getenv("CF_JOB_CLEANUP_ENABLED", "true").lower() != "true":
+    if os.getenv("CF_CANDIDATE_CLEANUP_ENABLED", "true").lower() != "true":
         return
 
-    retention_days = _env_int("CF_JOB_RETENTION_DAYS", 30)
+    retention_days = _env_int("CF_CANDIDATE_RETENTION_DAYS", 30)
     cutoff = (_utcnow() - timedelta(days=retention_days)).isoformat()
 
-    deleted_rows = table_manager.cleanup_old_jobs(cutoff)
-    if deleted_rows:
-        logger.info("[JOB_CLEANUP] deleted_rows=%d (older than %d days)", deleted_rows, retention_days)
-
-
-@bp.timer_trigger(arg_name="timer", schedule=REPO_METADATA_CLEANUP_SCHEDULE)
-def cleanup_old_repo_github_metadata(timer: func.TimerRequest) -> None:
-    """Cleanup stale RepoGitHubMetadata entries using hybrid strategy.
-    
-    Hybrid cleanup pattern: Preserves frequently-accessed stable repos while removing
-    truly abandoned entries. Deletes repos not accessed within retention period.
-    Access tracking prevents deletion of stable repos that are frequently validated.
-    """
-    if os.getenv("CF_REPO_GITHUB_METADATA_CLEANUP_ENABLED", "true").lower() != "true":
+    stale_usernames = table_manager.find_stale_candidates(cutoff)
+    if not stale_usernames:
         return
 
-    retention_days = _env_int("CF_REPO_GITHUB_METADATA_RETENTION_DAYS", 30)
-    cutoff = (_utcnow() - timedelta(days=retention_days)).isoformat()
-
-    deleted_metadata = table_manager.cleanup_old_repo_github_metadata(cutoff)
-    if deleted_metadata:
+    total_rows = 0
+    for username in stale_usernames:
+        rows_deleted = table_manager.cleanup_candidate_data(username)
+        total_rows += rows_deleted
         logger.info(
-            "[REPO_GITHUB_METADATA_CLEANUP] deleted=%d (retention_days=%d, cutoff=%s)",
-            deleted_metadata,
-            retention_days,
-            cutoff
+            "[CANDIDATE_CLEANUP] username=%s rows_deleted=%d",
+            username, rows_deleted,
+        )
+
+    logger.info(
+        "[CANDIDATE_CLEANUP] total_candidates=%d total_rows=%d cutoff=%s",
+        len(stale_usernames), total_rows, cutoff,
+    )
+
+
+@bp.timer_trigger(arg_name="timer", schedule=CACHE_SUMMARY_CLEANUP_SCHEDULE)
+def cleanup_stale_cache_summaries(timer: func.TimerRequest) -> None:
+    """Delete RepoCacheSummary rows and their blobs not updated within the retention period.
+
+    RepoCacheSummary rows and micro-summary blobs are globally shared by
+    (repo_name, fingerprint). A longer retention window (default: 30 days) ensures
+    no active candidate loses a blob that another candidate triggered the cache for.
+    """
+    if os.getenv("CF_CACHE_SUMMARY_CLEANUP_ENABLED", "true").lower() != "true":
+        return
+
+    retention_days = _env_int("CF_CACHE_SUMMARY_RETENTION_DAYS", 30)
+    cutoff = (_utcnow() - timedelta(days=retention_days)).isoformat()
+
+    deleted_keys = table_manager.cleanup_stale_cache_summaries(cutoff)
+    if deleted_keys:
+        blobs_deleted = sum(1 for key in deleted_keys if cache_manager.delete(key))
+        logger.info(
+            "[CACHE_SUMMARY_CLEANUP] deleted_rows=%d blobs_deleted=%d (older than %d days)",
+            len(deleted_keys), blobs_deleted, retention_days,
         )
 

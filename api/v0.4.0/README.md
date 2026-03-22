@@ -170,6 +170,8 @@ Refresh response includes:
 - `repos_queued`
 - `status_url`
 
+For incremental refreshes, `repos_queued` and status progress cover only the stale repositories accepted into that refresh job.
+
 Status response includes:
 
 - `status`
@@ -177,6 +179,8 @@ Status response includes:
 - `summary_ready`
 - `progress`
 - `repo_details`
+
+`progress.total` is the number of repositories tracked by that job's `RepoSyncStatus` manifest. In partial refreshes, this can be smaller than the candidate's full repository count.
 
 ### Metadata Endpoints
 

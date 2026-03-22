@@ -1096,6 +1096,44 @@ class TableManager:
         
         return by_repo
 
+    def query_all_repo_languages_by_username(self, username: str) -> Dict[str, List[Dict[str, Any]]]:
+        """Query all language statistics for a candidate across all jobs.
+
+        PartitionKey prefix scan for all repos belonging to this username.
+        Returns the latest language data per repo regardless of which job wrote it.
+        Use this instead of query_all_repo_languages when building portfolio views
+        that must include unchanged repos from previous refresh jobs.
+
+        Args:
+            username: Candidate username
+
+        Returns:
+            Dictionary mapping repo_name -> list of language dicts for that repo
+        """
+        table = self._get_table_client(self.table_names.repo_languages)
+        if not table:
+            return {}
+
+        by_repo: Dict[str, List[Dict[str, Any]]] = {}
+
+        # PartitionKey prefix scan: all keys starting with "{username}:"
+        # ";" (ASCII 59) is one code point above ":" (ASCII 58), covering all "{username}:*"
+        filter_str = f"PartitionKey ge '{username}:' and PartitionKey lt '{username};'"
+        entities = list(table.list_entities(filter=filter_str))
+
+        for entity in entities:
+            deserialized = self._deserialize_repo_languages(entity)
+            # Guard against Azurite PartitionKey filter unreliability
+            if deserialized.get("username") != username:
+                continue
+            repo_name = deserialized.get("repo_name")
+            if repo_name:
+                if repo_name not in by_repo:
+                    by_repo[repo_name] = []
+                by_repo[repo_name].append(deserialized)
+
+        return by_repo
+
     def get_repo_languages(self, username: str, repo_name: str) -> List[Dict[str, Any]]:
         """Query language statistics for a specific repo.
 
@@ -1166,170 +1204,190 @@ class TableManager:
     # Cleanup operations
     # -------------------------------------------------------------------
 
-    def cleanup_old_repo_languages(self, older_than_iso: str) -> int:
-        """Cleanup RepoLanguages entries older than a specific timestamp.
-        
-        Warning: This performs a table scan filtering on Timestamp/created_at.
-        """
-        table = self._get_table_client(self.table_names.repo_languages)
-        if not table:
-            return 0
-            
-        safe_ts = _azure_safe_timestamp(older_than_iso)
-        filter_str = f"created_at lt '{safe_ts}'"
-        
-        count = 0
-        try:
-            # Query only keys to delete - convert to list first to avoid iteration during modification
-            entities = list(table.list_entities(filter=filter_str, select=["PartitionKey", "RowKey"]))
-            
-            for e in entities:
-                try:
-                    table.delete_entity(partition_key=e["PartitionKey"], row_key=e["RowKey"])
-                    count += 1
-                except Exception as del_exc:
-                    logger.warning("Failed to delete stale language row: %s", del_exc)
-                
-        except Exception as exc:
-            logger.error("Failed to cleanup old repo languages: %s", exc)
-            
-        return count
+    def find_stale_candidates(self, older_than_iso: str) -> List[str]:
+        """Find candidate usernames whose most recent job is older than the cutoff.
 
-    def cleanup_old_jobs(self, older_than_iso: str) -> int:
-        """Cleanup old jobs and cascade delete related job-scoped tables.
-        
-        Job-based cleanup pattern: Removes completed/failed job artifacts after retention period.
-        Only deletes stale jobs when a candidate has multiple jobs, always preserving at least
-        one job per candidate (the most recent one).
-        
-        Cascade deletes from:
-        - RepoLanguages (PartitionKey = job_id)
-        - RepoSyncStatus (PartitionKey = job_id)
-        - JobMetadata (PartitionKey = username, RowKey = job_id)
-        
+        Scans all JobMetadata rows, groups by username, and returns those whose
+        latest updated_at is before older_than_iso — meaning no refresh has been
+        triggered for them within the retention period.
+
         Args:
-            older_than_iso: ISO timestamp cutoff (jobs older than this are candidates for deletion)
-            
+            older_than_iso: ISO timestamp cutoff
+
         Returns:
-            Total rows deleted across all tables
+            List of stale usernames
         """
-        job_table = self._get_table_client(self.table_names.job_metadata)
-        if not job_table:
-            return 0
-        
+        table = self._get_table_client(self.table_names.job_metadata)
+        if not table:
+            return []
+
         safe_ts = _azure_safe_timestamp(older_than_iso)
-        filter_str = f"updated_at lt '{safe_ts}'"
-        
-        total_deleted = 0
-        
         try:
-            old_jobs = list(job_table.list_entities(
-                filter=filter_str,
-                select=["PartitionKey", "RowKey", "job_id", "updated_at"]
-            ))
-            
-            jobs_by_user: Dict[str, List[Dict[str, Any]]] = {}
-            for job_entity in old_jobs:
-                username = job_entity.get("PartitionKey")
-                if username:
-                    jobs_by_user.setdefault(username, []).append(job_entity)
-            
-            for username, old_user_jobs in jobs_by_user.items():
-                all_user_jobs = self.list_jobs_metadata(username)
-                total_job_count = len(all_user_jobs)
-                
-                if total_job_count <= 1:
-                    continue
-                
-                for job_entity in old_user_jobs:
-                    job_id = job_entity.get("RowKey") or job_entity.get("job_id")
-                    if not job_id:
+            entities = list(table.list_entities(select=["PartitionKey", "updated_at", "created_at"]))
+        except Exception as exc:
+            logger.error("[FIND_STALE_CANDIDATES] Scan failed: %s", exc)
+            return []
+
+        latest_by_user: Dict[str, str] = {}
+        for e in entities:
+            username = e.get("PartitionKey")
+            ts = e.get("updated_at") or e.get("created_at") or ""
+            if username and ts > latest_by_user.get(username, ""):
+                latest_by_user[username] = ts
+
+        return [u for u, latest in latest_by_user.items() if latest < safe_ts]
+
+    def cleanup_candidate_data(self, username: str) -> int:
+        """Delete all table data for a candidate username.
+
+        Deletes per-candidate rows from:
+        - RepoGitHubMetadata  (PartitionKey = username)
+        - RepoLanguages       (PartitionKey prefix = {username}:)
+        - UserProfile         (PartitionKey = username, RowKey = "profile")
+        - RepoSyncStatus      (cascade via job_ids from JobMetadata)
+        - JobMetadata         (PartitionKey = username)
+
+        Does NOT touch RepoCacheSummary (globally shared by fingerprint) or
+        SessionCandidates (browsing history; stale entries auto-filter on FK
+        validation at read time).
+
+        Caller should delete username-scoped blobs before or after calling this.
+
+        Returns:
+            Number of rows deleted
+        """
+        count = 0
+
+        # 1. RepoGitHubMetadata
+        github_table = self._get_table_client(self.table_names.repo_github_metadata)
+        if github_table:
+            try:
+                entities = list(github_table.list_entities(
+                    filter=f"PartitionKey eq '{username}'",
+                    select=["PartitionKey", "RowKey"],
+                ))
+                for e in entities:
+                    try:
+                        github_table.delete_entity(e["PartitionKey"], e["RowKey"])
+                        count += 1
+                    except Exception as del_exc:
+                        logger.warning(
+                            "[CLEANUP_CANDIDATE] github_metadata delete failed user=%s repo=%s: %s",
+                            username, e.get("RowKey"), del_exc,
+                        )
+            except Exception as exc:
+                logger.error("[CLEANUP_CANDIDATE] github_metadata scan failed user=%s: %s", username, exc)
+
+        # 2. RepoLanguages (PartitionKey prefix scan)
+        lang_table = self._get_table_client(self.table_names.repo_languages)
+        if lang_table:
+            try:
+                filter_str = f"PartitionKey ge '{username}:' and PartitionKey lt '{username};'"
+                entities = list(lang_table.list_entities(filter=filter_str, select=["PartitionKey", "RowKey"]))
+                for e in entities:
+                    pk = e.get("PartitionKey", "")
+                    # Guard against Azurite filter unreliability
+                    if not pk.startswith(f"{username}:"):
                         continue
-                    
-                    status_table = self._get_table_client(self.table_names.repo_sync_status)
-                    if status_table:
+                    try:
+                        lang_table.delete_entity(e["PartitionKey"], e["RowKey"])
+                        count += 1
+                    except Exception as del_exc:
+                        logger.warning(
+                            "[CLEANUP_CANDIDATE] languages delete failed user=%s pk=%s: %s",
+                            username, pk, del_exc,
+                        )
+            except Exception as exc:
+                logger.error("[CLEANUP_CANDIDATE] languages scan failed user=%s: %s", username, exc)
+
+        # 3. UserProfile
+        profile_table = self._get_table_client(self.table_names.user_profile)
+        if profile_table:
+            try:
+                profile_table.delete_entity(username, "profile")
+                count += 1
+            except ResourceNotFoundError:
+                pass
+            except Exception as exc:
+                logger.warning("[CLEANUP_CANDIDATE] profile delete failed user=%s: %s", username, exc)
+
+        # 4. RepoSyncStatus (cascade via job_ids) + JobMetadata
+        job_table = self._get_table_client(self.table_names.job_metadata)
+        status_table = self._get_table_client(self.table_names.repo_sync_status)
+        if job_table:
+            try:
+                jobs = list(job_table.list_entities(
+                    filter=f"PartitionKey eq '{username}'",
+                    select=["PartitionKey", "RowKey"],
+                ))
+                for job_e in jobs:
+                    job_id = job_e.get("RowKey")
+                    if job_id and status_table:
                         try:
-                            status_entities = list(status_table.query_entities(
-                                f"PartitionKey eq '{job_id}'",
-                                select=["PartitionKey", "RowKey"]
+                            status_entities = list(status_table.list_entities(
+                                filter=f"PartitionKey eq '{job_id}'",
+                                select=["PartitionKey", "RowKey"],
                             ))
-                            for status_e in status_entities:
+                            for s in status_entities:
                                 try:
-                                    status_table.delete_entity(status_e["PartitionKey"], status_e["RowKey"])
-                                    total_deleted += 1
+                                    status_table.delete_entity(s["PartitionKey"], s["RowKey"])
+                                    count += 1
                                 except Exception:
                                     pass
                         except Exception as exc:
-                            logger.warning("[CLEANUP_STATUS] job=%s error=%s", job_id, exc)
-                    
-                    # 3. Delete JobMetadata row
+                            logger.warning("[CLEANUP_CANDIDATE] status scan failed job=%s: %s", job_id, exc)
                     try:
                         job_table.delete_entity(username, job_id)
-                        total_deleted += 1
-                    except Exception as exc:
-                        logger.warning("[CLEANUP_JOB] Failed to delete job=%s: %s", job_id, exc)
-            
-        except Exception as exc:
-            logger.error("[CLEANUP_OLD_JOBS] Failed: %s", exc)
-        
-        return total_deleted
+                        count += 1
+                    except Exception as del_exc:
+                        logger.warning(
+                            "[CLEANUP_CANDIDATE] job delete failed user=%s job=%s: %s",
+                            username, job_id, del_exc,
+                        )
+            except Exception as exc:
+                logger.error("[CLEANUP_CANDIDATE] jobs scan failed user=%s: %s", username, exc)
 
-    def cleanup_old_repo_github_metadata(self, older_than_iso: str) -> int:
-        """Cleanup stale RepoGitHubMetadata entries using hybrid strategy.
-        
-        Hybrid cleanup pattern: Preserves frequently-accessed stable repos while removing
-        truly abandoned entries. Combines access-time tracking with fingerprint validation.
-        
-        Deletion criteria (must meet at least one):
-        1. Not accessed recently (last_accessed_at < cutoff) - abandoned repo
-        2. Missing last_accessed_at field (legacy data, use created_at as fallback)
-        
-        Preservation criteria:
-        - Recently accessed (last_accessed_at >= cutoff) - frequently used, keep regardless of age
-        
+        return count
+
+    def cleanup_stale_cache_summaries(self, older_than_iso: str) -> List[str]:
+        """Delete RepoCacheSummary rows not updated within the retention period.
+
+        Returns the cache_keys of successfully deleted rows so the caller can also
+        delete the corresponding blobs. Blobs are globally shared by (repo_name,
+        fingerprint) — ownership lives here, not in candidate cleanup.
+
         Args:
-            older_than_iso: ISO timestamp cutoff (metadata older than this is deleted)
-            
+            older_than_iso: ISO timestamp cutoff
+
         Returns:
-            Number of metadata rows deleted
+            List of cache_keys for rows that were successfully deleted
         """
-        table = self._get_table_client(self.table_names.repo_github_metadata)
+        table = self._get_table_client(self.table_names.repo_cache_summary)
         if not table:
-            return 0
-        
+            return []
+
         safe_ts = _azure_safe_timestamp(older_than_iso)
-        
-        filter_str = f"last_accessed_at lt '{safe_ts}'"
-        
-        count = 0
-        abandoned_count = 0
-        legacy_count = 0
-        
+        deleted_keys: List[str] = []
         try:
             entities = list(table.list_entities(
-                filter=filter_str,
-                select=["PartitionKey", "RowKey", "last_accessed_at", "created_at", "fingerprint"]
+                filter=f"updated_at lt '{safe_ts}'",
+                select=["PartitionKey", "RowKey", "cache_key"],
             ))
-            
             for e in entities:
                 try:
-                    last_accessed = e.get("last_accessed_at")
-                    
-                    if last_accessed and last_accessed < safe_ts:
-                        table.delete_entity(e["PartitionKey"], e["RowKey"])
-                        count += 1
-                        abandoned_count += 1
-                    
+                    table.delete_entity(e["PartitionKey"], e["RowKey"])
+                    cache_key = e.get("cache_key")
+                    if cache_key:
+                        deleted_keys.append(cache_key)
                 except Exception as del_exc:
                     logger.warning(
-                        "[CLEANUP_GITHUB_METADATA] Failed to delete user=%s repo=%s: %s",
-                        e.get("PartitionKey"), e.get("RowKey"), del_exc
+                        "[CLEANUP_CACHE_SUMMARY] delete failed repo=%s fp=%s: %s",
+                        e.get("PartitionKey"), e.get("RowKey"), del_exc,
                     )
-            
         except Exception as exc:
-            logger.error("[CLEANUP_GITHUB_METADATA] Failed: %s", exc)
-        
-        return count
+            logger.error("[CLEANUP_CACHE_SUMMARY] scan failed: %s", exc)
+
+        return deleted_keys
 
     # ------------------------------------------------------------------
     # Repo API usage tracking
