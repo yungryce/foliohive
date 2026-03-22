@@ -1,16 +1,35 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, inject } from '@angular/core';
 import { RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
+import { CommonModule } from '@angular/common';
+import { combineLatest } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { CandidateContextService, CandidateContext } from './services/candidate-context.service';
+import { JobStatusBadgeComponent } from './shared/job-status-badge.component';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [RouterOutlet, RouterLink, RouterLinkActive],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, CommonModule, JobStatusBadgeComponent],
   templateUrl: './app.component.html',
   styleUrl: './app.component.css'
 })
 export class AppComponent implements OnInit {
   title = 'foliohive';
   theme: 'light' | 'dark' = 'light';
+
+  private readonly candidateContext = inject(CandidateContextService);
+
+  readonly activeBuild$ = combineLatest([
+    this.candidateContext.candidates$,
+    this.candidateContext.activeUsername$,
+  ]).pipe(
+    map(([candidates, activeUsername]): CandidateContext | null => {
+      if (!activeUsername) return null;
+      const active = candidates.find(c => c.username === activeUsername);
+      if (!active || active.buildStatus !== 'building') return null;
+      return active;
+    })
+  );
 
   ngOnInit(): void {
     this.initTheme();

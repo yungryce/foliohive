@@ -2,7 +2,7 @@ import { Component, inject, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
-import { Subject, takeUntil, tap } from 'rxjs';
+import { Subject, takeUntil, filter, first } from 'rxjs';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { RepoBundleService, JobStatusResponse } from '../services/repo-bundle.service';
 import { JobPollingService } from '../services/job-polling.service';
@@ -27,11 +27,12 @@ export class LandingComponent implements OnInit, OnDestroy {
   username = '';
   loading = false;
   error = '';
-  
-  // Progress tracking
-  buildProgress = 0;
-  statusMessage = '';
-  jobStatus: string | null = null;
+
+  get activeJobStatus(): string | null {
+    const username = (this.username || '').trim();
+    if (!username) return null;
+    return this.candidateContext.storedCandidates.find(c => c.username === username)?.jobStatusCode ?? null;
+  }
   
   ngOnInit(): void {
     this.syncStoredCandidates();
@@ -57,9 +58,7 @@ export class LandingComponent implements OnInit, OnDestroy {
     if (this.loading) return;
 
     this.error = '';
-    this.buildProgress = 0;
-    this.statusMessage = '';
-    
+
     const username = (this.username || '').trim();
     if (!username) {
       this.error = 'Enter a GitHub username.';
@@ -67,76 +66,50 @@ export class LandingComponent implements OnInit, OnDestroy {
     }
 
     this.loading = true;
-    this.statusMessage = 'Starting build...';
 
     // Always trigger fresh build
     this.repoService.startBuild(username).subscribe({
       next: (jobId: string) => {
-        this.candidateContext.upsertCandidate({ username });
-        this.statusMessage = 'Syncing repositories...';
-        this.pollUntilMetadataReady(username, jobId);
+        this.candidateContext.updateProgress(username, { jobId, buildStatus: 'building', jobStatusCode: 'queued' });
+        this.jobPollingService.startJob(username, jobId);
+        this.watchForMetadataReady(username, jobId);
       },
-      error: (err: any) => {
+      error: () => {
         this.loading = false;
-        this.buildProgress = 0;
-        this.statusMessage = '';
         this.error = 'Failed to start build. Check if API is running.';
       },
     });
   }
 
   /**
-   * Poll job status until metadata_ready, showing progress.
-   * Redirects to profile when first repo is cached.
+   * Subscribe to centralized status$ and navigate to /projects once metadata is ready.
+   * The poll itself runs in JobPollingService and outlives this component's lifecycle.
    */
-  private pollUntilMetadataReady(username: string, jobId: string): void {
-    this.jobPollingService.waitForMetadataReady(username, jobId)
-      .pipe(
-        tap((status: JobStatusResponse) => {
-          if (status) {
-            this.jobStatus = status.status;
-          }
-        }),
-        takeUntil(this.destroy$)
-      )
-      .subscribe({
-        next: (status: JobStatusResponse) => {
-          if (!status) return;
-          
-          // Update progress UI
-          this.buildProgress = status.progress?.percentage ?? 0;
-          const cached = status.progress?.summary_ready ?? 0;
-          const total = status.progress?.total ?? 0;
-          this.statusMessage = `Synced ${cached} of ${total} repositories...`;
-          
-          // Redirect when metadata is ready
-          if (status.metadata_ready || status.status === 'completed') {
-            this.loading = false;
-            this.buildProgress = 100;
-            this.statusMessage = 'Ready!';
-            this.router.navigate(['/projects'], { 
-              queryParams: { username, job_id: jobId } 
-            });
-          }
-        },
-        error: () => {
+  private watchForMetadataReady(username: string, jobId: string): void {
+    this.jobPollingService.status$.pipe(
+      filter((s): s is JobStatusResponse =>
+        !!s && s.username === username && (!!s.metadata_ready || s.status === 'completed')
+      ),
+      first(),
+      takeUntil(this.destroy$)
+    ).subscribe({
+      next: () => {
+        this.loading = false;
+        this.router.navigate(['/projects'], { queryParams: { username, job_id: jobId } });
+      },
+      error: () => {
+        this.loading = false;
+        this.candidateContext.updateProgress(username, { buildStatus: 'failed', jobStatusCode: 'failed' });
+        this.error = 'Build failed. Please try again.';
+      },
+      complete: () => {
+        // takeUntil(destroy$) fired before metadata_ready — component was destroyed
+        // before the condition was met (expected on fast navigation). No-op.
+        if (this.loading) {
           this.loading = false;
-          this.buildProgress = 0;
-          this.statusMessage = '';
-          this.jobStatus = null;
-          this.error = 'Build timed out. Please try again.';
-        },
-        complete: () => {
-          // Polling completed without metadata_ready (timeout or failed)
-          if (this.loading) {
-            this.loading = false;
-            this.buildProgress = 0;
-            this.statusMessage = '';
-            this.jobStatus = null;
-            this.error = 'Build did not complete in time. Please try again.';
-          }
         }
-      });
+      }
+    });
   }
 
   /**

@@ -1,14 +1,13 @@
 import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
-import { Subject, takeUntil, switchMap, catchError, of, tap } from 'rxjs';
+import { Subject, takeUntil, switchMap, catchError, of, tap, filter, first } from 'rxjs';
 import { MarkdownModule } from 'ngx-markdown';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
 import { JobStatusBadgeComponent } from '../shared/job-status-badge.component';
 import { ProfileService, CandidateProfileResponse, CandidateSummaryResponse } from '../services/profile.service';
 import { JobPollingService } from '../services/job-polling.service';
-import { CacheService } from '../services/cache.service';
 
 @Component({
   selector: 'app-profile',
@@ -23,7 +22,6 @@ export class ProfileComponent implements OnInit, OnDestroy {
   private candidateContext = inject(CandidateContextService);
   private profileService = inject(ProfileService);
   private jobPollingService = inject(JobPollingService);
-  private cache = inject(CacheService);
 
   private readonly destroy$ = new Subject<void>();
 
@@ -36,6 +34,10 @@ export class ProfileComponent implements OnInit, OnDestroy {
   loadingSummary = false;
   profileError = '';
   summaryError = '';
+
+  get activeJobStatusCode(): string | null {
+    return this.candidateContext.activeCandidate?.jobStatusCode ?? null;
+  }
 
   ngOnInit(): void {
     const usernameFromUrl = (this.route.snapshot.queryParamMap.get('username') || '').trim();
@@ -78,11 +80,23 @@ export class ProfileComponent implements OnInit, OnDestroy {
     this.profile = null;
     this.summaryMarkdown = null;
 
-    this.profileService.getCandidateProfile(username).subscribe({
+    // Start polling before deciding whether to wait so whenMetadataReady has live data
+    const storedJobId = this.candidateContext.activeCandidate?.jobId;
+    if (storedJobId) {
+      this.startJobIfNeeded(username, storedJobId);
+    }
+
+    this.jobPollingService.whenMetadataReady(username).pipe(
+      switchMap(() => this.profileService.getCandidateProfile(username)),
+      takeUntil(this.destroy$)
+    ).subscribe({
       next: (profile) => {
         this.profile = profile;
         this.loadingProfile = false;
         const jobId = profile?.job_metadata?.job_id;
+        if (jobId) {
+          this.startJobIfNeeded(username, jobId);
+        }
         this.loadProfileSummary(username, jobId);
       },
       error: () => {
@@ -98,63 +112,33 @@ export class ProfileComponent implements OnInit, OnDestroy {
     this.summaryMarkdown = null;
     this.jobStatus = null;
 
-    // Check cache first (24 hour TTL for expensive summaries)
-    const cacheKey = `profile-summary-${username}-${jobId || 'latest'}`;
-    const cached = this.cache.get<CandidateSummaryResponse>(cacheKey);
-    
-    if (cached) {
-      this.summaryMarkdown = cached?.summary_markdown || null;
-      this.loadingSummary = false;
-      this.jobStatus = null;
+    const current = this.jobPollingService.currentStatus;
+    const isSummaryReady =
+      current?.summary_ready === true ||
+      this.candidateContext.activeCandidate?.buildStatus === 'ready';
+
+    if (isSummaryReady || !jobId) {
+      // Summary is already available — fetch immediately
+      this.profileService.getCandidateSummary(username, jobId).pipe(
+        catchError(() => of({ username, summary_markdown: '' } as CandidateSummaryResponse)),
+        takeUntil(this.destroy$)
+      ).subscribe((summary) => {
+        this.summaryMarkdown = summary?.summary_markdown || null;
+        this.loadingSummary = false;
+      });
       return;
     }
 
-    // Optimistically try to load summary
-    this.profileService.getCandidateSummary(username, jobId).pipe(
-      switchMap((summary) => {
-        // Handle 200+empty case: treat as NOT_READY if jobId is available
-        const markdown = summary?.summary_markdown || '';
-        if (!markdown && jobId) {
-          // Empty response with active job - enter polling chain
-          return this.jobPollingService.waitForFilesReady(username, jobId).pipe(
-            tap((status) => {
-              this.jobStatus = status.status;
-            }),
-            switchMap(() => this.profileService.getCandidateSummary(username, jobId)),
-            catchError(() => {
-              return of({ username, summary_markdown: '' } as CandidateSummaryResponse);
-            }),
-            takeUntil(this.destroy$)
-          );
-        }
-        // Non-empty response or no job_id - return as-is
-        return of(summary);
-      }),
-      catchError((error) => {
-        const isNotReady = error?.status === 404 || error?.error?.error_code === 'NOT_READY';
-        
-        if (isNotReady && jobId) {
-          return this.jobPollingService.waitForFilesReady(username, jobId).pipe(
-            tap((status) => {
-              this.jobStatus = status.status;
-            }),
-            switchMap(() => this.profileService.getCandidateSummary(username, jobId)),
-            catchError(() => {
-              return of({ username, summary_markdown: '' } as CandidateSummaryResponse);
-            }),
-            takeUntil(this.destroy$)
-          );
-        }
-        
-        console.warn('Summary not ready or failed to load:', error);
-        return of({ username, summary_markdown: '' } as CandidateSummaryResponse);
-      }),
+    // Wait for the centralized poll to signal summary_ready
+    this.jobPollingService.status$.pipe(
+      tap((s) => { if (s) this.jobStatus = s.status; }),
+      filter(s => !!s && s.username === username && !!s.summary_ready),
+      first(),
+      switchMap(() => this.profileService.getCandidateSummary(username, jobId)),
+      catchError(() => of({ username, summary_markdown: '' } as CandidateSummaryResponse)),
       takeUntil(this.destroy$)
     ).subscribe({
       next: (summary: CandidateSummaryResponse) => {
-        if (summary?.summary_markdown) {
-          this.cache.set(cacheKey, summary, 24 * 60 * 60 * 1000);
-        }
         this.summaryMarkdown = summary?.summary_markdown || null;
         this.loadingSummary = false;
         this.jobStatus = null;
@@ -165,6 +149,18 @@ export class ProfileComponent implements OnInit, OnDestroy {
         this.jobStatus = null;
       }
     });
+  }
+
+  private startJobIfNeeded(username: string, jobId: string): void {
+    const current = this.jobPollingService.currentStatus;
+    // Already have status for this exact job (any state)
+    if (current?.job_id === jobId) return;
+    // A different job is actively being polled — don't interrupt
+    if (this.jobPollingService.isPolling) return;
+    // Stored context indicates the job was already completed
+    const stored = this.candidateContext.activeCandidate;
+    if (stored?.buildStatus === 'ready' || stored?.buildStatus === 'failed') return;
+    this.jobPollingService.startJob(username, jobId);
   }
 
   get profileStats(): { label: string; value: number | string }[] {

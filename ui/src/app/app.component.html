@@ -11,6 +11,12 @@
         <li><a [routerLink]="['/projects']" routerLinkActive="active">Projects</a></li>
         <li><a [routerLink]="['/ai']" routerLinkActive="active">AI</a></li>
       </ul>
+      <ng-container *ngIf="activeBuild$ | async as activeBuild">
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-[var(--muted)]">{{ activeBuild.username }}</span>
+          <app-job-status-badge [status]="activeBuild.jobStatusCode ?? null" [loading]="true" />
+        </div>
+      </ng-container>
       <button
         type="button"
         class="theme-toggle"

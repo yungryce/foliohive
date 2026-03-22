@@ -1,7 +1,8 @@
-import { Injectable, inject } from '@angular/core';
-import { Observable, timer, EMPTY, Subject } from 'rxjs';
-import { switchMap, takeWhile, finalize, shareReplay, takeUntil } from 'rxjs/operators';
+import { Injectable, OnDestroy, inject } from '@angular/core';
+import { BehaviorSubject, EMPTY, Observable, Subscription, of, timer } from 'rxjs';
+import { filter, first, map, switchMap } from 'rxjs/operators';
 import { RepoBundleService, JobStatusResponse } from './repo-bundle.service';
+import { CandidateContextService } from './candidate-context.service';
 
 export interface PollOptions {
   intervalMs?: number;      // Default: 3000ms (3 seconds)
@@ -10,179 +11,164 @@ export interface PollOptions {
 }
 
 /**
- * Centralized service for polling job status with support for metadata_ready and summary_ready states.
- * 
+ * Centralized job polling service. Runs a single persistent poll per job that all
+ * components share. Components subscribe to status$ rather than spawning their own polls.
+ *
  * Usage:
- * - pollJobStatus() - Poll until completed/failed, emitting all status updates
- * - waitForMetadataReady() - Complete when metadata is ready for display
- * - waitForFilesReady() - Complete when summaries are ready for display
+ * - startJob(username, jobId) — start or continue polling a job (idempotent)
+ * - stopJob()                 — explicit cleanup
+ * - status$                   — shared observable of the latest job status
+ * - currentStatus             — synchronous read of the latest status value
+ * - isPolling                 — true while a poll subscription is active
+ * - pollRepoReady(...)        — emits once when a specific repo reaches summary_ready
  */
 @Injectable({ providedIn: 'root' })
-export class JobPollingService {
-  private repoBundleService = inject(RepoBundleService);
-  private stop$ = new Subject<void>();  // Signal to stop polling early
+export class JobPollingService implements OnDestroy {
+  private readonly repoBundleService = inject(RepoBundleService);
+  private readonly candidateContext = inject(CandidateContextService);
+
+  private readonly _status$ = new BehaviorSubject<JobStatusResponse | null>(null);
+  readonly status$ = this._status$.asObservable();
+
+  private _activeJob: { username: string; jobId: string } | null = null;
+  private _activeSubscription: Subscription | null = null;
+  private _timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+  get currentStatus(): JobStatusResponse | null {
+    return this._status$.value;
+  }
+
+  get isPolling(): boolean {
+    return this._activeSubscription !== null && !this._activeSubscription.closed;
+  }
 
   /**
-   * Poll job status until completed or failed.
-   * Emits status updates including metadata_ready and files_ready flags.
-   * 
-   * @param username - GitHub username
-   * @param jobId - Job ID to poll
-   * @param options - Polling configuration
-   * @returns Observable<JobStatusResponse> emitting status updates until job completes
+   * Start centralized polling for a job. Idempotent — no-op if already polling
+   * the same username + jobId. Stops automatically on terminal state.
+   *
+   * Each status tick updates status$ and candidateContext so the app-level
+   * status badge keeps updating regardless of which view is active.
    */
-  pollJobStatus(
-    username: string,
-    jobId: string,
-    options: PollOptions = {}
-  ): Observable<JobStatusResponse> {
-    const {
-      intervalMs = 3000,
-      maxAttempts = 40,
-      timeoutMs = 120000
-    } = options;
+  startJob(username: string, jobId: string, options: PollOptions = {}): void {
+    if (
+      this._activeJob?.username === username &&
+      this._activeJob?.jobId === jobId &&
+      this.isPolling
+    ) {
+      return;
+    }
 
+    this.stopJob();
+
+    const { intervalMs = 3000, maxAttempts = 40, timeoutMs = 120000 } = options;
     let attempts = 0;
-    let timedOut = false;
+    this._activeJob = { username, jobId };
 
-    // Set timeout to stop polling
-    const timeoutHandle = setTimeout(() => {
-      timedOut = true;
+    this._timeoutHandle = setTimeout(() => {
+      this.candidateContext.updateProgress(username, { buildStatus: 'failed', jobStatusCode: 'failed' });
+      this.stopJob();
     }, timeoutMs);
 
-    return timer(0, intervalMs).pipe(
-      takeUntil(this.stop$),  // Stop polling when child methods signal completion
-      switchMap(() => {
-        if (timedOut) {
-          return EMPTY; // Stop emitting
+    this._activeSubscription = timer(0, intervalMs)
+      .pipe(
+        switchMap(() => {
+          if (attempts >= maxAttempts) {
+            setTimeout(() => this.stopJob(), 0);
+            return EMPTY;
+          }
+          attempts++;
+          return this.repoBundleService.getJobStatus(username, jobId);
+        })
+      )
+      .subscribe({
+        next: (status: JobStatusResponse) => {
+          this._status$.next(status);
+          this.candidateContext.updateProgress(username, { jobStatusCode: status.status });
+          if (status.status === 'completed' || status.status === 'failed') {
+            const buildStatus = status.status === 'completed' ? 'ready' : 'failed';
+            this.candidateContext.updateProgress(username, { buildStatus });
+            this.stopJob();
+          }
+        },
+        error: () => {
+          this.candidateContext.updateProgress(username, { buildStatus: 'failed', jobStatusCode: 'failed' });
+          this.stopJob();
         }
-
-        attempts++;
-        if (attempts > maxAttempts) {
-          return EMPTY; // Stop emitting
-        }
-
-        return this.repoBundleService.getJobStatus(username, jobId);
-      }),
-      takeWhile((status) => {
-        if (!status) {
-          return false;
-        }
-        
-        // Continue polling until completed or failed
-        const isActive = status.status !== 'completed' && status.status !== 'failed';
-        return isActive;
-      }, true), // inclusive=true to emit final completed/failed status
-      finalize(() => {
-        clearTimeout(timeoutHandle);
-      }),
-      shareReplay(1) // Share the same observable for multiple subscribers
-    );
+      });
   }
 
   /**
-   * Poll until metadata_ready is true, then complete.
-   * Use when you need to wait for repository metadata to be available.
-   * 
-   * @param username - GitHub username
-   * @param jobId - Job ID to poll
-   * @param options - Polling configuration
-   * @returns Observable<JobStatusResponse> completing when metadata is ready
+   * Stop the active poll and clear state. Safe to call multiple times.
    */
-  waitForMetadataReady(
-    username: string,
-    jobId: string,
-    options: PollOptions = {}
-  ): Observable<JobStatusResponse> {
-    return this.pollJobStatus(username, jobId, options).pipe(
-      takeWhile((status) => {
-        if (!status) {
-          return false;
-        }
-        
-        // Complete when metadata_ready flag is true or job failed
-        if (status.metadata_ready) {
-          this.stop$.next();  // Signal root polling to stop
-          return false; // Stop and emit this final value
-        }
-        if (status.status === 'failed') {
-          this.stop$.next();  // Signal root polling to stop
-          return false;
-        }
-        return true; // Continue polling
-      }, true) // inclusive=true to emit the ready status
-    );
+  stopJob(): void {
+    if (this._timeoutHandle !== null) {
+      clearTimeout(this._timeoutHandle);
+      this._timeoutHandle = null;
+    }
+    if (this._activeSubscription) {
+      this._activeSubscription.unsubscribe();
+      this._activeSubscription = null;
+    }
+    this._activeJob = null;
   }
 
   /**
-   * Poll until summary_ready is true, then complete.
-   * Use when you need to wait for micro-summaries to be available.
-   * 
-   * @param username - GitHub username
-   * @param jobId - Job ID to poll
-   * @param options - Polling configuration
-   * @returns Observable<JobStatusResponse> completing when summaries are ready
-   */
-  waitForFilesReady(
-    username: string,
-    jobId: string,
-    options: PollOptions = {}
-  ): Observable<JobStatusResponse> {
-    return this.pollJobStatus(username, jobId, options).pipe(
-      takeWhile((status) => {
-        if (!status) {
-          return false;
-        }
-        
-        // Complete when summary_ready flag is true or job failed
-        if (status.summary_ready) {
-          this.stop$.next();  // Signal root polling to stop
-          return false; // Stop and emit this final value
-        }
-        if (status.status === 'failed') {
-          this.stop$.next();  // Signal root polling to stop
-          return false;
-        }
-        return true; // Continue polling
-      }, true) // inclusive=true to emit the ready status
-    );
-  }
-
-  /**
-   * Poll until a specific repository's summary is ready, then complete.
-   * Checks repo_details.summary_ready array to see if the repo name is present.
-   * Use when you need to wait for a single repo micro-summary before fetching.
-   * 
-   * @param username - GitHub username
-   * @param jobId - Job ID to poll
-   * @param repoName - Repository name to wait for
-   * @param options - Polling configuration
-   * @returns Observable<JobStatusResponse> completing when repo summary is ready
+   * Observable that emits once when a specific repo's micro-summary is ready,
+   * then completes. Filters the shared status$ — no new poll is created.
+   * Emits immediately if the current status already satisfies the condition.
    */
   pollRepoReady(
     username: string,
     jobId: string,
     repoName: string,
-    options: PollOptions = {}
+    _options: PollOptions = {}
   ): Observable<JobStatusResponse> {
-    return this.pollJobStatus(username, jobId, options).pipe(
-      takeWhile((status) => {
-        if (!status) {
-          return false;
-        }
-        
-        // Complete when this repo is in summary_ready or job failed
-        const isRepoReady = status.repo_details?.summary_ready?.includes(repoName) ?? false;
-        if (isRepoReady) {
-          this.stop$.next();  // Signal root polling to stop
-          return false; // Stop and emit this final value
-        }
-        if (status.status === 'failed') {
-          this.stop$.next();  // Signal root polling to stop
-          return false;
-        }
-        return true; // Continue polling
-      }, true) // inclusive=true to emit the ready status
+    return this.status$.pipe(
+      filter(
+        (s): s is JobStatusResponse =>
+          !!s &&
+          s.username === username &&
+          (s.repo_details?.summary_ready?.includes(repoName) === true ||
+            s.summary_ready === true)
+      ),
+      first()
     );
+  }
+
+  /**
+   * Emits once (void) as soon as metadata is ready for fetching, then completes.
+   * Emits immediately if the job has already passed metadata_ready or there is
+   * no active poll (data is stable / no job in flight).
+   * Use to gate metadata-fetching operations.
+   */
+  whenMetadataReady(username: string): Observable<void> {
+    if (!this.isPolling || this._status$.value?.metadata_ready) {
+      return of(undefined as void);
+    }
+    return this.status$.pipe(
+      filter(s => !!s && s.username === username && !!s.metadata_ready),
+      first(),
+      map(() => undefined as void)
+    );
+  }
+
+  /**
+   * Emits once (void) as soon as all summaries are ready (job completed), then completes.
+   * Emits immediately if the job is already complete or there is no active poll.
+   * Use to gate summary-fetching operations.
+   */
+  whenSummaryReady(username: string): Observable<void> {
+    if (!this.isPolling || this._status$.value?.summary_ready) {
+      return of(undefined as void);
+    }
+    return this.status$.pipe(
+      filter(s => !!s && s.username === username && !!s.summary_ready),
+      first(),
+      map(() => undefined as void)
+    );
+  }
+
+  ngOnDestroy(): void {
+    this.stopJob();
   }
 }

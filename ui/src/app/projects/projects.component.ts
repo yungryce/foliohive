@@ -4,8 +4,9 @@ import { FormsModule } from '@angular/forms';
 import { RouterModule } from '@angular/router';
 import { RepoBundleService, RepoBundleResponse } from '../services/repo-bundle.service';
 import { CandidateContextService } from '../services/candidate-context.service';
+import { JobPollingService } from '../services/job-polling.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
-import { Observable, map, of, Subject, takeUntil, shareReplay, distinctUntilChanged } from 'rxjs';
+import { Observable, map, of, Subject, takeUntil, shareReplay, distinctUntilChanged, switchMap } from 'rxjs';
 
 /**
  * Aligned with backend schema from _repo_row_to_bundle_entry in api_gateway.py
@@ -33,6 +34,7 @@ interface RepoCardVM {
 export class ProjectsComponent implements OnInit, OnDestroy {
   private repoBundleService = inject(RepoBundleService);
   private candidateContext = inject(CandidateContextService);
+  private jobPollingService = inject(JobPollingService);
   private readonly destroy$ = new Subject<void>();
   repoBundle$!: Observable<RepoBundleResponse>;
   filteredRepos$!: Observable<RepoCardVM[]>;
@@ -83,7 +85,15 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   }
 
   loadRepoBundle(): void {
-    this.repoBundle$ = this.repoBundleService.getCandidateMetadata(this.username);
+    const storedJobId = this.candidateContext.activeCandidate?.jobId;
+    if (storedJobId) {
+      this.startJobIfNeeded(this.username, storedJobId);
+    }
+    const bypassCache = this.jobPollingService.isPolling;
+
+    this.repoBundle$ = this.jobPollingService.whenMetadataReady(this.username).pipe(
+      switchMap(() => this.repoBundleService.getCandidateMetadata(this.username, undefined, !bypassCache))
+    );
 
     const repos$ = this.repoBundle$.pipe(
       map(bundle => {
@@ -223,5 +233,14 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   removeActiveCandidate(): void {
     if (!this.username) return;
     this.candidateContext.removeCandidate(this.username);
+  }
+
+  private startJobIfNeeded(username: string, jobId: string): void {
+    const current = this.jobPollingService.currentStatus;
+    if (current?.job_id === jobId) return;
+    if (this.jobPollingService.isPolling) return;
+    const stored = this.candidateContext.activeCandidate;
+    if (stored?.buildStatus === 'ready' || stored?.buildStatus === 'failed') return;
+    this.jobPollingService.startJob(username, jobId);
   }
 }
