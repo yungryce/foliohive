@@ -1,7 +1,7 @@
 import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { RouterModule } from '@angular/router';
+import { ActivatedRoute, RouterModule } from '@angular/router';
 import { RepoBundleService } from '../services/repo-bundle.service';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { JobPollingService } from '../services/job-polling.service';
@@ -32,10 +32,13 @@ interface RepoCardVM {
   styleUrls: ['./projects.component.css']
 })
 export class ProjectsComponent implements OnInit, OnDestroy {
+  private route = inject(ActivatedRoute);
   private repoBundleService = inject(RepoBundleService);
   private candidateContext = inject(CandidateContextService);
   private jobPollingService = inject(JobPollingService);
   private readonly destroy$ = new Subject<void>();
+  private requestedUsername: string | null = null;
+  private requestedJobId: string | null = null;
   username = '';
   missingCandidate = false;
 
@@ -61,6 +64,20 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   private allVMs: RepoCardVM[] = [];
 
   ngOnInit(): void {
+    this.requestedUsername = this.route.snapshot.queryParamMap.get('username')?.trim() ?? null;
+    this.requestedJobId = this.route.snapshot.queryParamMap.get('job_id')?.trim() ?? null;
+
+    if (this.requestedUsername) {
+      if (this.requestedJobId) {
+        this.candidateContext.upsertCandidate({
+          username: this.requestedUsername,
+          jobId: this.requestedJobId,
+        });
+      } else {
+        this.candidateContext.setActive(this.requestedUsername);
+      }
+    }
+
     this.candidateContext.activeUsername$
       .pipe(takeUntil(this.destroy$))
       .subscribe((username) => {
@@ -82,15 +99,21 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   }
 
   private _loadRepoBundle(): void {
-    const storedJobId = this.candidateContext.activeCandidate?.jobId;
-    if (storedJobId) {
-      this.startJobIfNeeded(this.username, storedJobId);
+    const activeCandidate = this.candidateContext.activeCandidate;
+    const resolvedJobId = this.username === this.requestedUsername
+      ? this.requestedJobId ?? activeCandidate?.jobId
+      : activeCandidate?.jobId;
+
+    if (resolvedJobId) {
+      this.startJobIfNeeded(this.username, resolvedJobId);
     }
     this.loading = true;
 
     this.jobPollingService.whenMetadataReady(this.username).pipe(
       switchMap(() => {
-        const jobId = this.candidateContext.activeCandidate?.jobId;
+        const jobId = this.username === this.requestedUsername
+          ? this.requestedJobId ?? this.candidateContext.activeCandidate?.jobId
+          : this.candidateContext.activeCandidate?.jobId;
         const useCache = !this.jobPollingService.isPolling;
         return this.repoBundleService.getCandidateMetadata(this.username, jobId, useCache);
       }),

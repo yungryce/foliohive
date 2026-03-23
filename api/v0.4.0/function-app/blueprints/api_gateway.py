@@ -355,6 +355,18 @@ def _get_repos_entries(
         List of repo entry dicts with metadata and languages
     """
 
+    if not ctx.job_id or not ctx.username:
+        return []
+
+    repo_statuses = table_manager.list_repo_statuses(ctx.job_id)
+    job_repo_names = {
+        row.get("repo_name")
+        for row in repo_statuses
+        if row.get("repo_name") and row.get("status") in ("synced", "summary_ready")
+    }
+    if not job_repo_names:
+        return []
+
     all_repos = table_manager.query_repo_github_metadata(ctx.username)
     if not all_repos:
         return []
@@ -363,7 +375,7 @@ def _get_repos_entries(
     entries: List[Dict[str, Any]] = []
     for github_metadata in all_repos:
         repo_name = github_metadata.get("repo_name")
-        if not repo_name:
+        if not repo_name or repo_name not in job_repo_names:
             continue
 
         languages = languages_by_repo.get(repo_name)
@@ -977,11 +989,13 @@ def get_candidate_repos_metadata(req: func.HttpRequest) -> func.HttpResponse:
 
     if ctx.job_id and ctx.username and ctx.status in ("metadata_ready", "caching_started", "completed"):
         job = ctx.job or {}
+        repo_statuses = table_manager.list_repo_statuses(ctx.job_id)
+        expected_repo_count = sum(1 for row in repo_statuses if row.get("status") != "failed")
         
         # Fetch repo metadata for this job (filters by job_id)
         entries = _get_repos_entries(ctx)
         
-        if entries:
+        if len(entries) == expected_repo_count:
             payload = {
                 "username": ctx.username,
                 "job_id": job.get("job_id") or ctx.job_id,
@@ -992,7 +1006,7 @@ def get_candidate_repos_metadata(req: func.HttpRequest) -> func.HttpResponse:
 
             return _create_success_response(payload, request_id=ctx.trace.get("request_id"))
 
-        # Job exists but no repo data yet
+        # Job exists but repo metadata is not complete yet for this job manifest.
         return _create_error_response(
             f"Candidate for '{username}' not ready (job in progress)",
             404,
