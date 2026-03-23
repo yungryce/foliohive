@@ -283,12 +283,4 @@ export class AiComponent implements OnInit, OnDestroy {
     });
   }
 
-  removeActiveCandidate(): void {
-    if (!this.activeUsername) return;
-    this.candidateContext.removeCandidate(this.activeUsername);
-    
-    if (!this.candidateContext.activeCandidate) {
-      this.router.navigate(['/']);
-    }
-  }
 }

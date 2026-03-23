@@ -17,23 +17,6 @@
         </div>
       </div>
 
-      <div *ngIf="noRepositories" class="rounded-lg border border-(--border) bg-(--card) p-4 mb-6">
-        <h2 class="text-sm font-semibold mb-2">No repositories found</h2>
-        <p class="text-sm text-(--muted)">
-          We couldn’t find any repositories for this candidate. Try another username or remove this candidate.
-        </p>
-        <div class="mt-3 flex flex-wrap gap-3">
-          <button
-            (click)="removeActiveCandidate()"
-            class="px-3 py-2 rounded bg-(--primary) text-(--primary-foreground) hover:brightness-95"
-          >
-            Remove candidate
-          </button>
-          <a routerLink="/" class="px-3 py-2 rounded border border-(--border) bg-(--soft) hover:brightness-95">
-            Go to home
-          </a>
-        </div>
-      </div>
 
       <div *ngIf="suggested.length" class="rounded-lg border border-(--border) bg-(--card) p-4 mb-6">
         <h2 class="text-sm font-semibold mb-2">Suggested repositories (based on skills)</h2>

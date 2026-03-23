@@ -59,6 +59,7 @@ export class JobPollingService implements OnDestroy {
     }
 
     this.stopJob();
+    this._status$.next(null); // Discard stale status so subscribers don't match the previous job
 
     const { intervalMs = 3000, maxAttempts = 40, timeoutMs = 120000 } = options;
     let attempts = 0;
