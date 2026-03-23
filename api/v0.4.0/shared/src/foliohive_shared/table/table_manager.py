@@ -429,17 +429,28 @@ class TableManager:
             except ResourceExistsError:
                 pass
             except Exception as exc:  # pragma: no cover - safety net
-                logger.warning("Unable to create table %s: %s", name, exc)
+                logger.error("Unable to create table %s at startup: %s", name, exc)
+
 
     def _get_table_client(self, table_name: str) -> Optional[TableClient]:
+        """Return a TableClient, creating the table on first access if needed.
+
+        Acts as a self-healing fallback for cases where _ensure_tables_exist()
+        failed silently at startup (e.g. Managed Identity role propagation delay).
+        """
         if not self._service_client:
             return None
         client = self._tables.get(table_name)
         if client is None:
             client = self._service_client.get_table_client(table_name)
+            try:
+                client.create_table()
+            except ResourceExistsError:
+                pass
+            except Exception as exc:
+                logger.warning("Unable to create table %s on first access: %s", table_name, exc)
             self._tables[table_name] = client
         return client
-
 
     # ------------------------------------------------------------------
     # Session candidates schema parsing
