@@ -3,12 +3,11 @@ import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 import { CandidateContextService, CandidateContext } from '../services/candidate-context.service';
 import { RepoBundleService } from '../services/repo-bundle.service';
-import { JobStatusBadgeComponent } from './job-status-badge.component';
 
 @Component({
   selector: 'app-candidate-list',
   standalone: true,
-  imports: [CommonModule, JobStatusBadgeComponent],
+  imports: [CommonModule],
   template: `
     <div class="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-sm">
       <ng-container *ngIf="candidates$ | async as candidates">
@@ -23,36 +22,50 @@ import { JobStatusBadgeComponent } from './job-status-badge.component';
           <div class="space-y-2">
             <div
               *ngFor="let candidate of candidates"
-              class="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-3 transition"
+              class="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2.5 transition"
               [ngClass]="{
                 'border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)]':
                   candidate.username === activeUsername,
                 'text-[var(--fg)] hover:border-[var(--primary)]': candidate.username !== activeUsername
               }"
             >
-              <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center gap-2 min-w-0">
+                <!-- username — truncates if too long -->
                 <button
                   type="button"
-                  class="flex-1 text-left font-semibold bg-transparent border-none p-0 cursor-pointer"
+                  class="min-w-0 flex-1 truncate text-left text-sm font-semibold bg-transparent border-none p-0 cursor-pointer"
                   (click)="selectCandidate(candidate)"
                   [attr.aria-pressed]="candidate.username === activeUsername"
+                  [title]="candidate.username"
                 >{{ candidate.username }}</button>
-                <div class="flex items-center gap-1 shrink-0">
-                  <app-job-status-badge
+
+                <!-- action icons — pinned to right, never wrap -->
+                <div class="flex items-center gap-0.5 shrink-0">
+                  <!-- pulse dot while a job is in progress -->
+                  <span
                     *ngIf="candidate.buildStatus === 'building'"
-                    [status]="candidate.jobStatusCode ?? null"
-                    [loading]="true"
-                  />
+                    title="Build in progress"
+                    class="inline-block w-2 h-2 rounded-full animate-pulse mr-1"
+                    [ngClass]="candidate.username === activeUsername ? 'bg-[var(--primary-foreground)]' : 'bg-[var(--primary)]'"
+                  ></span>
+
                   <button
                     type="button"
                     title="Refresh"
-                    class="text-sm text-[var(--muted)] hover:text-[var(--fg)] px-1 bg-transparent border-none cursor-pointer leading-none"
+                    class="p-1 rounded bg-transparent border-none cursor-pointer text-base leading-none transition-colors"
+                    [ngClass]="candidate.username === activeUsername
+                      ? 'text-[var(--primary-foreground)]/60 hover:text-[var(--primary-foreground)]'
+                      : 'text-[var(--muted)] hover:text-[var(--fg)]'"
                     (click)="refreshCandidate(candidate)"
                   >↺</button>
+
                   <button
                     type="button"
                     title="Remove"
-                    class="text-sm text-[var(--muted)] hover:text-red-500 px-1 bg-transparent border-none cursor-pointer leading-none"
+                    class="p-1 rounded bg-transparent border-none cursor-pointer text-base leading-none transition-colors"
+                    [ngClass]="candidate.username === activeUsername
+                      ? 'text-[var(--primary-foreground)]/60 hover:text-[var(--primary-foreground)]'
+                      : 'text-[var(--muted)] hover:text-red-500'"
                     (click)="deleteCandidate(candidate)"
                   >✕</button>
                 </div>

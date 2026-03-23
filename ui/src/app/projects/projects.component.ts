@@ -1,12 +1,12 @@
 import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { RouterModule } from '@angular/router';
-import { RepoBundleService, RepoBundleResponse } from '../services/repo-bundle.service';
+import { ActivatedRoute, RouterModule } from '@angular/router';
+import { RepoBundleService } from '../services/repo-bundle.service';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { JobPollingService } from '../services/job-polling.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
-import { Observable, map, of, Subject, takeUntil, shareReplay, distinctUntilChanged, switchMap } from 'rxjs';
+import { Subject, takeUntil, switchMap, catchError, of } from 'rxjs';
 
 /**
  * Aligned with backend schema from _repo_row_to_bundle_entry in api_gateway.py
@@ -32,19 +32,17 @@ interface RepoCardVM {
   styleUrls: ['./projects.component.css']
 })
 export class ProjectsComponent implements OnInit, OnDestroy {
+  private route = inject(ActivatedRoute);
   private repoBundleService = inject(RepoBundleService);
   private candidateContext = inject(CandidateContextService);
   private jobPollingService = inject(JobPollingService);
   private readonly destroy$ = new Subject<void>();
-  repoBundle$!: Observable<RepoBundleResponse>;
-  filteredRepos$!: Observable<RepoCardVM[]>;
-  allLanguages$!: Observable<string[]>;
-  allTechnologies$!: Observable<string[]>;
-  filterByDocumentation = false; 
+  private requestedUsername: string | null = null;
+  private requestedJobId: string | null = null;
   username = '';
   missingCandidate = false;
 
-  // Filter options
+  // Filter state
   showForks = false;
   selectedLanguage = '';
   selectedTechnology = '';
@@ -54,28 +52,44 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   sortBy = 'updated';
   sortDirection = 'desc';
 
-
-
   // Loading state
   loading = false;
-  loadingMessage = '';
-
   bundleEmpty = false;
+  totalRepoCount = 0;
+
+  // Data
+  allLanguages: string[] = [];
+  allTechnologies: string[] = [];
+  filteredRepos: RepoCardVM[] = [];
+  private allVMs: RepoCardVM[] = [];
 
   ngOnInit(): void {
+    this.requestedUsername = this.route.snapshot.queryParamMap.get('username')?.trim() ?? null;
+    this.requestedJobId = this.route.snapshot.queryParamMap.get('job_id')?.trim() ?? null;
+
+    if (this.requestedUsername) {
+      if (this.requestedJobId) {
+        this.candidateContext.upsertCandidate({
+          username: this.requestedUsername,
+          jobId: this.requestedJobId,
+        });
+      } else {
+        this.candidateContext.setActive(this.requestedUsername);
+      }
+    }
+
     this.candidateContext.activeUsername$
       .pipe(takeUntil(this.destroy$))
       .subscribe((username) => {
         if (!username) {
           this.missingCandidate = true;
-          this.repoBundle$ = of({ username: '', data: [] });
-          this.filteredRepos$ = of([]);
+          this._clearData();
           return;
         }
 
         this.missingCandidate = false;
         this.username = username;
-        this.loadRepoBundle();
+        this._loadRepoBundle();
       });
   }
 
@@ -84,52 +98,65 @@ export class ProjectsComponent implements OnInit, OnDestroy {
     this.destroy$.complete(); 
   }
 
-  loadRepoBundle(): void {
-    const storedJobId = this.candidateContext.activeCandidate?.jobId;
-    if (storedJobId) {
-      this.startJobIfNeeded(this.username, storedJobId);
+  private _loadRepoBundle(): void {
+    const activeCandidate = this.candidateContext.activeCandidate;
+    const resolvedJobId = this.username === this.requestedUsername
+      ? this.requestedJobId ?? activeCandidate?.jobId
+      : activeCandidate?.jobId;
+
+    if (resolvedJobId) {
+      this.startJobIfNeeded(this.username, resolvedJobId);
     }
-    const bypassCache = this.jobPollingService.isPolling;
+    this.loading = true;
 
-    this.repoBundle$ = this.jobPollingService.whenMetadataReady(this.username).pipe(
-      switchMap(() => this.repoBundleService.getCandidateMetadata(this.username, undefined, !bypassCache))
-    );
-
-    const repos$ = this.repoBundle$.pipe(
-      map(bundle => {
-        this.bundleEmpty = !(Array.isArray(bundle?.data) && bundle.data.length > 0);
-        return (bundle?.data ?? [])
-          .map(r => this.toCardVM(r))
-          .filter((vm): vm is RepoCardVM => vm !== null);
+    this.jobPollingService.whenMetadataReady(this.username).pipe(
+      switchMap(() => {
+        const jobId = this.username === this.requestedUsername
+          ? this.requestedJobId ?? this.candidateContext.activeCandidate?.jobId
+          : this.candidateContext.activeCandidate?.jobId;
+        const useCache = !this.jobPollingService.isPolling;
+        return this.repoBundleService.getCandidateMetadata(this.username, jobId, useCache);
       }),
-      shareReplay(1)
-    );
+      catchError(() => of({ username: this.username, data: [] as any[] })),
+      takeUntil(this.destroy$)
+    ).subscribe(bundle => {
+      const data = bundle?.data ?? [];
+      this.allVMs = data
+        .map((r: any) => this.toCardVM(r))
+        .filter((vm): vm is RepoCardVM => vm !== null);
+      this.totalRepoCount = this.allVMs.length;
+      this.bundleEmpty = this.allVMs.length === 0;
+      this.allLanguages = this._deriveLanguages(this.allVMs);
+      this.allTechnologies = this._deriveTechnologies(this.allVMs);
+      this._applyFilters();
+      this.loading = false;
+    });
+  }
 
-    this.allLanguages$ = repos$.pipe(
-      map(vms => {
-        const languages = new Set<string>();
-        vms.forEach(vm => {
-          (vm.languagesPct ?? []).forEach(l => languages.add(l.k));
-        });
-        return Array.from(languages).sort();
-      }),
-      distinctUntilChanged((prev, curr) => JSON.stringify(prev) === JSON.stringify(curr))
-    );
+  private _clearData(): void {
+    this.allVMs = [];
+    this.filteredRepos = [];
+    this.allLanguages = [];
+    this.allTechnologies = [];
+    this.totalRepoCount = 0;
+    this.bundleEmpty = false;
+    this.loading = false;
+  }
 
-    this.allTechnologies$ = repos$.pipe(
-      map(vms => {
-        const technologies = new Set<string>();
-        vms.forEach(vm => {
-          vm.topics.forEach(topic => technologies.add(topic));
-        });
-        return Array.from(technologies).sort();
-      }),
-      distinctUntilChanged((prev, curr) => JSON.stringify(prev) === JSON.stringify(curr))
-    );
+  private _applyFilters(): void {
+    this.filteredRepos = this.filterAndSortVMs(this.allVMs);
+  }
 
-    this.filteredRepos$ = repos$.pipe(
-      map(vms => this.filterAndSortVMs(vms))
-    );
+  private _deriveLanguages(vms: RepoCardVM[]): string[] {
+    const languages = new Set<string>();
+    vms.forEach(vm => (vm.languagesPct ?? []).forEach(l => languages.add(l.k)));
+    return Array.from(languages).sort();
+  }
+
+  private _deriveTechnologies(vms: RepoCardVM[]): string[] {
+    const technologies = new Set<string>();
+    vms.forEach(vm => vm.topics.forEach(topic => technologies.add(topic)));
+    return Array.from(technologies).sort();
   }
 
   /**
@@ -216,7 +243,9 @@ export class ProjectsComponent implements OnInit, OnDestroy {
     });
   }
 
-  applyFilters(): void { this.loadRepoBundle(); }
+  applyFilters(): void {
+    this._applyFilters();
+  }
 
   resetFilters(): void {
     this.showForks = true;
@@ -225,15 +254,10 @@ export class ProjectsComponent implements OnInit, OnDestroy {
     this.searchTerm = '';
     this.sortBy = 'updated';
     this.sortDirection = 'desc';
-    this.loadRepoBundle();
+    this._applyFilters();
   }
 
   trackByName = (_: number, vm: RepoCardVM) => vm.name;
-
-  removeActiveCandidate(): void {
-    if (!this.username) return;
-    this.candidateContext.removeCandidate(this.username);
-  }
 
   private startJobIfNeeded(username: string, jobId: string): void {
     const current = this.jobPollingService.currentStatus;

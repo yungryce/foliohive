@@ -27,23 +27,8 @@
       </aside>
 
       <section class="space-y-6">
-        <ng-container *ngIf="repoBundle$ | async as bundle; else loading">
+        <ng-container *ngIf="!loading; else loadingTpl">
 
-          <!-- Empty state -->
-          <div *ngIf="bundleEmpty" class="p-4 rounded-lg border border-[var(--border)] bg-[var(--card)]">
-            <h2 class="text-lg font-semibold">No repositories found</h2>
-            <p class="text-sm text-[var(--muted)]">
-              We couldn'"'"'t find any repositories for this candidate. Try another username or remove this candidate.
-            </p>
-            <div class="mt-3 flex flex-wrap gap-3">
-              <button
-                (click)="removeActiveCandidate()"
-                class="px-3 py-2 rounded border border-[var(--border)] bg-[var(--soft)] hover:brightness-95"
-              >
-                Remove candidate
-              </button>
-            </div>
-          </div>
 
           <!-- Filters -->
           <div class="p-4 rounded-lg shadow mb-6 border border-[var(--border)] bg-[var(--card)]">
@@ -80,7 +65,7 @@
                     class="w-full px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--fg)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
                   >
                     <option value="">All Languages</option>
-                    <option *ngFor="let lang of (allLanguages$ | async)" [value]="lang">{{ lang }}</option>
+                    <option *ngFor="let lang of allLanguages" [value]="lang">{{ lang }}</option>
                   </select>
                 </div>
 
@@ -92,7 +77,7 @@
                     class="w-full px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--fg)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
                   >
                     <option value="">All Technologies</option>
-                    <option *ngFor="let tech of (allTechnologies$ | async)" [value]="tech">{{ tech }}</option>
+                    <option *ngFor="let tech of allTechnologies" [value]="tech">{{ tech }}</option>
                   </select>
                 </div>
 
@@ -137,12 +122,12 @@
           </div>
 
           <!-- Projects List -->
-          <div *ngIf="filteredRepos$ | async as repos">
-            <p class="mb-4 text-[var(--muted)]">Showing {{ repos.length }} of {{ bundle?.data?.length || 0 }} repositories</p>
+          <div>
+            <p class="mb-4 text-[var(--muted)]">Showing {{ filteredRepos.length }} of {{ totalRepoCount }} repositories</p>
 
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               <article
-                *ngFor="let r of repos; trackBy: trackByName"
+                *ngFor="let r of filteredRepos; trackBy: trackByName"
                 class="group rounded-xl overflow-hidden shadow border border-[var(--border)] bg-[var(--card)] hover:shadow-md transition-shadow cursor-pointer"
                 [routerLink]="['/projects', r.name]"
                 title="Open repository details"
@@ -199,14 +184,14 @@
               <p class="text-[var(--muted)]">Use another candidate or trigger a rebuild if you expect repositories.</p>
             </div>
 
-            <div *ngIf="(bundle?.data?.length || 0) > 0 && repos.length === 0" class="text-center py-12">
+            <div *ngIf="totalRepoCount > 0 && filteredRepos.length === 0" class="text-center py-12">
               <h3 class="text-lg font-medium mb-1">No projects match your filters</h3>
               <p class="text-[var(--muted)]">Try adjusting your filters or search term.</p>
             </div>
           </div>
         </ng-container>
 
-        <ng-template #loading>
+        <ng-template #loadingTpl>
           <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <div *ngFor="let i of [0,1,2,3,4,5]" class="rounded-xl overflow-hidden shadow border border-[var(--border)] bg-[var(--card)] p-4 animate-pulse">
               <div class="h-6 w-2/3 rounded bg-[var(--soft)] mb-3"></div>

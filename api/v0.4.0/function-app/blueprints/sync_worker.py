@@ -219,16 +219,17 @@ def _update_sync_progress(
     
     synced_count = status_counts.get("synced", 0)
     failed_count = status_counts.get("failed", 0)
+    summary_ready_count = status_counts.get("summary_ready", 0)
 
     job = table_manager.get_job_metadata(username, job_id)
     current_status = job.get("status") if job else "queued"
     
-    if (synced_count > 0 or failed_count > 0) and current_status == "queued":
+    if (synced_count > 0 or failed_count > 0 or summary_ready_count > 0) and current_status == "queued":
         table_manager.update_job_metadata_conditional(username, job_id, {"status": "syncing"})
     
-    completed_count = synced_count + failed_count
+    completed_count = synced_count + failed_count + summary_ready_count
     if completed_count == total_repos and current_status == "syncing":
-        if synced_count > 0:
+        if (synced_count + summary_ready_count) > 0:
             table_manager.update_job_metadata_conditional(username, job_id, {"status": "metadata_ready"})
         else:
             table_manager.update_job_metadata_conditional(username, job_id, {"status": "failed"})

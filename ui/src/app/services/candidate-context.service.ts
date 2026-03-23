@@ -57,9 +57,14 @@ export class CandidateContextService {
     }
     const limited = next.slice(0, this.maxStored);
     this.candidatesSubject.next(limited);
-    this.activeUsernameSubject.next(username);
     this.persistCandidates(limited);
-    this.persistActive(username);
+    // Only emit when the active username actually changes — updateProgress calls
+    // upsertCandidate every poll tick, and emitting unconditionally causes all
+    // activeUsername$ subscribers to re-initialize on each tick.
+    if (this.activeUsernameSubject.value !== username) {
+      this.activeUsernameSubject.next(username);
+      this.persistActive(username);
+    }
   }
 
   setActive(username: string): void {
