@@ -516,6 +516,23 @@ class TableManager:
             return rows[:limit]
         return rows
 
+    def delete_session_candidate(self, session_id: str, username: str) -> None:
+        """Remove a candidate from a session's tracked list.
+
+        Called when a candidate is explicitly deleted so the slot becomes
+        available for a new candidate. No-op if the entity does not exist.
+
+        PartitionKey: session_id
+        RowKey: username
+        """
+        table = self._get_table_client(self.table_names.session_candidates)
+        if not table or not session_id or not username:
+            return
+        try:
+            table.delete_entity(partition_key=session_id, row_key=username)
+        except ResourceNotFoundError:
+            pass
+
     def _deserialize_session_candidate(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entity)
         for meta_key in _AZURE_META_FIELDS:
@@ -954,6 +971,29 @@ class TableManager:
             "updated_at": _azure_safe_timestamp(),
         }
         table.upsert_entity(entity, mode=UpdateMode.MERGE)
+
+
+    def _touch_cache_summary(self, repo_name: str, fingerprint: str) -> None:
+        """Update accessed_at timestamp on cache summary row after successful load.
+        
+        Prevents the cache entry from being cleaned up by the retention policy,
+        since accessed_at tracks read activity (not creation/invalidation).
+        
+        Args:
+            repo_name: Repository name (PartitionKey)
+            fingerprint: Content fingerprint (RowKey)
+        """
+        from foliohive_shared.table.table_manager import _azure_safe_timestamp
+        try:
+            table = self._get_table_client(self.table_names.repo_cache_summary)
+            if table:
+                table.upsert_entity({
+                    "PartitionKey": repo_name,
+                    "RowKey": fingerprint,
+                    "accessed_at": _azure_safe_timestamp()
+                }, mode=UpdateMode.MERGE)
+        except Exception as exc:
+            logger.warning("[TOUCH_CACHE] failed to update accessed_at for %s (fp=%s): %s", repo_name, fingerprint, exc)
 
 
     def get_cache_summary(self, repo_name: str, fingerprint: str) -> Optional[Dict[str, Any]]:

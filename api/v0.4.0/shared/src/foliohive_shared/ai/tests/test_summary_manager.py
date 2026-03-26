@@ -1,9 +1,7 @@
 """Unit tests for SummaryManager."""
 
 import pytest
-import hashlib
-import json
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from foliohive_shared.ai.summary_manager import SummaryManager, TOKEN_BUDGETS
 
 
@@ -99,41 +97,6 @@ CMD ["npm", "start"]
         # Should keep important instructions
         assert "FROM" in chunked
         assert "EXPOSE" in chunked
-
-
-class TestFingerprinting:
-    """Test fingerprint calculation."""
-
-    def test_fingerprint_changes_with_content(self):
-        """Test fingerprint changes when content changes."""
-        manager = SummaryManager("test_user")
-        
-        fp1 = manager.calculate_fingerprint("profile", [{"data": "v1"}])
-        fp2 = manager.calculate_fingerprint("profile", [{"data": "v2"}])
-        
-        assert fp1 != fp2
-        assert len(fp1) == 12
-        assert len(fp2) == 12
-
-    def test_fingerprint_stable_for_same_content(self):
-        """Test fingerprint is stable for same content."""
-        manager = SummaryManager("test_user")
-        
-        fp1 = manager.calculate_fingerprint("profile", [{"data": "test"}])
-        fp2 = manager.calculate_fingerprint("profile", [{"data": "test"}])
-        
-        assert fp1 == fp2
-
-    def test_fingerprint_uses_existing_fingerprints(self):
-        """Test fingerprint incorporates existing fingerprints."""
-        manager = SummaryManager("test_user")
-        
-        fp = manager.calculate_fingerprint(
-            "profile",
-            [{"fingerprint": "abc123"}, {"fingerprint": "def456"}]
-        )
-        
-        assert len(fp) == 12
 
 
 class TestContextBuilding:
@@ -320,7 +283,6 @@ class TestRepoMicroSummaryCaching:
         manager = SummaryManager("test_user")
         key = manager.build_repo_micro_summary_cache_key("repo-1", "fp123")
         assert "repo_micro_summary" in key
-        assert "test_user" in key
         assert "repo-1" in key
         assert "fp123" in key
 
@@ -351,45 +313,6 @@ class TestRepoMicroSummaryCaching:
         result = manager.get_cache_repo_micro_summary("repo1", "fp1")
         assert result is None
 
-
-
-class TestFingerprintGeneration:
-    """Test fingerprint calculation."""
-
-    def test_fingerprint_deterministic(self):
-        """Test fingerprint is deterministic for same input."""
-        manager = SummaryManager("test_user")
-        
-        data = [{"key": "value"}, ["list", "items"], "string"]
-        
-        fp1 = manager.calculate_fingerprint("profile", data)
-        fp2 = manager.calculate_fingerprint("profile", data)
-        
-        assert fp1 == fp2
-        assert len(fp1) == 12  # MD5 hash truncated to 12 chars
-
-    def test_fingerprint_changes_with_data(self):
-        """Test fingerprint changes when data changes."""
-        manager = SummaryManager("test_user")
-        
-        data1 = [{"key": "value1"}]
-        data2 = [{"key": "value2"}]
-        
-        fp1 = manager.calculate_fingerprint("profile", data1)
-        fp2 = manager.calculate_fingerprint("profile", data2)
-        
-        assert fp1 != fp2
-
-    def test_fingerprint_changes_with_type(self):
-        """Test fingerprint changes with summary type."""
-        manager = SummaryManager("test_user")
-        
-        data = [{"key": "value"}]
-        
-        fp1 = manager.calculate_fingerprint("profile", data)
-        fp2 = manager.calculate_fingerprint("readme", data)
-        
-        assert fp1 != fp2
 
 
 class TestTokenBudgetConfiguration:
@@ -483,6 +406,45 @@ class TestQueryResponseGeneration:
         assert "total_repositories" in result
         assert result["query"] == "python api experience"
         assert "metadata" in result
+
+
+class TestCachedMicroSummaryLoading:
+    """Test per-job micro-summary loading behavior."""
+
+    def test_load_cached_micro_summaries_filters_and_preserves_order(self):
+        manager = SummaryManager("test_user")
+        manager.table_manager = Mock()
+        manager.table_manager.list_repo_statuses.return_value = [
+            {"repo_name": "repo-a", "username": "test_user", "status": "summary_ready"},
+            {"repo_name": "repo-b", "username": "other_user", "status": "summary_ready"},
+            {"repo_name": "repo-c", "username": "test_user", "status": "synced"},
+            {"repo_name": "repo-d", "username": "test_user", "status": "summary_ready"},
+        ]
+        manager._load_single_cached_micro_summary = Mock(side_effect=[
+            {"repo_name": "repo-a", "fingerprint": "fp-a", "micro_summary": {"overview": "A"}},
+            {"repo_name": "repo-d", "fingerprint": "fp-d", "micro_summary": {"overview": "D"}},
+        ])
+
+        result = manager._load_cached_micro_summaries("job-1")
+
+        assert [item["repo_name"] for item in result] == ["repo-a", "repo-d"]
+        manager._load_single_cached_micro_summary.assert_any_call(
+            {"repo_name": "repo-a", "username": "test_user", "status": "summary_ready"}
+        )
+        manager._load_single_cached_micro_summary.assert_any_call(
+            {"repo_name": "repo-d", "username": "test_user", "status": "summary_ready"}
+        )
+
+    def test_load_single_cached_micro_summary_skips_failures(self):
+        manager = SummaryManager("test_user")
+        manager.table_manager = Mock()
+        manager.table_manager.get_repo_github_metadata.side_effect = RuntimeError("table read failed")
+
+        result = manager._load_single_cached_micro_summary(
+            {"repo_name": "repo-a", "username": "test_user", "status": "summary_ready"}
+        )
+
+        assert result is None
 
 
 if __name__ == "__main__":

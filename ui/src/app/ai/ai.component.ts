@@ -8,6 +8,7 @@ import { CandidateContextService } from '../services/candidate-context.service';
 import { RepoBundleService } from '../services/repo-bundle.service';
 import { JobPollingService } from '../services/job-polling.service';
 import { AIAssistantService, AIAssistantResponse } from '../services/assistant.service';
+import { ChatHistoryEntry, ChatHistoryService } from '../services/chat-history.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
 import { JobStatusBadgeComponent } from '../shared/job-status-badge.component';
 
@@ -30,6 +31,7 @@ export class AiComponent implements OnInit, OnDestroy {
   private jobPollingService = inject(JobPollingService);
   private candidateContext = inject(CandidateContextService);
   private ai = inject(AIAssistantService);
+  private chatHistory = inject(ChatHistoryService);
 
   private readonly destroy$ = new Subject<void>();
 
@@ -47,25 +49,31 @@ export class AiComponent implements OnInit, OnDestroy {
   query = '';
   loadingAnswer = false;
   error = '';
-  answerMarkdown: string | null = null;
-  repositoriesUsed: { name: string; relevance_score: number }[] = [];
+  pendingQuery: string | null = null;
+  history: ChatHistoryEntry[] = [];
 
   ngOnInit(): void {
     const usernameFromUrl = (this.route.snapshot.queryParamMap.get('username') || '').trim();
-    
+
     if (usernameFromUrl) {
-      this.candidateContext.upsertCandidate({ username: usernameFromUrl });
+      this.candidateContext.setActive(usernameFromUrl);
     }
+
+    this.chatHistory.history$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((history) => {
+        this.history = history;
+      });
 
     this.candidateContext.activeUsername$
       .pipe(takeUntil(this.destroy$))
       .subscribe((username) => {
         this.activeUsername = username;
+        this.chatHistory.setActiveCandidate(username);
         if (!username) {
           this.noRepositories = false;
           this.suggested = [];
-          this.answerMarkdown = null;
-          this.repositoriesUsed = [];
+          this.pendingQuery = null;
           this.error = '';
           return;
         }
@@ -94,8 +102,7 @@ export class AiComponent implements OnInit, OnDestroy {
     // Reset state
     this.noRepositories = false;
     this.suggested = [];
-    this.answerMarkdown = null;
-    this.repositoriesUsed = [];
+    this.pendingQuery = null;
     this.error = '';
     this.summaryReady = false;
     this.jobStatus = null;
@@ -233,12 +240,28 @@ export class AiComponent implements OnInit, OnDestroy {
     }
 
     this.loadingAnswer = true;
-    this.answerMarkdown = null;
-    this.repositoriesUsed = [];
+    this.pendingQuery = q;
 
     // Optimistically try to get answer
     this.ai.askPortfolio({ query: q, username }).pipe(
       catchError((error) => {
+        // CACHE_MISSING (404) means blobs were purged — the job is complete but
+        // there is nothing to wait for. Auto-trigger refresh.
+        const isCacheMissing = error?.error?.error?.code === 'CACHE_MISSING';
+        if (isCacheMissing) {
+          const username = this.activeUsername;
+          if (username) {
+            this.router.navigate(['/'], { queryParams: { username } });
+          }
+          return of({
+            response: 'Cache was purged. Refreshing candidate...',
+            repositories_used: [],
+            total_repositories: 0,
+            query: q,
+            success: false,
+          } as AIAssistantResponse);
+        }
+
         // Check if error is NOT_READY (404) - this should be rare since we waited for summary_ready
         const isNotReady = error?.status === 404 || error?.error?.error_code === 'NOT_READY';
         
@@ -253,7 +276,8 @@ export class AiComponent implements OnInit, OnDestroy {
                 response: 'Failed to generate answer after data was ready. Please try again.',
                 repositories_used: [],
                 total_repositories: 0,
-                query: q
+                query: q,
+                success: false,
               } as AIAssistantResponse);
             }),
             takeUntil(this.destroy$)
@@ -266,21 +290,43 @@ export class AiComponent implements OnInit, OnDestroy {
           response: errorMsg,
           repositories_used: [],
           total_repositories: 0,
-          query: q
+          query: q,
+          success: false,
         } as AIAssistantResponse);
       }),
       takeUntil(this.destroy$)
     ).subscribe({
       next: (res: AIAssistantResponse) => {
         this.loadingAnswer = false;
-        this.repositoriesUsed = res.repositories_used || [];
-        this.answerMarkdown = res.response || null;
+        this.pendingQuery = null;
+        if (res.success === false) {
+          this.error = res.response || 'Failed to get response.';
+          return;
+        }
+
+        if (res.response?.trim()) {
+          this.chatHistory.appendEntry(username, {
+            query: q,
+            responseMarkdown: res.response,
+            repositoriesUsed: res.repositories_used || [],
+            requestMetadata: {
+              total_repositories: res.total_repositories,
+              query: res.query,
+            },
+          });
+          this.query = '';
+        }
       },
       error: () => {
         this.loadingAnswer = false;
+        this.pendingQuery = null;
         this.error = 'Failed to get response.';
       }
     });
+  }
+
+  clearHistory(): void {
+    this.chatHistory.clearActiveHistory();
   }
 
 }

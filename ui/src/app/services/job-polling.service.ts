@@ -6,8 +6,7 @@ import { CandidateContextService } from './candidate-context.service';
 
 export interface PollOptions {
   intervalMs?: number;      // Default: 3000ms (3 seconds)
-  maxAttempts?: number;     // Default: 40 attempts
-  timeoutMs?: number;       // Default: 120000ms (2 minutes)
+  maxAttempts?: number;     // Default: 200 attempts (~10 minutes)
 }
 
 /**
@@ -32,7 +31,6 @@ export class JobPollingService implements OnDestroy {
 
   private _activeJob: { username: string; jobId: string } | null = null;
   private _activeSubscription: Subscription | null = null;
-  private _timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   get currentStatus(): JobStatusResponse | null {
     return this._status$.value;
@@ -61,14 +59,9 @@ export class JobPollingService implements OnDestroy {
     this.stopJob();
     this._status$.next(null); // Discard stale status so subscribers don't match the previous job
 
-    const { intervalMs = 3000, maxAttempts = 40, timeoutMs = 120000 } = options;
+    const { intervalMs = 3000, maxAttempts = 200 } = options;
     let attempts = 0;
     this._activeJob = { username, jobId };
-
-    this._timeoutHandle = setTimeout(() => {
-      this.candidateContext.updateProgress(username, { buildStatus: 'failed', jobStatusCode: 'failed' });
-      this.stopJob();
-    }, timeoutMs);
 
     this._activeSubscription = timer(0, intervalMs)
       .pipe(
@@ -102,10 +95,6 @@ export class JobPollingService implements OnDestroy {
    * Stop the active poll and clear state. Safe to call multiple times.
    */
   stopJob(): void {
-    if (this._timeoutHandle !== null) {
-      clearTimeout(this._timeoutHandle);
-      this._timeoutHandle = null;
-    }
     if (this._activeSubscription) {
       this._activeSubscription.unsubscribe();
       this._activeSubscription = null;
@@ -143,7 +132,13 @@ export class JobPollingService implements OnDestroy {
    * Use to gate metadata-fetching operations.
    */
   whenMetadataReady(username: string): Observable<void> {
-    if (!this.isPolling || this._status$.value?.metadata_ready) {
+    // If no poll is active, or the active poll is for a different candidate,
+    // the data for this candidate is stable — emit immediately.
+    if (!this.isPolling || this._activeJob?.username !== username) {
+      return of(undefined as void);
+    }
+    // A poll is running for this candidate; wait for it to signal metadata_ready.
+    if (this._status$.value?.metadata_ready) {
       return of(undefined as void);
     }
     return this.status$.pipe(
@@ -159,7 +154,13 @@ export class JobPollingService implements OnDestroy {
    * Use to gate summary-fetching operations.
    */
   whenSummaryReady(username: string): Observable<void> {
-    if (!this.isPolling || this._status$.value?.summary_ready) {
+    // If no poll is active, or the active poll is for a different candidate,
+    // the data for this candidate is stable — emit immediately.
+    if (!this.isPolling || this._activeJob?.username !== username) {
+      return of(undefined as void);
+    }
+    // A poll is running for this candidate; wait for it to signal summary_ready.
+    if (this._status$.value?.summary_ready) {
       return of(undefined as void);
     }
     return this.status$.pipe(

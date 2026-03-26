@@ -6,6 +6,7 @@ and fingerprint-based cache invalidation for candidate profiles and repositories
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import logging
@@ -67,6 +68,12 @@ PAYLOAD_LIMITS = {
     "domains": 10,
     "architecture_patterns": 10,
 }
+
+MAX_MICRO_SUMMARY_LOAD_WORKERS = 8
+
+
+class CacheMissingError(RuntimeError):
+    """Raised when expected cached micro-summaries are absent (blobs purged)."""
 
 
 class SummaryManager:
@@ -223,7 +230,10 @@ class SummaryManager:
         cached = self.get_cache_repo_micro_summary(repo_name, fingerprint)
         if not cached:
             logger.warning("No cached micro-summary for %s/%s (fingerprint: %s)", self.username, repo_name, fingerprint)
-            return None
+            raise CacheMissingError(
+                f"Cached micro-summary for {repo_name} (fingerprint: {fingerprint}) not found. "
+                "Blob may have been purged — trigger a refresh to rebuild."
+            )
 
         summary_markdown = self.ai_assistant.expand_repo(
             username=self.username,
@@ -243,6 +253,7 @@ class SummaryManager:
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "summary_type": summary_type,
             "generation_time_ms": int((time.time() - start_time) * 1000),
+            "cache_hit": False,
         }
         return {"summary_markdown": summary_markdown, "metadata": metadata}
     
@@ -262,9 +273,9 @@ class SummaryManager:
 
         micro_summaries = self._load_cached_micro_summaries(job_id)
         aggregate = self.aggregate_micro_summaries(
-            micro_summaries=micro_summaries,
-            limits=PAYLOAD_LIMITS,
-        )
+                micro_summaries=micro_summaries,
+                limits=PAYLOAD_LIMITS,
+            )
         
         # Second-stage AI summarization: aggregate + profile → markdown narrative
         summary_markdown = self.ai_assistant.summarize_profile(
@@ -285,6 +296,7 @@ class SummaryManager:
             "summary_type": summary_type,
             "repos_total": len(micro_summaries),
             "generation_time_ms": int((time.time() - start_time) * 1000),
+            "aggregate_cache_hit": aggregate_cache_hit,
         }
         return {"summary_markdown": summary_markdown, "metadata": metadata}
 
@@ -449,8 +461,6 @@ class SummaryManager:
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        fingerprint = self.calculate_fingerprint("profile_aggregate", micro_summaries)
-        cache_manager.save(self.build_profile_aggregate_cache_key(fingerprint), aggregate)
         return aggregate
 
 
@@ -471,34 +481,6 @@ class SummaryManager:
         safe_repo = str(repo_name).replace("/", "_").replace(" ", "_")
         safe_fingerprint = str(fingerprint).replace("/", "_").replace(" ", "_")
         return f"repo_micro_summary:{safe_repo}:{safe_fingerprint}"
-
-    def build_profile_aggregate_cache_key(self, fingerprint: str) -> str:
-        safe = str(fingerprint).replace("/", "_").replace(" ", "_")
-        return f"profile_aggregate:{self.username}:{safe}"
-
-    def build_expanded_summary_cache_key(self, repo_name: str, fingerprint: str) -> str:
-        """Build cache key for expanded repo summary HTML."""
-        safe_repo = str(repo_name).replace("/", "_").replace(" ", "_")
-        safe_fingerprint = str(fingerprint).replace("/", "_").replace(" ", "_")
-        return f"repo_expanded_summary:{self.username}:{safe_repo}:{safe_fingerprint}"
-
-    def calculate_fingerprint(self, summary_type: str, inputs: List[Dict[str, Any]]) -> str:
-        """Calculate stable fingerprint from structured inputs for cache invalidation."""
-        normalized_inputs: List[Dict[str, Any]] = []
-        for item in inputs or []:
-            if not isinstance(item, dict):
-                continue
-            if item.get("fingerprint"):
-                normalized_inputs.append({"fingerprint": str(item.get("fingerprint"))})
-                continue
-            normalized_inputs.append(item)
-        payload = {
-            "summary_type": summary_type,
-            "username": self.username,
-            "inputs": normalized_inputs,
-        }
-        blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
 
 
     def _load_cached_micro_summaries(self, job_id: str) -> List[Dict[str, Any]]:
@@ -524,30 +506,63 @@ class SummaryManager:
         if not ready_repos:
             return []
 
-        micro_summaries: List[Dict[str, Any]] = []
-        for status_row in ready_repos:
-            repo_name = status_row.get("repo_name")
-            if not repo_name:
-                continue
-
-            repo_metadata = self.table_manager.get_repo_github_metadata(self.username, repo_name)
-            if not repo_metadata:
-                continue
-            fingerprint = repo_metadata.get("fingerprint")
-            if not fingerprint:
-                continue
-
-            cached = self.get_cache_repo_micro_summary(repo_name, fingerprint)
-            if cached:
-                micro_summaries.append({
-                    "repo_name": repo_name,
-                    "fingerprint": fingerprint,
-                    "micro_summary": cached,
-                })
+        max_workers = min(MAX_MICRO_SUMMARY_LOAD_WORKERS, len(ready_repos))
+        if max_workers <= 1:
+            micro_summaries = [
+                result
+                for result in (self._load_single_cached_micro_summary(status_row) for status_row in ready_repos)
+                if result
+            ]
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                micro_summaries = [
+                    result
+                    for result in executor.map(self._load_single_cached_micro_summary, ready_repos)
+                    if result
+                ]
 
         logger.info("Loaded %d valid cached micro-summaries for username=%s job=%s", len(micro_summaries), self.username, job_id)
+        if len(ready_repos) > 0 and len(micro_summaries) == 0:
+            raise CacheMissingError(
+                f"0/{len(ready_repos)} cached micro-summaries loaded for job {job_id} (username={self.username}). "
+                "Blobs may have been purged — trigger a refresh to rebuild."
+            )
         return micro_summaries
-        
+
+    def _load_single_cached_micro_summary(self, status_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Load one repo micro-summary from cache for a ready repo row."""
+
+        repo_name = status_row.get("repo_name")
+        if not repo_name:
+            return None
+
+        try:
+            repo_metadata = self.table_manager.get_repo_github_metadata(self.username, repo_name)
+            if not repo_metadata:
+                return None
+
+            fingerprint = repo_metadata.get("fingerprint")
+            if not fingerprint:
+                return None
+
+            cached = self.get_cache_repo_micro_summary(repo_name, fingerprint)
+            if not cached:
+                return None
+
+            return {
+                "repo_name": repo_name,
+                "fingerprint": fingerprint,
+                "micro_summary": cached,
+            }
+        except Exception as exc:
+            logger.warning(
+                "Failed to load cached micro-summary for username=%s repo=%s: %s",
+                self.username,
+                repo_name,
+                exc,
+            )
+            return None
+
 
     def get_cache_repo_micro_summary(self, repo_name: str, fingerprint: str) -> Optional[Dict[str, Any]]:
         """Get micro-summary from cache with table validation."""
@@ -556,18 +571,20 @@ class SummaryManager:
         if not cache_entry:
             logger.info(f"No valid cache entry for {repo_name} (fingerprint: {fingerprint})")
             return None  # Not cached or stale
-        
+
         if cache_entry.get("cache_status") != "valid":
             logger.info(f"Cache entry for {repo_name} (fingerprint: {fingerprint}) is not valid (status: {cache_entry.get('cache_status')})")
             return None  # Cache entry exists but is not valid
-        
+
         # Cache entry exists and is valid - fetch from blob
         cache_key = cache_entry.get("cache_key")
         cached = cache_manager.get(cache_key)
         if cached.get("status") == "valid":
             data = cached.get("data")
-            return data if isinstance(data, dict) else None
-        
+            if isinstance(data, dict):
+                self.table_manager._touch_cache_summary(repo_name, fingerprint)
+                return data
+
         return None
 
     # ---------------------------------------------------------------------------

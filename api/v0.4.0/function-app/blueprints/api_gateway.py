@@ -28,6 +28,7 @@ from foliohive_shared import (
     RepoSyncStatusRow,
     UserProfileRow,
 )
+from foliohive_shared.ai.summary_manager import CacheMissingError
 
 try:  # Azure SDK may be unavailable in local dev; ignore import failures gracefully
     from azure.core.exceptions import ResourceNotFoundError
@@ -57,6 +58,8 @@ bp = func.Blueprint()
 
 USERNAME_REQUIRED_MESSAGE = "Username required"
 PROFILE_TTL_SECONDS = int(os.getenv("CF_PROFILE_TTL_SECONDS", "21600"))
+ACTIVE_JOB_STALE_SECONDS = int(os.getenv("CF_ACTIVE_JOB_STALE_SECONDS", "1800"))
+SESSION_CANDIDATE_LIMIT = int(os.getenv("CF_SESSION_CANDIDATE_LIMIT", "5"))
 
 def _get_trace_context(req: func.HttpRequest) -> Dict[str, str]:
     """Build a small correlation context for logs.
@@ -561,7 +564,7 @@ def _persist_job_metadata(
         job_id=job_id,
         status=status,
         created_at=(existing.get("created_at") if existing else created_at) or created_at,
-        updated_at=existing.get("updated_at") if existing else None,
+        updated_at=(existing.get("updated_at") if existing else created_at) or created_at,
         trace_id=trace_id if not existing else (existing.get("trace_id") or trace_id),
         request_id=request_id if not existing else (existing.get("request_id") or request_id),
     )
@@ -572,16 +575,38 @@ _ACTIVE_JOB_STATUSES = {"queued", "syncing", "metadata_ready", "caching_started"
 
 
 def _get_active_job(username: str) -> Optional[Dict[str, Any]]:
-    """Return the most recently-started active job for username, or None.
+    """Return the most recently updated active job for username, or None.
 
     Active = any status that is not yet terminal (completed / failed).
     Used to prevent duplicate parallel jobs for the same candidate.
+
+    A job is considered abandoned — and ignored for conflict purposes — when its
+    last known activity (updated_at, falling back to created_at) is older than
+    ACTIVE_JOB_STALE_SECONDS. This handles the case where a worker crashes or a
+    queue message is lost, leaving a job permanently stuck in an active status.
+    The stale row is left as-is in the table; cleanup is handled separately by
+    the reconciliation worker or a manual purge.
     """
     jobs = table_manager.list_jobs_metadata(username)
     active = [j for j in jobs if j.get("status") in _ACTIVE_JOB_STATUSES]
+    logger.debug("[ACTIVE_JOB_CHECK] username=%s total_jobs=%d active=%d", username, len(jobs), len(active))
     if not active:
         return None
-    return max(active, key=lambda j: j.get("created_at") or "")
+    active.sort(key=lambda j: j.get("updated_at") or j.get("created_at") or "", reverse=True)
+    candidate = active[0]
+    last_activity = candidate.get("updated_at") or candidate.get("created_at")
+    if last_activity:
+        age_seconds = (datetime.now(timezone.utc) - _parse_iso(last_activity)).total_seconds()
+        if age_seconds > ACTIVE_JOB_STALE_SECONDS:
+            logger.warning(
+                "[JOB_STALE] username=%s job_id=%s status=%s age_seconds=%.0f — treating as abandoned",
+                username,
+                candidate.get("job_id"),
+                candidate.get("status"),
+                age_seconds,
+            )
+            return None
+    return candidate
 
 
 def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
@@ -630,7 +655,28 @@ def _identify_repo_freshness(username: str, trace: Optional[Dict[str, str]] = No
             valid_repos.append({**repo_metadata, "fingerprint": current_fingerprint})
         else:
             stale_repos.append({**repo_metadata, "fingerprint": current_fingerprint})
-            
+
+    # Validate RepoCacheSummary exists for repos that appear "fresh" by fingerprint.
+    # If blobs were purged, the fingerprint still matches but cache is gone — force re-sync.
+    cache_missing_names: set = set()
+    for repo in valid_repos:
+        repo_name = repo.get("name")
+        fingerprint = repo.get("fingerprint")
+        if not repo_name or not fingerprint:
+            continue
+        cache_row = table_manager.get_cache_summary(repo_name, fingerprint)
+        if not cache_row or cache_row.get("cache_status") != "valid":
+            logger.info(
+                "[FRESHNESS] cache_missing repo=%s fingerprint=%s → force re-sync",
+                repo_name,
+                fingerprint,
+            )
+            cache_missing_names.add(repo_name)
+
+    if cache_missing_names:
+        stale_repos.extend(r for r in valid_repos if r.get("name") in cache_missing_names)
+        valid_repos = [r for r in valid_repos if r.get("name") not in cache_missing_names]
+
     return {
         "stale_repos": stale_repos,
         "cached_bundle": valid_repos,
@@ -749,6 +795,28 @@ def trigger_candidate_refresh(req: func.HttpRequest) -> func.HttpResponse:
             return _create_error_response(USERNAME_REQUIRED_MESSAGE, 400)
 
         trace = _get_trace_context(req)
+        session_id = trace.get("session_id")
+
+        # Enforce per-session candidate limit for new candidates only.
+        # Re-builds (username already tracked) are exempt.
+        # Skipped entirely when no session_id (e.g. direct API calls in dev).
+        if session_id:
+            session_candidates = table_manager.list_session_candidates(
+                session_id, limit=SESSION_CANDIDATE_LIMIT + 1
+            )
+            tracked_usernames = {row.get("username") for row in session_candidates}
+            if username not in tracked_usernames and len(tracked_usernames) >= SESSION_CANDIDATE_LIMIT:
+                slots_used = len(tracked_usernames)
+                logger.info(
+                    "[RATE_LIMIT] session_id=%s username=%s slots_used=%d limit=%d",
+                    session_id, username, slots_used, SESSION_CANDIDATE_LIMIT,
+                )
+                return _create_error_response(
+                    "Candidate limit reached",
+                    429,
+                    details=f"limit={SESSION_CANDIDATE_LIMIT} slots_used={slots_used}",
+                    error_code="CANDIDATE_LIMIT_REACHED",
+                )
 
         active_job = _get_active_job(username)
         if active_job:
@@ -1123,10 +1191,19 @@ def get_repo_summary(req: func.HttpRequest) -> func.HttpResponse:
         # Query for the specific repo
         manager = SummaryManager(username=username)
 
-        result = manager.expand_repo_micro_summary(
-            repo_name=repo,
-            job_id=ctx.job_id,
-        )
+        try:
+            result = manager.expand_repo_micro_summary(
+                repo_name=repo,
+                job_id=ctx.job_id,
+            )
+        except CacheMissingError:
+            logger.warning("[CACHE_MISSING] fn=get_repo_summary username=%s repo=%s", username, repo)
+            return _create_error_response(
+                "Repo cache was purged. Trigger a refresh to rebuild.",
+                404,
+                error_code="CACHE_MISSING",
+                request_id=ctx.trace.get("request_id"),
+            )
         if not result:
             logger.error("Failed to expand micro-summary for %s/%s", username, repo)
             return _create_error_response(
@@ -1184,7 +1261,16 @@ def get_profile_summary(req: func.HttpRequest) -> func.HttpResponse:
         profile = _get_or_refresh_user_profile(username, ctx.job_id)
         manager = SummaryManager(username=username)
 
-        response = manager.get_or_generate_profile_summary(profile=profile or {}, job_id=ctx.job_id)
+        try:
+            response = manager.get_or_generate_profile_summary(profile=profile or {}, job_id=ctx.job_id)
+        except CacheMissingError:
+            logger.warning("[CACHE_MISSING] fn=get_profile_summary username=%s", username)
+            return _create_error_response(
+                "Repo cache was purged. Trigger a refresh to rebuild.",
+                404,
+                error_code="CACHE_MISSING",
+                request_id=ctx.trace.get("request_id"),
+            )
 
         payload = {
             "username": username,
@@ -1251,11 +1337,20 @@ def portfolio_query(req: func.HttpRequest) -> func.HttpResponse:
         profile = _get_or_refresh_user_profile(username, ctx.job_id)
         manager = SummaryManager(username=username)
 
-        response = manager.get_or_generate_query_response(
-            job_id=ctx.job_id,
-            query=query,
-            profile=profile or {},
-        )
+        try:
+            response = manager.get_or_generate_query_response(
+                job_id=ctx.job_id,
+                query=query,
+                profile=profile or {},
+            )
+        except CacheMissingError:
+            logger.warning("[CACHE_MISSING] fn=portfolio_query username=%s", username)
+            return _create_error_response(
+                "Repo cache was purged. Trigger a refresh to rebuild.",
+                404,
+                error_code="CACHE_MISSING",
+                request_id=ctx.trace.get("request_id"),
+            )
 
         payload = {
             "username": username,

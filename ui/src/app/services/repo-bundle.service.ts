@@ -108,7 +108,8 @@ export class RepoBundleService {
         return jobId as string;
       }),
       catchError(err => {
-        const errorMsg = err?.error?.message || err?.message || 'Failed to start build';
+        // Backend wraps errors as { error: { message } } inside the response envelope
+        const errorMsg = err?.error?.error?.message || err?.error?.message || err?.message || 'Failed to start build';
         return throwError(() => new Error(errorMsg));
       })
     );

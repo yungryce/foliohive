@@ -1,6 +1,6 @@
 import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { ActivatedRoute, RouterModule } from '@angular/router';
+import { ActivatedRoute, Router, RouterModule } from '@angular/router';
 import { MarkdownModule } from 'ngx-markdown';
 import { Observable, Subject, catchError, filter, map, of, switchMap, takeUntil } from 'rxjs';
 import { CandidateContextService } from '../../services/candidate-context.service';
@@ -31,6 +31,7 @@ interface RepoDetailVM {
 })
 export class ProjectComponent implements OnInit, OnDestroy {
   private route = inject(ActivatedRoute);
+  private router = inject(Router);
   private candidateContext = inject(CandidateContextService);
   private repoBundle = inject(RepoBundleService);
   private jobPollingService = inject(JobPollingService);
@@ -118,7 +119,12 @@ export class ProjectComponent implements OnInit, OnDestroy {
     if (isRepoReady) {
       // Summary is already available — fetch immediately
       this.repoBundle.getReadmeSummary(username, repoName, jobId).pipe(
-        catchError(() => of({ readme_summary_markdown: '' } as ReadmeSummaryResponse)),
+        catchError((err) => {
+          if (err?.error?.error?.code === 'CACHE_MISSING') {
+            this.router.navigate(['/'], { queryParams: { username } });
+          }
+          return of({ readme_summary_markdown: '' } as ReadmeSummaryResponse);
+        }),
         takeUntil(this.destroy$)
       ).subscribe({
         next: (res) => {
@@ -146,7 +152,12 @@ export class ProjectComponent implements OnInit, OnDestroy {
     // Wait for this specific repo to reach summary_ready via the centralized poll
     this.jobPollingService.pollRepoReady(username, jobId, repoName).pipe(
       switchMap(() => this.repoBundle.getReadmeSummary(username, repoName, jobId)),
-      catchError(() => of({ readme_summary_markdown: '' } as ReadmeSummaryResponse)),
+      catchError((err) => {
+        if (err?.error?.error?.code === 'CACHE_MISSING') {
+          this.router.navigate(['/'], { queryParams: { username } });
+        }
+        return of({ readme_summary_markdown: '' } as ReadmeSummaryResponse);
+      }),
       takeUntil(this.destroy$)
     ).subscribe({
       next: (res: ReadmeSummaryResponse) => {

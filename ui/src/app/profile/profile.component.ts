@@ -42,7 +42,7 @@ export class ProfileComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     const usernameFromUrl = (this.route.snapshot.queryParamMap.get('username') || '').trim();
     if (usernameFromUrl) {
-      this.candidateContext.upsertCandidate({ username: usernameFromUrl });
+      this.candidateContext.setActive(usernameFromUrl);
     }
 
     this.candidateContext.activeUsername$
@@ -120,7 +120,12 @@ export class ProfileComponent implements OnInit, OnDestroy {
     if (isSummaryReady || !jobId) {
       // Summary is already available — fetch immediately
       this.profileService.getCandidateSummary(username, jobId).pipe(
-        catchError(() => of({ username, summary_markdown: '' } as CandidateSummaryResponse)),
+        catchError((err) => {
+          if (err?.error?.error?.code === 'CACHE_MISSING') {
+            this.router.navigate(['/'], { queryParams: { username } });
+          }
+          return of({ username, summary_markdown: '' } as CandidateSummaryResponse);
+        }),
         takeUntil(this.destroy$)
       ).subscribe((summary) => {
         this.summaryMarkdown = summary?.summary_markdown || null;
@@ -135,7 +140,12 @@ export class ProfileComponent implements OnInit, OnDestroy {
       filter(s => !!s && s.username === username && !!s.summary_ready),
       first(),
       switchMap(() => this.profileService.getCandidateSummary(username, jobId)),
-      catchError(() => of({ username, summary_markdown: '' } as CandidateSummaryResponse)),
+      catchError((err) => {
+        if (err?.error?.error?.code === 'CACHE_MISSING') {
+          this.router.navigate(['/'], { queryParams: { username } });
+        }
+        return of({ username, summary_markdown: '' } as CandidateSummaryResponse);
+      }),
       takeUntil(this.destroy$)
     ).subscribe({
       next: (summary: CandidateSummaryResponse) => {

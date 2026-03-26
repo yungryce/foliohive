@@ -6,7 +6,7 @@ import { RepoBundleService } from '../services/repo-bundle.service';
 import { CandidateContextService } from '../services/candidate-context.service';
 import { JobPollingService } from '../services/job-polling.service';
 import { CandidateListComponent } from '../shared/candidate-list.component';
-import { Subject, takeUntil, switchMap, catchError, of } from 'rxjs';
+import { EMPTY, Subject, takeUntil, switchMap, catchError, of } from 'rxjs';
 
 /**
  * Aligned with backend schema from _repo_row_to_bundle_entry in api_gateway.py
@@ -37,8 +37,6 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   private candidateContext = inject(CandidateContextService);
   private jobPollingService = inject(JobPollingService);
   private readonly destroy$ = new Subject<void>();
-  private requestedUsername: string | null = null;
-  private requestedJobId: string | null = null;
   username = '';
   missingCandidate = false;
 
@@ -64,73 +62,68 @@ export class ProjectsComponent implements OnInit, OnDestroy {
   private allVMs: RepoCardVM[] = [];
 
   ngOnInit(): void {
-    this.requestedUsername = this.route.snapshot.queryParamMap.get('username')?.trim() ?? null;
-    this.requestedJobId = this.route.snapshot.queryParamMap.get('job_id')?.trim() ?? null;
+    const requestedUsername = this.route.snapshot.queryParamMap.get('username')?.trim() ?? null;
+    const requestedJobId = this.route.snapshot.queryParamMap.get('job_id')?.trim() ?? null;
 
-    if (this.requestedUsername) {
-      if (this.requestedJobId) {
-        this.candidateContext.upsertCandidate({
-          username: this.requestedUsername,
-          jobId: this.requestedJobId,
-        });
-      } else {
-        this.candidateContext.setActive(this.requestedUsername);
+    if (requestedUsername) {
+      // Use setActive so activeUsername$ emits exactly once for this navigation.
+      // Store the jobId separately so it doesn't trigger an extra activeUsername$ emission.
+      this.candidateContext.setActive(requestedUsername);
+      if (requestedJobId) {
+        this.candidateContext.updateProgress(requestedUsername, { jobId: requestedJobId });
       }
     }
 
     this.candidateContext.activeUsername$
-      .pipe(takeUntil(this.destroy$))
-      .subscribe((username) => {
-        if (!username) {
-          this.missingCandidate = true;
-          this._clearData();
-          return;
-        }
+      .pipe(
+        takeUntil(this.destroy$),
+        switchMap((username) => {
+          if (!username) {
+            this.missingCandidate = true;
+            this._clearData();
+            return EMPTY;
+          }
 
-        this.missingCandidate = false;
-        this.username = username;
-        this._loadRepoBundle();
+          this.missingCandidate = false;
+          this.username = username;
+          this.loading = true;
+
+          const activeCandidate = this.candidateContext.activeCandidate;
+          const resolvedJobId = activeCandidate?.jobId ?? null;
+
+          if (resolvedJobId) {
+            this.startJobIfNeeded(username, resolvedJobId);
+          }
+
+          // switchMap ensures this inner Observable is cancelled if username changes
+          // before whenMetadataReady emits, so we never load stale data.
+          return this.jobPollingService.whenMetadataReady(username).pipe(
+            switchMap(() => {
+              const jobId = this.candidateContext.activeCandidate?.jobId ?? undefined;
+              const useCache = !this.jobPollingService.isPolling;
+              return this.repoBundleService.getCandidateMetadata(username, jobId, useCache);
+            }),
+            catchError(() => of({ username, data: [] as any[] }))
+          );
+        })
+      )
+      .subscribe(bundle => {
+        const data = bundle?.data ?? [];
+        this.allVMs = data
+          .map((r: any) => this.toCardVM(r))
+          .filter((vm): vm is RepoCardVM => vm !== null);
+        this.totalRepoCount = this.allVMs.length;
+        this.bundleEmpty = this.allVMs.length === 0;
+        this.allLanguages = this._deriveLanguages(this.allVMs);
+        this.allTechnologies = this._deriveTechnologies(this.allVMs);
+        this._applyFilters();
+        this.loading = false;
       });
   }
 
   ngOnDestroy(): void {
     this.destroy$.next();
     this.destroy$.complete(); 
-  }
-
-  private _loadRepoBundle(): void {
-    const activeCandidate = this.candidateContext.activeCandidate;
-    const resolvedJobId = this.username === this.requestedUsername
-      ? this.requestedJobId ?? activeCandidate?.jobId
-      : activeCandidate?.jobId;
-
-    if (resolvedJobId) {
-      this.startJobIfNeeded(this.username, resolvedJobId);
-    }
-    this.loading = true;
-
-    this.jobPollingService.whenMetadataReady(this.username).pipe(
-      switchMap(() => {
-        const jobId = this.username === this.requestedUsername
-          ? this.requestedJobId ?? this.candidateContext.activeCandidate?.jobId
-          : this.candidateContext.activeCandidate?.jobId;
-        const useCache = !this.jobPollingService.isPolling;
-        return this.repoBundleService.getCandidateMetadata(this.username, jobId, useCache);
-      }),
-      catchError(() => of({ username: this.username, data: [] as any[] })),
-      takeUntil(this.destroy$)
-    ).subscribe(bundle => {
-      const data = bundle?.data ?? [];
-      this.allVMs = data
-        .map((r: any) => this.toCardVM(r))
-        .filter((vm): vm is RepoCardVM => vm !== null);
-      this.totalRepoCount = this.allVMs.length;
-      this.bundleEmpty = this.allVMs.length === 0;
-      this.allLanguages = this._deriveLanguages(this.allVMs);
-      this.allTechnologies = this._deriveTechnologies(this.allVMs);
-      this._applyFilters();
-      this.loading = false;
-    });
   }
 
   private _clearData(): void {
