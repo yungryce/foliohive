@@ -58,9 +58,17 @@ def delete_candidate(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     rows_deleted = table_manager.cleanup_candidate_data(username)
+
+    # Free the session slot so the recruiter can add a new candidate immediately.
+    session_id = (req.headers.get("X-Session-Id") or req.headers.get("x-session-id") or "").strip()
+    session_slot_freed = False
+    if session_id:
+        table_manager.delete_session_candidate(session_id, username)
+        session_slot_freed = True
+
     logger.info(
-        "[CANDIDATE_DELETE] username=%s rows_deleted=%d",
-        username, rows_deleted,
+        "[CANDIDATE_DELETE] username=%s rows_deleted=%d session_slot_freed=%s",
+        username, rows_deleted, session_slot_freed,
     )
     return func.HttpResponse(
         json.dumps({"username": username, "rows_deleted": rows_deleted}),

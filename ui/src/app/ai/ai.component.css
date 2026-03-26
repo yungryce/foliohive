@@ -1,1 +1,36 @@
-/* Intentionally minimal: uses global markdown styles from styles.css. */
+.transcript-entry {
+	display: grid;
+	gap: 0.75rem;
+	padding: 1rem;
+	border: 1px solid var(--border);
+	border-radius: 0.75rem;
+	background: color-mix(in srgb, var(--card) 88%, white 12%);
+}
+
+.transcript-entry-pending {
+	border-style: dashed;
+}
+
+.transcript-user,
+.transcript-assistant {
+	display: grid;
+	gap: 0.35rem;
+}
+
+.transcript-label {
+	font-size: 0.75rem;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+
+.transcript-query {
+	margin: 0;
+	white-space: pre-wrap;
+}
+
+.transcript-meta {
+	font-size: 0.8rem;
+	color: var(--muted);
+}

@@ -33,7 +33,7 @@ Build: UI `startBuild` -> api `trigger_candidate_refresh` -> `process_sync_job` 
 UI Summaries:
     - UI `loadReadmeSummary` -> api `get_repo_summary` -> `expand_repo_micro_summary(*, repo_name, job_id)` -> `expand_repo` -> `call_ai_api`
     - UI `loadProfileSummary` -> api `get_profile_summary` -> `get_or_generate_profile_summary(profile, job_id)` -> `aggregate_micro_summaries` -> `summarize_profile` -> `call_ai_api`
-    - UI `ask` -> `portfolio_query` -> `get_or_generate_query_response(*, job_id, query, profile)` -> `aggregate_micro_summaries` -> `summarize_query` -> `call_ai_api`
+    - UI `ask` (atomic) -> `portfolio_query` -> `get_or_generate_query_response(*, job_id, query, profile)` -> `aggregate_micro_summaries` -> `summarize_query` -> `call_ai_api`
 Metadata
 - `loadProfile` -> `get_profile`
 - `loadRepoBundle` -> `get_candidate_repos_metadata`
@@ -71,7 +71,8 @@ Metadata
 - AI summary endpoints return insights generated via a staged pipeline:
     - `get_repo_summary()` in `api_gateway.py`: expands cached micro-summary into detailed markdown for individual repo view `ui/src/app/projects/project`. Requires job status `completed`. Calls `expand_repo_micro_summary(*, repo_name, job_id)` in `summary_manager.py`; method internally fetches repo metadata and cached micro-summary. Response field: `readme_summary_markdown`.
     - `get_profile_summary()` in `api_gateway.py`: generates profile markdown via `get_or_generate_profile_summary(profile, job_id)` in `summary_manager.py`. Requires job status `completed`. Internally: `_load_cached_micro_summaries()` → `aggregate_micro_summaries()` → `summarize_profile()`. Response field: `summary_markdown`.
-    - `portfolio_query()` in `api_gateway.py` (POST `/api/ai`): executes semantic query over candidate portfolio. Requires job status `completed`. Calls `get_or_generate_query_response(*, job_id, query, profile)` which internally loads micro-summaries and aggregates context. Response field: `query_summary`. **Note**: reads `username` and `query` from URL query params (`req.params`), not POST body — see Known Issues.
+    - `portfolio_query()` in `api_gateway.py` (POST `/api/ai`): executes semantic query atomically, returns full JSON. Reads `username` and `query` from POST body.
+    - Streaming delivery was evaluated for tier 2 AI responses, but Azure Static Web Apps buffers the Function response path in the current deployment shape. The product path remains atomic JSON delivery unless hosting constraints change in the future.
 
 **Views**
 Client has 4 views that retrives and displays data from the server. These views are:
@@ -84,7 +85,8 @@ Client has 4 views that retrives and displays data from the server. These views 
     - Metadata: single-repo metadata via `api_gateway.get_candidate_repo_metadata()` → `repo-bundle.service.getCandidateRepoMetadata()`
     - Summary: repo markdown summary (`readme_summary_markdown`) via `api_gateway.get_repo_summary()` → `repo-bundle.service.getReadmeSummary()`. UI polls via `pollRepoReady(repoName)` if not yet ready.
 - `ui/src/app/ai`: This expects 1 data response
-    - Summary: query response (`response` field mapping `query_summary` from backend) via `api_gateway.portfolio_query()` → `assistant.service.askPortfolio()`. Context is built from all cached micro-summaries aggregated via `aggregate_micro_summaries()`. No raw file access during query.
+    - Summary: `api_gateway.portfolio_query()` → `assistant.service.askPortfolio()`.
+    - Local transcript: chat history is replayed from `chat-history.service.ts`, scoped by candidate username and current session ID, with no backend session storage. History entry is appended after a successful atomic response.
 
 **Job Status**
 - Job status is tracked and updated by `get_job_status()` in `api_gateway.py` via `table_manager.py` `JobMetadata` and `RepoSyncStatus`. Per-repo statuses updated during `sync_worker._update_sync_progress()` and `cache_worker._update_cache_progress()`.
@@ -138,8 +140,8 @@ Tables fall into two categories:
 **AI Summary Pipeline Overview**
 - Config extraction: `data_filter.py` hosts `CONFIG_EXTRACTION_SCHEMAS` mapping filenames to typed extractor functions. Extractors return structured dicts (not raw text). Cache worker applies extractors in-memory during micro-summary generation. No raw config blobs are persisted.
 - Repo micro-summary: `generate_repo_micro_summary(*, username, repo_name, fingerprint, job_id, repo_metadata, primary_readme_content, config_content, secondary_readme_content)` runs per-repo in cache worker. Consumes README + metadata + extracted configs. Produces a JSON analysis artifact cached in blob storage via `cache_manager.save()`. Fingerprint-based cache validation avoids regeneration if repo unchanged. Output schema: `{overview, key_features, tech_stack, architecture_patterns, skill_signals}`.
-- Repo detail expansion: `expand_repo_micro_summary(*, repo_name, job_id)` expands concise micro-summary into detailed **markdown** for single-repo view via AI call. Internally fetches repo metadata from table and cached micro-summary from blob storage. Returns `{summary_markdown, metadata}`.
-- Profile aggregation: `get_or_generate_profile_summary(profile, job_id)` calls `_load_cached_micro_summaries()` → `aggregate_micro_summaries()` (skill dedup + scoring → profile JSON) → `summarize_profile()` (renders **markdown**). Returns `{summary_markdown, metadata}`.
+- Repo detail expansion: `expand_repo_micro_summary(*, repo_name, job_id)` expands concise micro-summary into detailed **markdown** for single-repo view via AI call. Internally fetches repo metadata from table and cached micro-summary from blob storage, and reuses a fingerprinted expanded-summary blob cache before regenerating. Returns `{summary_markdown, metadata}`.
+- Profile aggregation: `get_or_generate_profile_summary(profile, job_id)` calls `_load_cached_micro_summaries()` and first attempts to reuse a fingerprinted cached aggregate payload before recomputing `aggregate_micro_summaries()`. The aggregate step still feeds `summarize_profile()` to render **markdown**. Returns `{summary_markdown, metadata}`.
 - Query: `get_or_generate_query_response(*, job_id, query, profile)` calls `_load_cached_micro_summaries()` → `aggregate_micro_summaries()` → `summarize_query()`. Returns `{response, repositories_used, total_repositories, query, metadata}`. No raw file access during query.
 
 
@@ -151,14 +153,15 @@ Tables fall into two categories:
 - `GET /api/candidate/{username}/profile` - Get candidate profile and aggregated statistics
 - `GET /api/candidate/{username}/summary` - Get candidate profile markdown summary (`summary_markdown`); requires job status `completed`
 - `GET /api/candidate/{username}/{repo}/readme-summary` - Get expanded repo markdown summary (`readme_summary_markdown`); requires job status `completed`
-- `POST /api/ai?username={username}&query={query}` - Execute semantic query over portfolio; requires job status `completed`
+- `POST /api/ai` - Execute semantic query over portfolio; requires job status `completed`; reads `username` and `query` from POST body; returns full JSON
 - `GET /api/session/candidates` - Get recently viewed candidates for a session
 - `GET /api/health` - Health check
 
 **UI Services** (in `/ui/src/app/services/`)
 - `repo-bundle.service.ts` - Fetches repo metadata via `/candidate/{username}` and `/candidate/{username}/{repo}/metadata`. Also handles `getReadmeSummary()` via `/{repo}/readme-summary` and `getSessionCandidates()` via `/session/candidates`.
 - `profile.service.ts` - Fetches profile metadata and summary via `/candidate/{username}/profile` and `/candidate/{username}/summary`
-- `assistant.service.ts` - Handles AI portfolio queries via `POST /ai`. Sends `{query, username}` in POST body.
+- `assistant.service.ts` - AI portfolio queries via atomic POST to `/ai`.
+- `chat-history.service.ts` - Stores per-candidate AI chat transcripts in `localStorage`, scoped by session ID. Owns append/load/clear behavior for the AI view MVP.
 - `job-polling.service.ts` - Manages job status polling via `/candidate/{username}/status`. Methods: `pollJobStatus()` (poll until terminal), `waitForMetadataReady()` (complete when `metadata_ready=true`), `waitForFilesReady()` (complete when `summary_ready=true`), `pollRepoReady(repoName)` (complete when specific repo is in `summary_ready` state).
 - `candidate-context.service.ts` - Tracks active username and candidate list across views; persists to `localStorage`; syncs from session via `getSessionCandidates()`
 - `cache.service.ts` - In-memory client-side response caching
@@ -167,9 +170,10 @@ Tables fall into two categories:
 - `session-id.interceptor.ts` - Injects `X-Session-Id` header on all HTTP requests
 
 **Known Issues / Technical Notes**
-- `portfolio_query()` (`POST /api/ai`) reads `username` and `query` from URL query params (`req.params.get(...)`) but the UI (`assistant.service.ts`) sends them in the POST body. This mismatch means queries always fail to parse username and query at runtime.
+- The AI view keeps transcript persistence client-side only for the MVP. Previous turns are not appended to backend prompts yet, to avoid silent token-budget growth while UX is being validated.
 - AI model assignments: all summary types (`profile`, `readme`, `query`, `initial_summary`) are explicitly mapped to `gpt-5-nano` tier via `MODEL_ASSIGNMENTS` dict in `summary_manager.py`.
-- `_api_gateway.py` contains a `CandidateContext` dataclass and `_prepare_candidate_context()` helper that standardise trace extraction, job resolution, and session recording across all candidate endpoints.
+- `api_gateway.py` contains a `CandidateContext` dataclass and `_prepare_candidate_context()` helper that standardise trace extraction, job resolution, and session recording across all candidate endpoints.
+- **Streaming evaluation**: streaming delivery was explored for AI responses, but the current Azure Static Web Apps + Function App deployment path buffers the response. Streaming is documented for future planning only and is not part of the active runtime architecture.
 
 ### NOTES
 This project is currently at a proof-of-concept stage. 

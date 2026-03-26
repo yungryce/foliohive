@@ -1,6 +1,7 @@
 import { Component, inject, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute, Router } from '@angular/router';
 import { Subject, takeUntil, filter, first } from 'rxjs';
 import { CandidateContextService } from '../services/candidate-context.service';
@@ -32,6 +33,16 @@ export class LandingComponent implements OnInit, OnDestroy {
     const username = (this.username || '').trim();
     if (!username) return null;
     return this.candidateContext.storedCandidates.find(c => c.username === username)?.jobStatusCode ?? null;
+  }
+
+  get isAtLimit(): boolean {
+    return this.candidateContext.isAtLimit;
+  }
+
+  get isExistingCandidate(): boolean {
+    const username = (this.username || '').trim();
+    if (!username) return false;
+    return this.candidateContext.storedCandidates.some(c => c.username === username);
   }
   
   ngOnInit(): void {
@@ -65,6 +76,11 @@ export class LandingComponent implements OnInit, OnDestroy {
       return;
     }
 
+    if (!this.isExistingCandidate && this.isAtLimit) {
+      this.error = `Candidate limit reached (${this.candidateContext.storedCandidates.length}/5). Remove a candidate to add a new one.`;
+      return;
+    }
+
     this.loading = true;
 
     // Always trigger fresh build
@@ -74,9 +90,13 @@ export class LandingComponent implements OnInit, OnDestroy {
         this.jobPollingService.startJob(username, jobId);
         this.watchForMetadataReady(username, jobId);
       },
-      error: () => {
+      error: (err: unknown) => {
         this.loading = false;
-        this.error = 'Failed to start build. Check if API is running.';
+        if (err instanceof HttpErrorResponse && err.status === 429) {
+          this.error = `Candidate limit reached (5/5). Remove a candidate to add a new one.`;
+        } else {
+          this.error = err instanceof Error ? err.message : 'Failed to start build. Check if API is running.';
+        }
       },
     });
   }

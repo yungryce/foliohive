@@ -13,6 +13,7 @@ export interface AIAssistantResponse {
   repositories_used: { name: string; relevance_score: number }[];
   total_repositories: number;
   query: string;
+  success?: boolean;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -39,6 +40,7 @@ export class AIAssistantService {
           repositories_used: repositoriesUsed,
           total_repositories: Number(data?.total_repositories || metadata?.total_repositories || repositoriesUsed.length || 0),
           query: data?.query || req.query,
+          success: true,
         } as AIAssistantResponse;
       }),
       catchError(err => {

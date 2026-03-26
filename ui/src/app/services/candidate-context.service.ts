@@ -1,7 +1,8 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import { RepoBundleService, SessionCandidate } from './repo-bundle.service';
 import { SessionIdService } from './session-id.service';
+import { ChatHistoryService } from './chat-history.service';
 
 export interface CandidateContext {
   username: string;
@@ -13,6 +14,7 @@ export interface CandidateContext {
 
 @Injectable({ providedIn: 'root' })
 export class CandidateContextService {
+  private readonly chatHistory = inject(ChatHistoryService);
   private readonly candidatesSubject = new BehaviorSubject<CandidateContext[]>([]);
   readonly candidates$ = this.candidatesSubject.asObservable();
 
@@ -33,11 +35,18 @@ export class CandidateContextService {
     return this.candidatesSubject.value.find((c: CandidateContext) => c.username === username) ?? null;
   }
 
+  get isAtLimit(): boolean {
+    return this.candidatesSubject.value.length >= this.maxStored;
+  }
+
   get storedCandidates(): CandidateContext[] {
     return [...this.candidatesSubject.value];
   }
 
-  constructor(private readonly repoService: RepoBundleService, sessionIdService: SessionIdService) {
+  constructor(
+    private readonly repoService: RepoBundleService,
+    sessionIdService: SessionIdService,
+  ) {
     this.sessionId = sessionIdService.getOrCreate();
     this.loadFromStorage();
     this.syncFromSession();
@@ -58,30 +67,25 @@ export class CandidateContextService {
     const limited = next.slice(0, this.maxStored);
     this.candidatesSubject.next(limited);
     this.persistCandidates(limited);
-    // Only emit when the active username actually changes — updateProgress calls
-    // upsertCandidate every poll tick, and emitting unconditionally causes all
-    // activeUsername$ subscribers to re-initialize on each tick.
-    if (this.activeUsernameSubject.value !== username) {
-      this.activeUsernameSubject.next(username);
-      this.persistActive(username);
-    }
+    // Pure list update — no activeUsername$ side-effect.
+    // setActive() is the sole owner of activeUsername$.
   }
 
   setActive(username: string): void {
     const normalized = (username || '').trim();
     if (!normalized) return;
-    const exists = this.candidatesSubject.value.some((c: CandidateContext) => c.username === normalized);
-    if (!exists) {
-      this.upsertCandidate({ username: normalized });
-      return;
+    // Ensure the candidate is in the list before activating.
+    this.upsertCandidate({ username: normalized });
+    if (this.activeUsernameSubject.value !== normalized) {
+      this.activeUsernameSubject.next(normalized);
+      this.persistActive(normalized);
     }
-    this.activeUsernameSubject.next(normalized);
-    this.persistActive(normalized);
   }
 
   removeCandidate(username: string): void {
     const normalized = (username || '').trim();
     if (!normalized) return;
+    this.chatHistory.clearCandidateHistory(normalized);
     const next = this.candidatesSubject.value.filter((c: CandidateContext) => c.username !== normalized);
     this.candidatesSubject.next(next);
     this.persistCandidates(next);

@@ -226,7 +226,8 @@ def _update_sync_progress(
     
     if (synced_count > 0 or failed_count > 0 or summary_ready_count > 0) and current_status == "queued":
         table_manager.update_job_metadata_conditional(username, job_id, {"status": "syncing"})
-    
+        current_status = "syncing"
+
     completed_count = synced_count + failed_count + summary_ready_count
     if completed_count == total_repos and current_status == "syncing":
         if (synced_count + summary_ready_count) > 0:

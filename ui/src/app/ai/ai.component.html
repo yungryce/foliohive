@@ -31,6 +31,46 @@
         </div>
       </div>
 
+      <section class="rounded-lg border border-(--border) bg-(--card) p-4 mb-6">
+        <div class="flex items-center justify-between gap-4 mb-4">
+          <div>
+            <h2 class="text-sm font-semibold">Conversation history</h2>
+            <p class="text-sm text-(--muted)">Stored locally for this candidate and session.</p>
+          </div>
+          <button
+            *ngIf="history.length"
+            type="button"
+            class="px-3 py-2 rounded border border-(--border) bg-(--bg) text-sm hover:brightness-95"
+            (click)="clearHistory()"
+          >
+            Clear history
+          </button>
+        </div>
+
+        <div *ngIf="history.length; else emptyTranscript" class="space-y-4">
+          <article *ngFor="let item of history" class="transcript-entry">
+            <div class="transcript-user">
+              <div class="transcript-label">Question</div>
+              <p class="transcript-query">{{ item.query }}</p>
+            </div>
+            <div class="transcript-assistant">
+              <div class="transcript-label">Answer</div>
+              <markdown [data]="item.responseMarkdown" class="markdown-content"></markdown>
+              <div *ngIf="item.repositoriesUsed.length" class="flex flex-wrap gap-2 mt-3 text-sm">
+                <span *ngFor="let repo of item.repositoriesUsed" class="px-2 py-1 rounded bg-(--chip-bg) text-(--chip-fg)">
+                  {{ repo.name }} <span class="text-(--muted)">({{ repo.relevance_score | number:'1.2-2' }})</span>
+                </span>
+              </div>
+              <div class="transcript-meta">{{ item.createdAt | date:'medium' }}</div>
+            </div>
+          </article>
+        </div>
+
+        <ng-template #emptyTranscript>
+          <p class="text-sm text-(--muted)">No saved conversation yet for this candidate.</p>
+        </ng-template>
+      </section>
+
       <div class="rounded-lg border border-(--border) bg-(--card) p-4" [class.opacity-60]="noRepositories || !summaryReady">
         <label for="query" class="block text-sm font-medium text-(--muted)">Ask about this candidate</label>
         <textarea
@@ -55,20 +95,17 @@
         <p *ngIf="!summaryReady && !error" class="mt-2 text-sm text-(--muted)">
           Waiting for portfolio data to be processed…
         </p>
-      </div>
-
-      <div *ngIf="repositoriesUsed.length" class="rounded-lg border border-(--border) bg-(--card) p-4 mt-6">
-        <h2 class="text-sm font-semibold mb-2">Repositories used</h2>
-        <div class="flex flex-wrap gap-2 text-sm">
-          <span *ngFor="let r of repositoriesUsed" class="px-2 py-1 rounded bg-(--chip-bg) text-(--chip-fg)">
-            {{ r.name }} <span class="text-(--muted)">({{ r.relevance_score | number:'1.2-2' }})</span>
-          </span>
+        <div *ngIf="loadingAnswer" class="transcript-entry transcript-entry-pending mt-4">
+          <div class="transcript-user">
+            <div class="transcript-label">Question</div>
+            <p class="transcript-query">{{ pendingQuery }}</p>
+          </div>
+          <div class="transcript-assistant">
+            <div class="transcript-label">Answer</div>
+            <p class="text-sm text-(--muted)">Generating response…</p>
+          </div>
         </div>
       </div>
-
-      <article *ngIf="answerMarkdown" class="rounded-lg border border-(--border) bg-(--card) p-4 mt-6">
-        <markdown [data]="answerMarkdown" class="markdown-content"></markdown>
-      </article>
     </main>
   </div>
 </div>
