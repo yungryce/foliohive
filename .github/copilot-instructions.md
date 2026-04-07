@@ -170,15 +170,6 @@ Tables fall into two categories:
 - `session-id.interceptor.ts` - Injects `X-Session-Id` header on all HTTP requests
 
 **Known Issues / Technical Notes**
-- The AI view keeps transcript persistence client-side only for the MVP. Previous turns are not appended to backend prompts yet, to avoid silent token-budget growth while UX is being validated.
 - AI model assignments: all summary types (`profile`, `readme`, `query`, `initial_summary`) are explicitly mapped to `gpt-5-nano` tier via `MODEL_ASSIGNMENTS` dict in `summary_manager.py`.
-- `api_gateway.py` contains a `CandidateContext` dataclass and `_prepare_candidate_context()` helper that standardise trace extraction, job resolution, and session recording across all candidate endpoints.
 - **Streaming evaluation**: streaming delivery was explored for AI responses, but the current Azure Static Web Apps + Function App deployment path buffers the response. Streaming is documented for future planning only and is not part of the active runtime architecture.
-
-### NOTES
-This project is currently at a proof-of-concept stage. 
-- Features are changing rapidly during this early stage, so formal test coverage is not yet a priority. The focus is on iterating quickly and validating end-to-end functionality via manual testing and inspection. As the system stabilizes, more formal unit and integration tests will be added.
-- Tests are mostly being done with one Candidate at a time and manually inspecting results in the UI, tables and blob containers.
-- Tables are purged between test runs to reset state. This is done via `table_manager.py` functions that delete all rows in `SessionCandidates`, `JobMetadata`, `RepoLanguages`, `RepoGitHubMetadata`, and `RepoSyncStatus`.
-- Blob containers are also purged between test runs to reset state. This is done via `cache_manager.py` functions that delete all blobs in the relevant containers.
-
+- There currently is no authentication implementation for users and users are rate limit implemented to 5 replacable candidates. Likelihood of hitting both Github and ChatGPT API limits if user grows. 
