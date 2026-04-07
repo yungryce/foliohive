@@ -1,137 +1,189 @@
-# Azure Pipelines (.ado)
+# FolioHive Infrastructure
 
-This folder contains Cloudfolio’s Azure DevOps (ADO) pipeline definitions and reusable templates.
+This folder contains the current Azure Bicep templates used by the Azure DevOps pipelines to deploy FolioHive. The implementation is resource-group scoped and split into three layers: core infrastructure, the Flex Function App, and the Static Web App.
 
-## What’s in here
+## Current topology
 
-### Pipelines (entrypoints)
+```text
+main.bicep
+  ├─ identity.bicep      -> user-assigned managed identity
+  ├─ network.bicep       -> VNet + functions subnet + private-endpoints subnet
+  ├─ privateDns.bicep    -> private DNS zones for blob, queue, table
+  ├─ monitoring.bicep    -> Log Analytics + Application Insights
+  └─ storage.bicep       -> storage account + private endpoints + RBAC
 
-- `infra-core.yml` — deploys core infrastructure (networking, storage, identity, monitoring).
-- `ci-functions.yml` — unified CI for Function Apps; detects what changed and builds only those functions.
-- `cd-functions.yml` — unified CD for Function Apps; triggered by Function CI and deploys available artifacts.
-- `ci-swa.yml` — builds the Angular UI and publishes the `swa-artifact` pipeline artifact.
-- `cd-swa.yml` — deploys Static Web App infra (Bicep) and publishes the UI artifact.
-- `ci-container.yml` — builds/pushes the training-worker container image.
-- `cd-container.yml` — deploys the container workload (Bicep).
+main.functions.bicep
+  └─ functionAppFlex.bicep -> Flex Consumption Linux Function App
 
-### Templates (reusable building blocks)
+main.staticwebapp.bicep
+  └─ staticWebApp.bicep     -> Standard Static Web App, optional linked backend
+```
 
-- `deploy-core-infra.yml` — reusable “ensure core infra” deployment used by CD pipelines.
-- `detect-function-changes.yml` — determines which Function Apps changed in the repo.
-- `ci-build-function.yml` — builds a single Function App zip and publishes a pipeline artifact.
-- `cd-deploy-function.yml` — deploys Function App infra (Bicep) and publishes the Function zip.
+## What is actually deployed
 
-## How the Function CI/CD works
+### 1. Core infrastructure: `main.bicep`
 
-- CI (`ci-functions.yml`) runs on changes under:
-  - `api/v0.4.0/api-gateway/**`
-  - `api/v0.4.0/sync-worker/**`
-  - `api/v0.4.0/merge-worker/**`
-  - `api/v0.4.0/shared/**`
-- CI publishes artifacts per function using the naming pattern:
-  - `api-gateway-$(Build.BuildId)`
-  - `sync-worker-$(Build.BuildId)`
-  - `merge-worker-$(Build.BuildId)`
-- CD (`cd-functions.yml`) is triggered by the Function CI pipeline resource. It attempts to deploy all functions; if a function artifact wasn’t built, its deployment is skipped.
+Deploys the shared platform resources used by the app:
 
-## How the UI (SWA) CI/CD works
+- User-assigned managed identity.
+- Virtual network with two subnets:
+  - `snet-functions` for Function App VNet integration.
+  - `snet-private-endpoints` for Storage private endpoints.
+- Private DNS zones for Storage Blob, Queue, and Table endpoints, each linked to the VNet.
+- Log Analytics workspace and Application Insights.
+- Storage account with:
+  - public network access disabled,
+  - shared key access disabled,
+  - private endpoints for blob, queue, and table,
+  - `function-deployments` blob container for Function package deployment.
+- RBAC assignments that give the managed identity access to Storage and App Insights metrics publishing.
 
-- CI (`ci-swa.yml`) builds the Angular UI and publishes `swa-artifact` from `ui/dist/browser/`.
-- CD (`cd-swa.yml`) downloads `swa-artifact`, deploys infra via Bicep (`infra/bicep/main.staticwebapp.bicep`), then deploys the artifact using `AzureStaticWebApp@0`.
-- CD also queries the deployed `api-gateway` Function App and can link it as a backend (via Bicep `staticSites/linkedBackends`).
+Core outputs are designed for downstream deployments and include:
 
-## Required variables
+- `uamiId`, `uamiClientId`, `uamiPrincipalId`
+- `appInsightsName`, `logAnalyticsWorkspaceId`
+- `vnetId`, `functionsSubnetId`, `privateEndpointsSubnetId`
+- `storageAccountName`, `storageAccountId`
+- `namePrefixOut`, `uniqueSuffixOut`
 
-Pipelines assume you have an Azure DevOps Variable Group named `folioVars` (see `variables: - group: 'folioVars'`). At minimum, it should contain values for:
+### 2. Function infrastructure: `main.functions.bicep`
 
-- `azureServiceConnection`
-- `subscriptionId`
-- `resourceGroupName`
+Deploys a single Flex Consumption Function App by composing `modules/functionAppFlex.bicep`.
+
+Key characteristics:
+
+- Linux Function App on SKU `FC1`.
+- Python runtime `3.13`.
+- User-assigned managed identity only.
+- Deployment package sourced from the Storage blob container `function-deployments`.
+- Managed-identity-based `AzureWebJobsStorage` configuration.
+- VNet integration using `functionsSubnetId`.
+- Optional diagnostics to Log Analytics.
+- Optional CORS origins passed in from deployment orchestration.
+- Configurable Flex scaling knobs:
+  - `flexMaximumInstanceCount`
+  - `flexInstanceMemoryMb`
+  - `httpPerInstanceConcurrency`
+  - `flexAlwaysReadyInstanceCount`
+
+Outputs:
+
+- `functionAppId`
+- `functionAppName`
+- `functionAppDefaultHostname`
+- `flexPlanId`
+- `flexPlanName`
+
+### 3. Static Web App infrastructure: `main.staticwebapp.bicep`
+
+Deploys a Standard Static Web App by composing `modules/staticWebApp.bicep`.
+
+Key characteristics:
+
+- Azure DevOps-backed Static Web App definition.
+- Repository URL defaults to the Azure DevOps repo.
+- Branch is fixed to `main`.
+- Build metadata points to `ui` with output `dist/browser`.
+- Can optionally create `staticSites/linkedBackends` for the Function App.
+- Can optionally set `API_BASE_URL` when a Function hostname is provided.
+
+Outputs:
+
+- `staticWebAppUrl`
+- `staticWebAppId`
+- `staticWebAppName`
+
+## Files in this folder
+
+- `main.bicep`: shared core infrastructure entrypoint.
+- `main.bicepparam`: default parameter file for `main.bicep`.
+- `main.functions.bicep`: Function App entrypoint.
+- `main.staticwebapp.bicep`: Static Web App entrypoint.
+- `main.functions.json`: compiled ARM JSON artifact checked into the repo.
+- `modules/identity.bicep`: user-assigned managed identity.
+- `modules/network.bicep`: VNet and subnets.
+- `modules/privateDns.bicep`: Storage private DNS zones and VNet links.
+- `modules/monitoring.bicep`: Log Analytics and Application Insights.
+- `modules/storage.bicep`: locked-down Storage account, private endpoints, RBAC.
+- `modules/functionAppFlex.bicep`: Flex Consumption Function App and plan.
+- `modules/staticWebApp.bicep`: Static Web App and optional backend link.
+
+## Naming and scope
+
+- All entrypoints use `targetScope = 'resourceGroup'`.
+- Resource naming is based on `namePrefix` plus a deterministic `uniqueSuffix` derived from the resource group ID.
+- The Storage account name is generated as `cfsa${uniqueSuffix}` and trimmed to Azure's 24-character limit.
+
+## Parameters that matter
+
+### `main.bicep`
+
 - `location`
+- `tags`
 - `namePrefix`
+- `vnetAddressPrefix`
+- `functionsSubnetPrefix`
+- `privateEndpointsSubnetPrefix`
 
-Some pipelines also expect:
+### `main.functions.bicep`
 
-- `pythonVersion` (used by Function CI)
+- `functionAppName`
+- `functionsSubnetId`
+- `storageAccountName`
+- `uamiId`
+- `uamiClientId`
+- `appInsightsName`
+- `logAnalyticsWorkspaceId`
+- `corsAllowedOrigins`
 
-## Where infra lives
+### `main.staticwebapp.bicep`
 
-- Core infra Bicep entrypoint: `infra/bicep/main.bicep`
-- Function Apps infra entrypoint (Flex Consumption): `infra/bicep/main.functions.bicep`
-- Legacy Premium Function Apps entrypoint: `infra/bicep/main.functions-premium.bicep`
-- Static Web App infra entrypoint: `infra/bicep/main.staticwebapp.bicep`
-- Container infra entrypoint: `infra/bicep/main.container.bicep`
-
-## Notes
-
-- These YAML files are designed to be used as separate pipelines in ADO (each YAML is an entrypoint).
-- If you rename an Azure DevOps pipeline, update the `resources.pipelines[*].source` values in the CD pipelines accordingly.
-# Azure Pipelines (.ado)
-
-This folder contains Cloudfolio’s Azure DevOps (ADO) pipeline definitions and reusable templates.
-
-## What’s in here
-
-### Pipelines (entrypoints)
-
-- `infra-core.yml` — deploys core infrastructure (networking, storage, identity, monitoring).
-- `ci-functions.yml` — unified CI for Function Apps; detects what changed and builds only those functions.
-- `cd-functions.yml` — unified CD for Function Apps; triggered by Function CI and deploys available artifacts.
-- `ci-swa.yml` — builds the Angular UI and publishes the `swa-artifact` pipeline artifact.
-- `cd-swa.yml` — deploys Static Web App infra (Bicep) and publishes the UI artifact.
-- `ci-container.yml` — builds/pushes the training-worker container image.
-- `cd-container.yml` — deploys the container workload (Bicep).
-
-### Templates (reusable building blocks)
-
-- `deploy-core-infra.yml` — reusable “ensure core infra” deployment used by CD pipelines.
-- `detect-function-changes.yml` — determines which Function Apps changed in the repo.
-- `ci-build-function.yml` — builds a single Function App zip and publishes a pipeline artifact.
-- `cd-deploy-function.yml` — deploys Function App infra (Bicep) and publishes the Function zip.
-
-## How the Function CI/CD works
-
-- CI (`ci-functions.yml`) runs on changes under:
-  - `api/v0.2.0/api-gateway/**`
-  - `api/v0.2.0/sync-worker/**`
-  - `api/v0.2.0/merge-worker/**`
-  - `api/v0.2.0/shared/**`
-- CI publishes artifacts per function using the naming pattern:
-  - `api-gateway-$(Build.BuildId)`
-  - `sync-worker-$(Build.BuildId)`
-  - `merge-worker-$(Build.BuildId)`
-- CD (`cd-functions.yml`) is triggered by the Function CI pipeline resource. It attempts to deploy all functions; if a function artifact wasn’t built, its deployment is skipped.
-
-## How the UI (SWA) CI/CD works
-
-- CI (`ci-swa.yml`) builds the Angular UI and publishes `swa-artifact` from `ui/dist/browser/`.
-- CD (`cd-swa.yml`) downloads `swa-artifact`, deploys infra via Bicep (`infra/bicep/main.staticwebapp.bicep`), then deploys the artifact using `AzureStaticWebApp@0`.
-- CD also queries the deployed `api-gateway` Function App and can link it as a backend (via Bicep `staticSites/linkedBackends`).
-
-## Required variables
-
-Pipelines assume you have an Azure DevOps Variable Group named `folioVars` (see `variables: - group: 'folioVars'`). At minimum, it should contain values for:
-
-- `azureServiceConnection`
-- `subscriptionId`
-- `resourceGroupName`
-- `location`
 - `namePrefix`
+- `uniqueSuffix`
+- `repositoryUrl`
+- `backendFunctionAppId`
+- `backendFunctionAppDefaultHostname`
+- `enableLinkedBackend`
 
-Some pipelines also expect:
+## Deployment model
 
-- `pythonVersion` (used by Function CI)
+The expected deployment order is:
 
-## Where infra lives
+1. Deploy `main.bicep`.
+2. Use its outputs to deploy `main.functions.bicep`.
+3. Optionally pass the Function outputs into `main.staticwebapp.bicep`.
 
-- Core infra Bicep entrypoint: `infra/bicep/main.bicep`
-- Function Apps infra entrypoint (Flex Consumption): `infra/bicep/main.functions.bicep`
-- Legacy Premium Function Apps entrypoint: `infra/bicep/main.functions-premium.bicep`
-- Static Web App infra entrypoint: `infra/bicep/main.staticwebapp.bicep`
-- Container infra entrypoint: `infra/bicep/main.container.bicep`
+This is the same order used by the Azure DevOps pipelines in `.ado/`.
 
-## Notes
+Example commands:
 
-- These YAML files are designed to be used as separate pipelines in ADO (each YAML is an entrypoint).
-- If you rename an Azure DevOps pipeline, update the `resources.pipelines[*].source` values in the CD pipelines accordingly.
-# .ado/README.md - Pipeline Templates and Parameters Guide
+```bash
+az deployment group create \
+  --resource-group <rg> \
+  --template-file infra/bicep/main.bicep \
+  --parameters infra/bicep/main.bicepparam
+
+az deployment group create \
+  --resource-group <rg> \
+  --template-file infra/bicep/main.functions.bicep \
+  --parameters functionAppName=<name> functionsSubnetId=<subnetId> \
+               storageAccountName=<storage> uamiId=<uamiId> \
+               uamiClientId=<uamiClientId> appInsightsName=<appi>
+```
+
+## Important boundaries
+
+This folder does not currently implement:
+
+- Key Vault.
+- Premium Function plans.
+- Container Instances.
+- Network security groups.
+- Private DNS zones for Key Vault or App Service.
+- Multiple Function App entrypoints in Bicep.
+
+Some older docs and comments in the repo still mention those patterns, but they are not part of the current Bicep surface in this directory.
+
+## Notes on `main.bicepparam`
+
+`main.bicepparam` is a thin default file for `main.bicep`. It sets `location`, `namePrefix`, and tags. In CI/CD, those values are typically overridden by pipeline variables.
